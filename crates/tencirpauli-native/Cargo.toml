@@ -1,0 +1,18 @@
+[package]
+name = "tencirpauli-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "PyO3 bindings for TenCirPauli"
+publish = false
+
+[lib]
+name = "_native"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3.workspace = true
+tencir-pauli-core = { path = "../tencir-pauli-core" }

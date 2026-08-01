@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+
+if [ -x "$root/.conda/bin/python" ]; then
+    python="$root/.conda/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    python=$(command -v python3)
+else
+    echo "TenCirPauli pre-commit: Python not found; create the project environment first." >&2
+    exit 1
+fi
+
+exec "$python" "$root/scripts/check.py" --benchmark record

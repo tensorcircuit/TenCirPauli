@@ -1,0 +1,19 @@
+[package]
+name = "tencir-pauli-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pure Rust Pauli algebra core for TenCirPauli"
+
+[lib]
+name = "tencir_pauli_core"
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5.1", features = ["html_reports"] }
+
+[[bench]]
+name = "pauli_word"
+harness = false

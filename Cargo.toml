@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/tencir-pauli-core",
+    "crates/tencirpauli-native",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["TenCirPauli Contributors"]
+
+[workspace.dependencies]
+pyo3 = { version = "0.23.5", features = ["abi3-py39", "extension-module"] }

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tencirpauli"
+version = "0.1.0"
+description = "Rust-native Pauli algebra and propagation with a first-class Python API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "TenCirPauli Contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+tensorcircuit = ["tensorcircuit-ng"]
+test = ["pytest>=7"]
+benchmark = ["pytest>=7", "pytest-benchmark>=4"]
+quality = [
+    "black>=24.10,<26",
+    "mypy>=1.14,<2",
+    "ruff>=0.9,<1",
+]
+
+[tool.maturin]
+manifest-path = "crates/tencirpauli-native/Cargo.toml"
+python-source = "python"
+module-name = "tencirpauli._native"
+bindings = "pyo3"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+src = ["python"]
+exclude = [".benchmarks", ".conda", "dist", "target"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "RUF"]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["python/tencirpauli"]
+warn_unreachable = true
