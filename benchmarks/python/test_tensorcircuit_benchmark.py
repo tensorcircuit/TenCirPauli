@@ -34,6 +34,60 @@ def _sync(value: Any) -> None:
         value.block_until_ready()
 
 
+def _sync_sparse(value: Any) -> None:
+    """Synchronize a JAX sparse value and its asynchronously computed buffers."""
+    _sync(value)
+    for name in ("data", "indices"):
+        component = getattr(value, name, None)
+        if component is not None:
+            _sync(component)
+
+
+def _make_tensorcircuit_jax_sparse(
+    structures: Tuple[Tuple[int, ...], ...], weights: Tuple[float, ...]
+) -> Any:
+    """Construct TensorCircuit's JAX BCOO sparse matrix for one workload."""
+    import tensorcircuit as tc
+
+    return tc.quantum.PauliStringSum2COO(structures, weights)
+
+
+def _assert_jax_sparse_metadata(
+    raw: Any, canonical: Any, raw_nse: int, canonical_nnz: int
+) -> None:
+    """Check raw/canonical BCOO sizes and the duplicate-index contract."""
+    assert int(raw.nse) == raw_nse
+    assert raw.data.shape == (raw_nse,)
+    assert raw.indices.shape == (raw_nse, 2)
+    assert not bool(raw.unique_indices)
+    assert not bool(raw.indices_sorted)
+
+    canonical_nse = int(canonical.nse)
+    assert canonical_nse >= canonical_nnz
+    assert canonical.data.shape == (canonical_nse,)
+    assert canonical.indices.shape == (canonical_nse, 2)
+    exact_nnz = int(np.count_nonzero(np.asarray(canonical.data)))
+    significant_nnz = int(np.count_nonzero(np.abs(np.asarray(canonical.data)) > 1e-12))
+    assert canonical_nse < raw_nse
+    assert 0 < significant_nnz <= exact_nnz <= canonical_nse
+    assert bool(canonical.unique_indices)
+    assert bool(canonical.indices_sorted)
+
+
+def _assert_jax_raw_metadata(raw: Any, raw_nse: int) -> None:
+    """Check raw BCOO storage before duplicate canonicalization."""
+    assert int(raw.nse) == raw_nse
+    assert raw.data.shape == (raw_nse,)
+    assert raw.indices.shape == (raw_nse, 2)
+    assert not bool(raw.unique_indices)
+    assert not bool(raw.indices_sorted)
+
+
+def _sparse_storage_bytes(value: Any) -> int:
+    """Return the host-visible values plus indices storage of a sparse object."""
+    return int(np.asarray(value.data).nbytes + np.asarray(value.indices).nbytes)
+
+
 @pytest.mark.parametrize(("nqubits", "count"), ((10, 64), (16, 256)))
 def test_native_reusable_mvp_warm(
     benchmark: BenchmarkFixture, nqubits: int, count: int
@@ -66,6 +120,98 @@ def test_tensorcircuit_jax_mvp_warm(
     _sync(result)
     np.testing.assert_allclose(
         tc.backend.numpy(result), tc.backend.numpy(expected), rtol=1e-12, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize(("nqubits", "count"), ((8, 32), (10, 64), (12, 64)))
+def test_tensorcircuit_jax_sparse_construction_first(
+    benchmark: BenchmarkFixture, nqubits: int, count: int
+) -> None:
+    """Measure first JAX BCOO construction, including the shape-specialized compile."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    _, structures, _ = make_workload(nqubits, count)
+    weights = tuple(1.0 + index / 100.0 for index in range(count))
+    result = benchmark.pedantic(
+        _make_tensorcircuit_jax_sparse,
+        args=(structures, weights),
+        rounds=1,
+        iterations=1,
+        warmup_rounds=0,
+    )
+    _sync_sparse(result)
+    _assert_jax_raw_metadata(result, count * (1 << nqubits))
+    assert _sparse_storage_bytes(result) > 0
+
+
+@pytest.mark.parametrize(("nqubits", "count"), ((8, 32), (10, 64), (12, 64)))
+def test_tensorcircuit_jax_sparse_sum_duplicates_first(
+    benchmark: BenchmarkFixture, nqubits: int, count: int
+) -> None:
+    """Measure first JAX duplicate canonicalization after raw BCOO construction."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, _ = make_workload(nqubits, count)
+    weights = tuple(1.0 + index / 100.0 for index in range(count))
+    raw = _make_tensorcircuit_jax_sparse(structures, weights)
+    _sync_sparse(raw)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark.pedantic(
+        raw.sum_duplicates, rounds=1, iterations=1, warmup_rounds=0
+    )
+    _sync_sparse(result)
+    _assert_jax_sparse_metadata(raw, result, count * (1 << nqubits), canonical_nnz)
+
+
+@pytest.mark.parametrize(("nqubits", "count"), ((8, 32), (10, 64), (12, 64)))
+def test_tensorcircuit_jax_sparse_construction_warm(
+    benchmark: BenchmarkFixture, nqubits: int, count: int
+) -> None:
+    """Measure warm raw JAX BCOO construction without duplicate canonicalization."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, _ = make_workload(nqubits, count)
+    weights = tuple(1.0 + index / 100.0 for index in range(count))
+    expected = _make_tensorcircuit_jax_sparse(structures, weights)
+    _sync_sparse(expected)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark(_make_tensorcircuit_jax_sparse, structures, weights)
+    _sync_sparse(result)
+    canonical = result.sum_duplicates()
+    _sync_sparse(canonical)
+    _assert_jax_sparse_metadata(
+        result, canonical, count * (1 << nqubits), canonical_nnz
+    )
+    assert _sparse_storage_bytes(result) >= _sparse_storage_bytes(canonical)
+
+
+@pytest.mark.parametrize(("nqubits", "count"), ((8, 32), (10, 64), (12, 64)))
+def test_tensorcircuit_jax_sparse_sum_duplicates_warm(
+    benchmark: BenchmarkFixture, nqubits: int, count: int
+) -> None:
+    """Measure warm JAX canonicalization separately from raw BCOO construction."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, _ = make_workload(nqubits, count)
+    weights = tuple(1.0 + index / 100.0 for index in range(count))
+    raw = _make_tensorcircuit_jax_sparse(structures, weights)
+    _sync_sparse(raw)
+    expected = raw.sum_duplicates()
+    _sync_sparse(expected)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark(raw.sum_duplicates)
+    _sync_sparse(result)
+    _assert_jax_sparse_metadata(raw, result, count * (1 << nqubits), canonical_nnz)
+    np.testing.assert_allclose(
+        np.asarray(result.data), np.asarray(expected.data), rtol=1e-12, atol=1e-12
     )
 
 
