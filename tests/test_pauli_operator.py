@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from reference import dense_operator
 
-from tencirpauli import PauliOperator, PauliWord
+from tencirpauli import PauliOperator, PauliPhase, PauliWord
 
 
 def as_dense(operator: PauliOperator) -> np.ndarray:
@@ -25,6 +25,17 @@ def test_canonical_order_duplicate_aggregation_and_exact_cancellation() -> None:
     assert tuple(term.word.to_string() for term in operator.terms) == ("ZX",)
     assert operator.terms[0].coefficient == 1.0 - 0.25j
     assert PauliOperator.empty(2).terms == ()
+
+
+def test_batch_canonicalization_retains_mapping_and_exact_zero_key() -> None:
+    result = PauliOperator.canonicalize_batch(
+        2,
+        (("ZX", 1.0), ("II", 2.0), ("ZX", -0.25j), ("II", -2.0)),
+    )
+    assert result.canonical_structures == ((0, 0), (3, 1))
+    assert result.coefficients == (0j, 1.0 - 0.25j)
+    assert result.input_to_canonical == (1, 0, 1, 0)
+    assert result.phase_multipliers == (PauliPhase.PLUS_ONE,) * 4
 
 
 def test_random_operator_algebra_matches_numpy_dense_reference() -> None:

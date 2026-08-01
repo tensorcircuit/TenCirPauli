@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union, cast
 
 import numpy as np
 
@@ -14,7 +14,7 @@ from . import _native
 
 if TYPE_CHECKING:
     from .grouping import GroupingResult
-    from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix
+    from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix, NativeMVPPlan
 
 
 class PauliPhase(IntEnum):
@@ -213,6 +213,16 @@ class PauliTerm:
     coefficient: complex
 
 
+@dataclass(frozen=True)
+class CanonicalizationResult:
+    """Deterministic batch canonicalization with backend reduction metadata."""
+
+    canonical_structures: Tuple[Tuple[int, ...], ...]
+    coefficients: Tuple[complex, ...]
+    input_to_canonical: Tuple[int, ...]
+    phase_multipliers: Tuple[PauliPhase, ...]
+
+
 @dataclass(frozen=True, init=False)
 class PauliOperator:
     """A deterministic static Pauli operator with exact-zero aggregation."""
@@ -254,6 +264,48 @@ class PauliOperator:
     ) -> "PauliOperator":
         """Construct and canonicalize mixed string, code, or word terms."""
         return cls(nqubits, terms)
+
+    @classmethod
+    def canonicalize_batch(
+        cls, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
+    ) -> CanonicalizationResult:
+        """Canonicalize a batch while retaining reduction mapping and phases.
+
+        Code-array and string inputs are phase-free, so every returned phase
+        multiplier is ``PauliPhase.PLUS_ONE``. Exact-zero aggregated keys are
+        retained here for backend structural plans; ``from_terms`` removes
+        them for static operators.
+        """
+        if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
+            raise ValueError(f"nqubits must be a non-negative integer, got {nqubits!r}")
+        structures = []
+        coefficients = []
+        for value, coefficient in terms:
+            word = _coerce_word(nqubits, value)
+            normalized = complex(coefficient)
+            if not math.isfinite(normalized.real) or not math.isfinite(normalized.imag):
+                raise ValueError("coefficients must be finite complex128 values")
+            structures.append(word.to_codes())
+            coefficients.append(normalized)
+        result = _native.pauli_canonicalize_batch(
+            nqubits,
+            structures,
+            tuple(value.real for value in coefficients),
+            tuple(value.imag for value in coefficients),
+        )
+        canonical_structures, real, imaginary, mapping, phases = result
+        return CanonicalizationResult(
+            tuple(
+                tuple(int(code) for code in structure)
+                for structure in canonical_structures
+            ),
+            tuple(
+                complex(real_value, imaginary_value)
+                for real_value, imaginary_value in zip(real, imaginary)
+            ),
+            tuple(int(index) for index in mapping),
+            tuple(PauliPhase(int(phase)) for phase in phases),
+        )
 
     @classmethod
     def from_strings(cls, terms: Iterable[Tuple[str, complex]]) -> "PauliOperator":
@@ -398,16 +450,16 @@ class PauliOperator:
         from . import _native
 
         structures, coefficients_re, coefficients_im = self._arrays()
-        dimension, real, imaginary = _native.pauli_dense(
+        dimension, values = _native.pauli_dense_array(
             self.nqubits,
             structures,
             coefficients_re,
             coefficients_im,
             max_bytes,
         )
-        result: np.ndarray[Any, Any] = np.asarray(real, dtype=np.float64).reshape(
+        result: np.ndarray[Any, Any] = np.asarray(values, dtype=np.complex128).reshape(
             (dimension, dimension)
-        ) + 1j * np.asarray(imaginary, dtype=np.float64).reshape((dimension, dimension))
+        )
         return result
 
     def coo(self, max_bytes: int = 256 * 1024 * 1024) -> "COOMatrix":
@@ -416,7 +468,7 @@ class PauliOperator:
         from .hamiltonian import COOMatrix
 
         structures, coefficients_re, coefficients_im = self._arrays()
-        dimension, rows, columns, real, imaginary = _native.pauli_coo(
+        dimension, rows, columns, values = _native.pauli_coo_array(
             self.nqubits,
             structures,
             coefficients_re,
@@ -426,8 +478,7 @@ class PauliOperator:
         return COOMatrix(
             np.asarray(rows, dtype=np.uint64),
             np.asarray(columns, dtype=np.uint64),
-            np.asarray(real, dtype=np.float64)
-            + 1j * np.asarray(imaginary, dtype=np.float64),
+            np.asarray(values, dtype=np.complex128),
             (dimension, dimension),
         )
 
@@ -437,7 +488,7 @@ class PauliOperator:
         from .hamiltonian import CSRMatrix
 
         structures, coefficients_re, coefficients_im = self._arrays()
-        dimension, indptr, indices, real, imaginary = _native.pauli_csr(
+        dimension, indptr, indices, values = _native.pauli_csr_array(
             self.nqubits,
             structures,
             coefficients_re,
@@ -447,8 +498,7 @@ class PauliOperator:
         return CSRMatrix(
             np.asarray(indptr, dtype=np.uint64),
             np.asarray(indices, dtype=np.uint64),
-            np.asarray(real, dtype=np.float64)
-            + 1j * np.asarray(imaginary, dtype=np.float64),
+            np.asarray(values, dtype=np.complex128),
             (dimension, dimension),
         )
 
@@ -464,19 +514,20 @@ class PauliOperator:
         if values.ndim != 1:
             raise ValueError(f"state must be one-dimensional, got shape {values.shape}")
         structures, coefficients_re, coefficients_im = self._arrays()
-        real, imaginary = _native.pauli_mvp(
-            self.nqubits,
-            structures,
-            coefficients_re,
-            coefficients_im,
-            tuple(float(value.real) for value in values),
-            tuple(float(value.imag) for value in values),
-            max_bytes,
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(
+                _native.pauli_mvp_array(
+                    self.nqubits,
+                    structures,
+                    coefficients_re,
+                    coefficients_im,
+                    np.ascontiguousarray(values),
+                    max_bytes,
+                ),
+                dtype=np.complex128,
+            ),
         )
-        result: np.ndarray[Any, Any] = np.asarray(
-            real, dtype=np.float64
-        ) + 1j * np.asarray(imaginary, dtype=np.float64)
-        return result
 
     def backend_mvp_plan(self, max_bytes: int = 256 * 1024 * 1024) -> "BackendMVPPlan":
         """Compile a versioned pure-array plan for backend execution."""
@@ -503,6 +554,27 @@ class PauliOperator:
             + 1j * np.asarray(imaginary, dtype=np.float64),
         )
 
+    def native_mvp_plan(self, max_bytes: int = 256 * 1024 * 1024) -> "NativeMVPPlan":
+        """Compile a reusable Rust-native matrix-free MVP plan."""
+        from . import _native
+        from .hamiltonian import NativeMVPPlan
+
+        structures, coefficients_re, coefficients_im = self._arrays()
+        native_plan = _native.pauli_mvp_plan(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            max_bytes,
+        )
+        if native_plan.nqubits != self.nqubits:
+            raise RuntimeError("native MVP plan has incompatible qubit count")
+        if native_plan.term_count != len(self.terms):
+            raise RuntimeError("native MVP plan has incompatible term count")
+        return NativeMVPPlan(
+            self.nqubits, len(self.terms), native_plan.strategy, native_plan
+        )
+
     def compile(self, target: str, max_bytes: int = 256 * 1024 * 1024) -> Any:
         """Compile one named Hamiltonian target through the public API."""
         if target == "dense":
@@ -514,7 +586,8 @@ class PauliOperator:
         if target == "backend_mvp":
             return self.backend_mvp_plan(max_bytes=max_bytes)
         if target == "native_mvp":
-            return lambda state: self.mvp(state, max_bytes=max_bytes)
+            plan = self.native_mvp_plan(max_bytes=max_bytes)
+            return lambda state: plan.apply(state, max_bytes=max_bytes)
         raise ValueError(
             "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
         )

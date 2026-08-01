@@ -2,6 +2,19 @@ from typing import Sequence
 
 __version__: str
 
+class NativeMvpPlan:
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def term_count(self) -> int: ...
+    @property
+    def strategy(self) -> str: ...
+    def apply(
+        self,
+        state: object,
+        max_bytes: int,
+    ) -> object: ...
+
 def pauli_weight(
     nqubits: int, x_words: Sequence[int], z_words: Sequence[int]
 ) -> int: ...
@@ -33,6 +46,18 @@ def pauli_canonicalize(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
 ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+def pauli_canonicalize_batch(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+) -> tuple[
+    Sequence[Sequence[int]],
+    Sequence[float],
+    Sequence[float],
+    Sequence[int],
+    Sequence[int],
+]: ...
 def pauli_operator_binary(
     nqubits: int,
     left: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
@@ -85,6 +110,13 @@ def pauli_dense(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[float], Sequence[float]]: ...
+def pauli_dense_array(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, object]: ...
 def pauli_coo(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -92,6 +124,13 @@ def pauli_coo(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_coo_array(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, object, object, object]: ...
 def pauli_csr(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -99,6 +138,13 @@ def pauli_csr(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_csr_array(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, object, object, object]: ...
 def pauli_mvp(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -108,6 +154,21 @@ def pauli_mvp(
     state_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[Sequence[float], Sequence[float]]: ...
+def pauli_mvp_array(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    state: object,
+    max_bytes: int,
+) -> object: ...
+def pauli_mvp_plan(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> NativeMvpPlan: ...
 def pauli_backend_plan(
     nqubits: int,
     structures: Sequence[Sequence[int]],

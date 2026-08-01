@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from reference import dense_operator
 
-from tencirpauli import BackendMVPPlan, PauliOperator
+from tencirpauli import BackendMVPPlan, NativeMVPPlan, PauliOperator
 
 
 def make_operator(nqubits: int) -> PauliOperator:
@@ -90,6 +90,51 @@ def test_backend_plan_has_versioned_arrays_and_independent_numpy_executor() -> N
     )
 
 
+def test_native_mvp_plan_reuses_compiled_masks() -> None:
+    operator = make_operator(4)
+    plan = operator.native_mvp_plan()
+    assert isinstance(plan, NativeMVPPlan)
+    assert plan.nqubits == 4
+    assert plan.term_count == len(operator.terms)
+    assert plan.strategy == "x_mask_diagonal"
+    state = np.random.default_rng(20260801).normal(
+        size=16
+    ) + 1j * np.random.default_rng(7).normal(size=16)
+    expected = operator.dense() @ state
+    np.testing.assert_allclose(plan.apply(state), expected, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(plan(state), expected, rtol=1e-12, atol=1e-12)
+
+
+def test_native_mvp_plan_random_complex_differential() -> None:
+    rng = np.random.default_rng(20260801)
+    for nqubits in range(7):
+        structures = tuple(
+            tuple(int(value) for value in rng.integers(0, 4, size=nqubits))
+            for _ in range(24)
+        )
+        coefficients = tuple(
+            complex(float(real), float(imaginary))
+            for real, imaginary in rng.normal(size=(24, 2))
+        )
+        operator = PauliOperator.from_terms(
+            nqubits, tuple(zip(structures, coefficients))
+        )
+        state = rng.normal(size=1 << nqubits) + 1j * rng.normal(size=1 << nqubits)
+        expected = operator.dense() @ state
+        np.testing.assert_allclose(
+            operator.native_mvp_plan().apply(state),
+            expected,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+
+def test_native_mvp_plan_reports_explicit_memory_strategy() -> None:
+    operator = PauliOperator.from_terms(4, (((1, 0, 0, 0), 1.0),))
+    plan = operator.native_mvp_plan(max_bytes=32)
+    assert plan.strategy == "term_direct"
+
+
 def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:
     zero = PauliOperator.empty(0)
     np.testing.assert_array_equal(zero.dense(), np.zeros((1, 1), dtype=np.complex128))
@@ -110,5 +155,9 @@ def test_compile_target_dispatch_is_explicit() -> None:
     np.testing.assert_array_equal(operator.compile("dense"), operator.dense())
     plan = operator.compile("backend_mvp")
     assert isinstance(plan, BackendMVPPlan)
+    native_plan = operator.compile("native_mvp")
+    np.testing.assert_array_equal(
+        native_plan(np.ones(2, dtype=np.complex128)), operator.mvp(np.ones(2))
+    )
     with pytest.raises(ValueError, match="target"):
         operator.compile("unknown")

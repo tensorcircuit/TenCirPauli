@@ -5,15 +5,24 @@ from .grouping import (
     GeneralCommutingGroupingResult,
     QWCGroupingResult,
 )
-from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix
-from .pauli import PauliOperator, PauliPhase, PauliProduct, PauliTerm, PauliWord
+from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix, NativeMVPPlan
+from .pauli import (
+    CanonicalizationResult,
+    PauliOperator,
+    PauliPhase,
+    PauliProduct,
+    PauliTerm,
+    PauliWord,
+)
 
 
 __all__ = [
     "BackendMVPPlan",
     "COOMatrix",
     "CSRMatrix",
+    "CanonicalizationResult",
     "GeneralCommutingGroupingResult",
+    "NativeMVPPlan",
     "PauliOperator",
     "PauliPhase",
     "PauliProduct",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence, Tuple
+from typing import Any, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -55,6 +55,53 @@ class CSRMatrix:
         except ImportError as error:
             raise ImportError("CSR conversion requires scipy") from error
         return csr_matrix((self.data, self.indices, self.indptr), shape=self.shape)
+
+
+@dataclass(frozen=True, init=False)
+class NativeMVPPlan:
+    """Reusable Rust-native matrix-free MVP plan.
+
+    ``strategy`` is ``"x_mask_diagonal"`` for the precomputed diagonal
+    kernel or ``"term_direct"`` when the explicit plan memory limit selects
+    the direct term kernel.
+    """
+
+    nqubits: int
+    term_count: int
+    strategy: str
+    _native_plan: Any
+
+    def __init__(
+        self, nqubits: int, term_count: int, strategy: str, native_plan: Any
+    ) -> None:
+        object.__setattr__(self, "nqubits", nqubits)
+        object.__setattr__(self, "term_count", term_count)
+        object.__setattr__(self, "strategy", strategy)
+        object.__setattr__(self, "_native_plan", native_plan)
+
+    def apply(
+        self,
+        state: Sequence[complex],
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]:
+        """Apply the precompiled Rust plan without rebuilding its structure."""
+        dimension = _dimension(self.nqubits)
+        values = np.asarray(state, dtype=np.complex128)
+        if values.ndim != 1 or values.shape[0] != dimension:
+            raise ValueError(
+                f"state must have shape ({dimension},), got {values.shape}"
+            )
+        contiguous = np.ascontiguousarray(values)
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(
+                self._native_plan.apply(contiguous, max_bytes), dtype=np.complex128
+            ),
+        )
+
+    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
+        """Apply the plan using its default memory limit."""
+        return self.apply(state)
 
 
 @dataclass(frozen=True)
