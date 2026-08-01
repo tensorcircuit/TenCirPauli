@@ -9,6 +9,7 @@
 ## Completed foundation
 
 - 独立 Cargo workspace、pure Rust core crate、PyO3 native crate 和单一 Python package 已建立。
+- P0 NumPy dense reference 与固定 regression vectors 已建立；reference 独立使用 I/X/Y/Z matrices、`np.kron` 和显式 local product table，不调用被测实现。
 - Minimal phase-free `PauliWord` weight/commutation 路径已贯通 Rust、PyO3、Python 和 tests；S1 已确认该 phase-free 方向。
 - Linux/macOS/Windows correctness/package CI 与 GitHub Release/PyPI workflow 已建立。
 - 本地 Criterion + pytest-benchmark 记录/比较基础设施已建立；性能结果不进入 CI 门禁。
@@ -27,19 +28,20 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 
 ## Verification evidence
 
+- P0 targeted tests：`python -m pytest tests/test_numpy_reference.py`，13 passed。
 - Rust format：通过。
 - Rust Clippy `-D warnings`：通过。
 - Rust unit/doc tests：2 passed。
 - Python package tests：3 passed。
 - Black、Ruff、strict mypy：通过。
 - `scripts/check.py --benchmark smoke`：完整通过，包括 Rust/Python benchmark harness。
-- Local benchmark：`bootstrap` 已完成 Rust/Python record 与 compare；它产生于 scaffold 初始 commit 之前，只用于验证基础设施，不是长期性能基线。
+- Local benchmark：`bootstrap` 已完成 Rust/Python record 与 compare；它产生于 scaffold 初始 commit 之前，只用于验证基础设施，不是长期性能基线。P0 的真实 commit benchmark 将在 P0 commit 后记录。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
 
 ## Next actions
 
-1. 完成 P0 NumPy dense reference 与固定 regression vectors。
-2. 记录第一个带真实 commit id 的本机 benchmark baseline。
+1. 在 P0 commit 后记录第一个带真实 commit id 的本机 benchmark baseline。
+2. 进入 P1：完成 PauliWord 代数、批量结构转换和 typed errors。
 
 ## Update protocol
 
