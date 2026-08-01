@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tencir_pauli_core::PauliWord;
+use tencir_pauli_core::{PauliOperator, PauliWord};
 
 const SIZES: [usize; 3] = [64, 1_024, 16_384];
 
@@ -88,12 +88,49 @@ fn benchmark_conversion_and_multiplication(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_canonicalization(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("pauli_operator/canonicalize");
+    for count in [1_000_usize, 10_000, 100_000] {
+        let structures = (0..count)
+            .map(|index| {
+                (0..8)
+                    .map(|qubit| ((index + qubit) % 4) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let coefficients = (0..count)
+            .map(|index| {
+                tencir_pauli_core::Complex64::new(
+                    (index % 7) as f64 - 3.0,
+                    (index % 5) as f64 - 2.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(count),
+            &(&structures, &coefficients),
+            |bencher, (structures_input, coefficients_input)| {
+                bencher.iter(|| {
+                    black_box(PauliOperator::from_terms(
+                        8,
+                        black_box(structures_input),
+                        black_box(coefficients_input),
+                    ))
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
         .sample_size(50);
-    targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication
+    targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication,
+        benchmark_canonicalization
 }
 criterion_main!(benches);

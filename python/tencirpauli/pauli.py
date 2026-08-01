@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Sequence, Tuple, Union
 
 from . import _native
 
@@ -188,6 +189,207 @@ def _ensure_word(other: object) -> None:
 def _ensure_compatible(left: PauliWord, right: object) -> None:
     _ensure_word(right)
     assert isinstance(right, PauliWord)
+    if left.nqubits != right.nqubits:
+        raise ValueError(
+            f"incompatible qubit counts: {left.nqubits} and {right.nqubits}"
+        )
+
+
+PauliInput = Union[PauliWord, str, Sequence[int]]
+
+
+@dataclass(frozen=True)
+class PauliTerm:
+    """One canonical Pauli word and its complex128-compatible coefficient."""
+
+    word: PauliWord
+    coefficient: complex
+
+
+@dataclass(frozen=True, init=False)
+class PauliOperator:
+    """A deterministic static Pauli operator with exact-zero aggregation."""
+
+    nqubits: int
+    terms: Tuple[PauliTerm, ...]
+
+    def __init__(
+        self, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
+    ) -> None:
+        if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
+            raise ValueError(f"nqubits must be a non-negative integer, got {nqubits!r}")
+        structures = []
+        coefficients = []
+        for value, coefficient in terms:
+            word = _coerce_word(nqubits, value)
+            normalized = complex(coefficient)
+            if not math.isfinite(normalized.real) or not math.isfinite(normalized.imag):
+                raise ValueError("coefficients must be finite complex128 values")
+            structures.append(word.to_codes())
+            coefficients.append(normalized)
+        result = _native.pauli_canonicalize(
+            nqubits,
+            structures,
+            tuple(value.real for value in coefficients),
+            tuple(value.imag for value in coefficients),
+        )
+        object.__setattr__(self, "nqubits", nqubits)
+        object.__setattr__(self, "terms", _terms_from_native(nqubits, result))
+
+    @classmethod
+    def empty(cls, nqubits: int) -> "PauliOperator":
+        """Construct the additive identity on ``nqubits``."""
+        return cls(nqubits, ())
+
+    @classmethod
+    def from_terms(
+        cls, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
+    ) -> "PauliOperator":
+        """Construct and canonicalize mixed string, code, or word terms."""
+        return cls(nqubits, terms)
+
+    @classmethod
+    def from_strings(cls, terms: Iterable[Tuple[str, complex]]) -> "PauliOperator":
+        """Construct an operator from strings, inferring the common qubit count."""
+        normalized = tuple(terms)
+        if not normalized:
+            raise ValueError("cannot infer nqubits from an empty term sequence")
+        nqubits = len(normalized[0][0])
+        return cls(nqubits, normalized)
+
+    @classmethod
+    def _from_native(
+        cls,
+        nqubits: int,
+        result: Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
+    ) -> "PauliOperator":
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "nqubits", nqubits)
+        object.__setattr__(instance, "terms", _terms_from_native(nqubits, result))
+        return instance
+
+    def _arrays(
+        self,
+    ) -> Tuple[Tuple[Tuple[int, ...], ...], Tuple[float, ...], Tuple[float, ...]]:
+        structures = tuple(term.word.to_codes() for term in self.terms)
+        coefficients = tuple(term.coefficient for term in self.terms)
+        return (
+            structures,
+            tuple(value.real for value in coefficients),
+            tuple(value.imag for value in coefficients),
+        )
+
+    def add(self, other: "PauliOperator") -> "PauliOperator":
+        """Add two operators and aggregate exact duplicate keys."""
+        _ensure_operator_compatible(self, other)
+        left = self._arrays()
+        right = other._arrays()
+        result = _native.pauli_operator_binary(self.nqubits, left, right, 0)
+        return self._from_native(self.nqubits, result)
+
+    def scale(self, scalar: complex) -> "PauliOperator":
+        """Multiply all coefficients by a finite complex scalar."""
+        normalized = complex(scalar)
+        if not math.isfinite(normalized.real) or not math.isfinite(normalized.imag):
+            raise ValueError("scale must be a finite complex128 value")
+        structures, coefficients_re, coefficients_im = self._arrays()
+        result = _native.pauli_operator_scale(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            normalized.real,
+            normalized.imag,
+        )
+        return self._from_native(self.nqubits, result)
+
+    def multiply(self, other: "PauliOperator") -> "PauliOperator":
+        """Multiply operators, absorbing exact Pauli phases into coefficients."""
+        return self._binary(other, 1)
+
+    def commutator(self, other: "PauliOperator") -> "PauliOperator":
+        """Return ``self * other - other * self``."""
+        return self._binary(other, 2)
+
+    def anticommutator(self, other: "PauliOperator") -> "PauliOperator":
+        """Return ``self * other + other * self``."""
+        return self._binary(other, 3)
+
+    def adjoint(self) -> "PauliOperator":
+        """Return the coefficient-conjugated adjoint operator."""
+        structures, coefficients_re, coefficients_im = self._arrays()
+        result = _native.pauli_operator_adjoint(
+            self.nqubits, structures, coefficients_re, coefficients_im
+        )
+        return self._from_native(self.nqubits, result)
+
+    def is_hermitian(self, tolerance: float = 0.0) -> bool:
+        """Validate Hermiticity using an explicit non-negative tolerance."""
+        if not math.isfinite(tolerance) or tolerance < 0.0:
+            raise ValueError("Hermiticity tolerance must be finite and non-negative")
+        structures, coefficients_re, coefficients_im = self._arrays()
+        return bool(
+            _native.pauli_operator_is_hermitian(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                tolerance,
+            )
+        )
+
+    def _binary(self, other: "PauliOperator", operation: int) -> "PauliOperator":
+        _ensure_operator_compatible(self, other)
+        result = _native.pauli_operator_binary(
+            self.nqubits, self._arrays(), other._arrays(), operation
+        )
+        return self._from_native(self.nqubits, result)
+
+    def __add__(self, other: object) -> "PauliOperator":
+        if not isinstance(other, PauliOperator):
+            return NotImplemented
+        return self.add(other)
+
+    def __mul__(self, scalar: object) -> "PauliOperator":
+        if isinstance(scalar, PauliOperator):
+            return NotImplemented
+        if not isinstance(scalar, (int, float, complex)):
+            return NotImplemented
+        return self.scale(complex(scalar))
+
+    def __rmul__(self, scalar: object) -> "PauliOperator":
+        return self * scalar
+
+
+def _coerce_word(nqubits: int, value: PauliInput) -> PauliWord:
+    if isinstance(value, PauliWord):
+        if value.nqubits != nqubits:
+            raise ValueError(f"expected {nqubits} qubits, got {value.nqubits}")
+        return value
+    if isinstance(value, str):
+        word = PauliWord.from_string(value)
+    else:
+        word = PauliWord.from_codes(value)
+    if word.nqubits != nqubits:
+        raise ValueError(f"expected {nqubits} qubits, got {word.nqubits}")
+    return word
+
+
+def _terms_from_native(
+    nqubits: int,
+    result: Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
+) -> Tuple[PauliTerm, ...]:
+    structures, coefficients_re, coefficients_im = result
+    words = PauliWord.batch_from_codes(nqubits, structures)
+    return tuple(
+        PauliTerm(word, complex(real, imaginary))
+        for word, real, imaginary in zip(words, coefficients_re, coefficients_im)
+    )
+
+
+def _ensure_operator_compatible(left: PauliOperator, right: object) -> None:
+    if not isinstance(right, PauliOperator):
+        raise TypeError(f"expected PauliOperator, got {type(right).__name__}")
     if left.nqubits != right.nqubits:
         raise ValueError(
             f"incompatible qubit counts: {left.nqubits} and {right.nqubits}"

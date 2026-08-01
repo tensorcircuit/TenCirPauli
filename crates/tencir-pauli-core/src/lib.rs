@@ -411,20 +411,24 @@ impl PauliOperator {
                 actual: coefficients.len(),
             });
         }
-        let mut aggregate = BTreeMap::<PauliWord, Complex64>::new();
+        let mut aggregate = BTreeMap::<PauliWord, Vec<Complex64>>::new();
         for (index, (structure, &coefficient)) in structures.iter().zip(coefficients).enumerate() {
             if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
                 return Err(PauliError::NonFiniteCoefficient { index });
             }
             let word = PauliWord::from_codes(nqubits, structure)?;
-            aggregate
-                .entry(word)
-                .and_modify(|value| *value += coefficient)
-                .or_insert(coefficient);
+            aggregate.entry(word).or_default().push(coefficient);
         }
         let terms = aggregate
             .into_iter()
-            .filter_map(|(word, coefficient)| {
+            .filter_map(|(word, mut coefficients)| {
+                // Sort duplicate contributions by their IEEE bit patterns so
+                // aggregation is independent of input order while retaining
+                // the exact-zero policy.
+                coefficients.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
+                let coefficient = coefficients
+                    .into_iter()
+                    .fold(Complex64::default(), |sum, value| sum + value);
                 (!coefficient.is_zero()).then_some(PauliTerm { word, coefficient })
             })
             .collect();
@@ -626,5 +630,26 @@ mod tests {
         .unwrap();
         assert_eq!(operator.terms().len(), 1);
         assert!(operator.is_hermitian(0.0));
+        let reversed = PauliOperator::from_terms(
+            1,
+            &[vec![2], vec![1], vec![1]],
+            &[
+                Complex64::new(2.0, 0.0),
+                Complex64::new(-1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+            ],
+        )
+        .unwrap();
+        let reordered = PauliOperator::from_terms(
+            1,
+            &[vec![1], vec![2], vec![1]],
+            &[
+                Complex64::new(1.0, 0.0),
+                Complex64::new(2.0, 0.0),
+                Complex64::new(-1.0, 0.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(reversed, reordered);
     }
 }

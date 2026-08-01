@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use tencir_pauli_core::{packed_word_count, Complex64, PauliError, PauliOperator, PauliWord};
 
 type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
+type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 
 fn map_error(error: PauliError) -> PyErr {
     let message = error.to_string();
@@ -31,6 +32,28 @@ fn complex_coefficients(re: Vec<f64>, im: Vec<f64>) -> PyResult<Vec<Complex64>> 
         .zip(im)
         .map(|(real, imaginary)| Complex64::new(real, imaginary))
         .collect())
+}
+
+fn operator_output(operator: &PauliOperator) -> CanonicalizeOutput {
+    let mut result_structures = Vec::with_capacity(operator.terms().len());
+    let mut result_re = Vec::with_capacity(operator.terms().len());
+    let mut result_im = Vec::with_capacity(operator.terms().len());
+    for term in operator.terms() {
+        result_structures.push(term.word.codes());
+        result_re.push(term.coefficient.re);
+        result_im.push(term.coefficient.im);
+    }
+    (result_structures, result_re, result_im)
+}
+
+fn build_operator(
+    nqubits: usize,
+    structures: &[Vec<u8>],
+    coefficients_re: &[f64],
+    coefficients_im: &[f64],
+) -> PyResult<PauliOperator> {
+    let coefficients = complex_coefficients(coefficients_re.to_vec(), coefficients_im.to_vec())?;
+    PauliOperator::from_terms(nqubits, structures, &coefficients).map_err(map_error)
 }
 
 #[pyfunction]
@@ -123,18 +146,72 @@ fn pauli_canonicalize(
     coefficients_re: Vec<f64>,
     coefficients_im: Vec<f64>,
 ) -> PyResult<CanonicalizeOutput> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let operator =
-        PauliOperator::from_terms(nqubits, &structures, &coefficients).map_err(map_error)?;
-    let mut result_structures = Vec::with_capacity(operator.terms().len());
-    let mut result_re = Vec::with_capacity(operator.terms().len());
-    let mut result_im = Vec::with_capacity(operator.terms().len());
-    for term in operator.terms() {
-        result_structures.push(term.word.codes());
-        result_re.push(term.coefficient.re);
-        result_im.push(term.coefficient.im);
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    Ok(operator_output(&operator))
+}
+
+#[pyfunction]
+fn pauli_operator_binary(
+    nqubits: usize,
+    left: CanonicalizeInput,
+    right: CanonicalizeInput,
+    operation: u8,
+) -> PyResult<CanonicalizeOutput> {
+    let left_operator = build_operator(nqubits, &left.0, &left.1, &left.2)?;
+    let right_operator = build_operator(nqubits, &right.0, &right.1, &right.2)?;
+    let result = match operation {
+        0 => left_operator.add(&right_operator),
+        1 => left_operator.multiply(&right_operator),
+        2 => left_operator.commutator(&right_operator),
+        3 => left_operator.anticommutator(&right_operator),
+        _ => return Err(PyValueError::new_err("unknown Pauli operator operation")),
     }
-    Ok((result_structures, result_re, result_im))
+    .map_err(map_error)?;
+    Ok(operator_output(&result))
+}
+
+#[pyfunction]
+fn pauli_operator_scale(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    scalar_re: f64,
+    scalar_im: f64,
+) -> PyResult<CanonicalizeOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let result = operator
+        .scale(Complex64::new(scalar_re, scalar_im))
+        .map_err(map_error)?;
+    Ok(operator_output(&result))
+}
+
+#[pyfunction]
+fn pauli_operator_adjoint(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+) -> PyResult<CanonicalizeOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    Ok(operator_output(&operator.adjoint()))
+}
+
+#[pyfunction]
+fn pauli_operator_is_hermitian(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    tolerance: f64,
+) -> PyResult<bool> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(PyValueError::new_err(
+            "Hermiticity tolerance must be finite and non-negative",
+        ));
+    }
+    Ok(operator.is_hermitian(tolerance))
 }
 
 #[pymodule]
@@ -149,5 +226,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_symplectic_inner_product, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_commutes, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_operator_binary, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_operator_scale, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_operator_adjoint, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_operator_is_hermitian, module)?)?;
     Ok(())
 }
