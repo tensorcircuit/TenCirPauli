@@ -21,3 +21,4 @@ Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `Paul
 - Rust 使用 release benchmark profile；Python benchmark 前重新执行 release 模式的 maturin develop。
 - 分开测量纯 Rust kernel、Python/FFI 路径和端到端 workload，避免把跨层收益错误归因于单个 kernel。
 - 对并行算法分别记录单线程与固定线程数 scaling；不要在未知线程池配置下比较结果。
+- Sparse COO 对照必须拆分 TensorCircuit/JAX BCOO 的 first construction（含 shape-specialized compile）、warm raw construction、first/warm `sum_duplicates()` 和 warm matvec；同时报告 raw/padded `nse`、实际 data count、unique/sorted flags 与 values/indices storage，不能把 duplicate BCOO 当作 TenCirPauli canonical COO。
