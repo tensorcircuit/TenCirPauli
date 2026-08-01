@@ -3,9 +3,13 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::mem::size_of;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+use rayon::prelude::*;
+
 /// A small dependency-free complex number used by the native numeric path.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Complex64 {
     /// Real component.
@@ -412,6 +416,234 @@ pub struct PauliTerm {
     pub coefficient: Complex64,
 }
 
+/// Result of deterministic batch canonicalization before static zero removal.
+pub struct Canonicalization {
+    /// Canonical keys and their aggregated coefficients, including exact zeros.
+    pub terms: Vec<PauliTerm>,
+    /// Input-term index to canonical-key index mapping.
+    pub input_to_canonical: Vec<usize>,
+    /// Exact phase carried by each phase-free code-array input term.
+    pub phase_multipliers: Vec<PauliPhase>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MatrixTerm {
+    x_mask: usize,
+    z_mask: usize,
+    weighted_phase: Complex64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MatrixEntry {
+    row: u64,
+    column: u64,
+    value: Complex64,
+}
+
+#[derive(Debug)]
+struct MatrixGroup {
+    x_mask: usize,
+    terms: Vec<MatrixTerm>,
+}
+
+#[derive(Clone, Debug)]
+struct MvpGroup {
+    x_mask: usize,
+    diagonal: Vec<Complex64>,
+}
+
+/// Strategy selected for a reusable matrix-free MVP plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MvpStrategy {
+    /// Store one precomputed diagonal for every distinct X permutation mask.
+    XMaskDiagonal,
+    /// Evaluate every canonical Pauli term directly during application.
+    TermDirect,
+}
+
+/// A reusable, phase-precomputed CPU matrix-free Pauli application plan.
+#[derive(Clone, Debug)]
+pub struct MvpPlan {
+    nqubits: usize,
+    term_count: usize,
+    terms: Option<Vec<MatrixTerm>>,
+    diagonal_groups: Option<Vec<MvpGroup>>,
+    strategy: MvpStrategy,
+}
+
+impl MvpPlan {
+    /// Compile matrix masks and fixed Y phases from a canonical operator.
+    pub fn from_operator(operator: &PauliOperator) -> Result<Self, PauliError> {
+        let terms = operator
+            .terms
+            .iter()
+            .map(matrix_term)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            nqubits: operator.nqubits,
+            term_count: terms.len(),
+            terms: Some(terms),
+            diagonal_groups: None,
+            strategy: MvpStrategy::TermDirect,
+        })
+    }
+
+    /// Compile a reusable plan with one precomputed diagonal per X mask.
+    pub fn from_operator_reusable(
+        operator: &PauliOperator,
+        max_bytes: u128,
+    ) -> Result<Self, PauliError> {
+        let direct = Self::from_operator(operator)?;
+        let dimension = matrix_dimension(operator.nqubits)?;
+        let groups = group_matrix_terms(direct.terms.as_ref().expect("direct terms").clone());
+        let diagonal_bytes = groups
+            .len()
+            .checked_mul(dimension)
+            .and_then(|count| count.checked_mul(size_of::<Complex64>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating reusable MVP plan memory",
+            })?;
+        let term_bytes = direct
+            .terms
+            .as_ref()
+            .expect("direct terms")
+            .len()
+            .checked_mul(size_of::<MatrixTerm>())
+            .ok_or(PauliError::Overflow {
+                context: "estimating reusable MVP term memory",
+            })?;
+        check_allocation(term_bytes as u128, max_bytes)?;
+        if diagonal_bytes as u128 > max_bytes - term_bytes as u128 {
+            return Ok(direct);
+        }
+        let diagonal_groups = groups
+            .into_par_iter()
+            .map(|group| {
+                let mut diagonal = vec![Complex64::default(); dimension];
+                for (column, value) in diagonal.iter_mut().enumerate() {
+                    for term in &group.terms {
+                        let mut contribution = term.weighted_phase;
+                        if (term.z_mask & column).count_ones() & 1 != 0 {
+                            contribution = -contribution;
+                        }
+                        *value += contribution;
+                    }
+                }
+                MvpGroup {
+                    x_mask: group.x_mask,
+                    diagonal,
+                }
+            })
+            .collect();
+        Ok(Self {
+            nqubits: direct.nqubits,
+            term_count: direct.term_count,
+            terms: None,
+            diagonal_groups: Some(diagonal_groups),
+            strategy: MvpStrategy::XMaskDiagonal,
+        })
+    }
+
+    /// Return the number of qubits in this plan.
+    pub fn nqubits(&self) -> usize {
+        self.nqubits
+    }
+
+    /// Return the number of canonical matrix terms in this plan.
+    pub fn term_count(&self) -> usize {
+        self.term_count
+    }
+
+    /// Return the selected application strategy as a stable label.
+    pub fn strategy(&self) -> MvpStrategy {
+        self.strategy
+    }
+
+    /// Apply the plan without materializing a matrix.
+    pub fn apply(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        let mut result = vec![Complex64::default(); dimension];
+        self.apply_into(state, &mut result, max_bytes)?;
+        Ok(result)
+    }
+
+    /// Apply the plan into caller-owned storage without allocating a result.
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        result: &mut [Complex64],
+        max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        if state.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: state.len(),
+            });
+        }
+        if result.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: result.len(),
+            });
+        }
+        check_allocation(
+            dimension as u128 * size_of::<Complex64>() as u128,
+            max_bytes,
+        )?;
+        let work = self
+            .diagonal_groups
+            .as_ref()
+            .map_or(self.term_count, Vec::len)
+            .saturating_mul(dimension);
+        if work >= 1 << 16 {
+            result.par_iter_mut().enumerate().for_each(|(row, output)| {
+                let mut value = Complex64::default();
+                if let Some(groups) = &self.diagonal_groups {
+                    for group in groups {
+                        value += group.diagonal[row ^ group.x_mask] * state[row ^ group.x_mask];
+                    }
+                } else {
+                    for term in self.terms.as_ref().expect("direct terms") {
+                        let column = row ^ term.x_mask;
+                        let contribution = term.weighted_phase * state[column];
+                        if (term.z_mask & column).count_ones() & 1 == 0 {
+                            value += contribution;
+                        } else {
+                            value -= contribution;
+                        }
+                    }
+                }
+                *output = value;
+            });
+        } else {
+            for (row, output) in result.iter_mut().enumerate() {
+                if let Some(groups) = &self.diagonal_groups {
+                    for group in groups {
+                        let column = row ^ group.x_mask;
+                        *output += group.diagonal[column] * state[column];
+                    }
+                } else {
+                    for term in self.terms.as_ref().expect("direct terms") {
+                        let column = row ^ term.x_mask;
+                        let contribution = term.weighted_phase * state[column];
+                        if (term.z_mask & column).count_ones() & 1 == 0 {
+                            *output += contribution;
+                        } else {
+                            *output -= contribution;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A deterministic, canonical Pauli operator.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PauliOperator {
@@ -637,6 +869,52 @@ fn saturation(vertex: usize, incompatible: &[Vec<bool>], colors: &[Option<usize>
     seen.len()
 }
 
+fn canonicalize(
+    nqubits: usize,
+    structures: &[Vec<u8>],
+    coefficients: &[Complex64],
+) -> Result<Canonicalization, PauliError> {
+    if structures.len() != coefficients.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: structures.len(),
+            actual: coefficients.len(),
+        });
+    }
+    let mut aggregate = BTreeMap::<PauliWord, Vec<(usize, Complex64)>>::new();
+    for (index, (structure, &coefficient)) in structures.iter().zip(coefficients).enumerate() {
+        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+        let word = PauliWord::from_codes(nqubits, structure)?;
+        aggregate
+            .entry(word)
+            .or_default()
+            .push((index, coefficient));
+    }
+    let mut terms = Vec::with_capacity(aggregate.len());
+    let mut input_to_canonical = vec![0_usize; structures.len()];
+    for (canonical_index, (word, mut contributions)) in aggregate.into_iter().enumerate() {
+        for (input_index, _) in &contributions {
+            input_to_canonical[*input_index] = canonical_index;
+        }
+        // Sort duplicate contributions by their IEEE bit patterns so
+        // aggregation is independent of input order while retaining the
+        // exact-zero policy. Input indices are a final deterministic tie-break.
+        contributions
+            .sort_by_key(|(index, value)| (value.re.to_bits(), value.im.to_bits(), *index));
+        let coefficient = contributions
+            .into_iter()
+            .map(|(_, value)| value)
+            .fold(Complex64::default(), |sum, value| sum + value);
+        terms.push(PauliTerm { word, coefficient });
+    }
+    Ok(Canonicalization {
+        terms,
+        input_to_canonical,
+        phase_multipliers: vec![PauliPhase::PlusOne; structures.len()],
+    })
+}
+
 impl PauliOperator {
     /// Construct an operator, aggregate duplicate words, sort by code tuple,
     /// and remove only exact-zero coefficients.
@@ -661,18 +939,27 @@ impl PauliOperator {
         }
         let terms = aggregate
             .into_iter()
-            .filter_map(|(word, mut coefficients)| {
+            .filter_map(|(word, mut values)| {
                 // Sort duplicate contributions by their IEEE bit patterns so
                 // aggregation is independent of input order while retaining
                 // the exact-zero policy.
-                coefficients.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
-                let coefficient = coefficients
+                values.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
+                let coefficient = values
                     .into_iter()
                     .fold(Complex64::default(), |sum, value| sum + value);
                 (!coefficient.is_zero()).then_some(PauliTerm { word, coefficient })
             })
             .collect();
         Ok(Self { nqubits, terms })
+    }
+
+    /// Canonicalize a batch while retaining input mapping and exact zeros.
+    pub fn canonicalize(
+        nqubits: usize,
+        structures: &[Vec<u8>],
+        coefficients: &[Complex64],
+    ) -> Result<Canonicalization, PauliError> {
+        canonicalize(nqubits, structures, coefficients)
     }
 
     /// Construct an empty operator on `nqubits`.
@@ -788,13 +1075,39 @@ impl PauliOperator {
                 context: "estimating dense matrix entries",
             })?;
         check_allocation(entries as u128 * 16, max_bytes)?;
+        let terms = self
+            .terms
+            .iter()
+            .map(matrix_term)
+            .collect::<Result<Vec<_>, _>>()?;
         let mut matrix = vec![Complex64::default(); entries];
-        for term in &self.terms {
-            let x_mask = matrix_x_mask(&term.word)?;
-            for column in 0..dimension {
-                let row = column ^ x_mask;
-                let phase = matrix_phase(&term.word, column);
-                matrix[row * dimension + column] += term.coefficient * phase;
+        let work = terms.len().saturating_mul(dimension);
+        if work >= 1 << 16 {
+            matrix
+                .par_chunks_mut(dimension)
+                .enumerate()
+                .for_each(|(row, output)| {
+                    for term in &terms {
+                        let column = row ^ term.x_mask;
+                        let contribution = term.weighted_phase;
+                        if (term.z_mask & column).count_ones() & 1 == 0 {
+                            output[column] += contribution;
+                        } else {
+                            output[column] -= contribution;
+                        }
+                    }
+                });
+        } else {
+            for (row, output) in matrix.chunks_exact_mut(dimension).enumerate() {
+                for term in &terms {
+                    let column = row ^ term.x_mask;
+                    let contribution = term.weighted_phase;
+                    if (term.z_mask & column).count_ones() & 1 == 0 {
+                        output[column] += contribution;
+                    } else {
+                        output[column] -= contribution;
+                    }
+                }
             }
         }
         Ok((dimension, matrix))
@@ -802,36 +1115,25 @@ impl PauliOperator {
 
     /// Compile deterministic, duplicate-aggregated COO entries.
     pub fn coo_matrix(&self, max_bytes: u128) -> Result<CooMatrix, PauliError> {
-        let dimension = matrix_dimension(self.nqubits)?;
-        let upper_bound = self
-            .terms
-            .len()
-            .checked_mul(dimension)
-            .ok_or(PauliError::Overflow {
-                context: "estimating COO entries",
-            })?;
-        check_allocation(upper_bound as u128 * 40, max_bytes)?;
-        let mut entries = BTreeMap::<(u64, u64), Complex64>::new();
-        for term in &self.terms {
-            let x_mask = matrix_x_mask(&term.word)?;
-            for column in 0..dimension {
-                let row = column ^ x_mask;
-                let value = term.coefficient * matrix_phase(&term.word, column);
-                entries
-                    .entry((row as u64, column as u64))
-                    .and_modify(|current| *current += value)
-                    .or_insert(value);
-            }
-        }
+        let (dimension, groups, upper_bound) = self.matrix_groups()?;
+        let candidate_bytes = size_of::<MatrixEntry>() as u128;
+        let output_bytes = (2 * size_of::<u64>() + size_of::<Complex64>()) as u128;
+        check_allocation(
+            (upper_bound as u128)
+                .checked_mul(candidate_bytes + output_bytes)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating COO working memory",
+                })?,
+            max_bytes,
+        )?;
+        let entries = sparse_entries(dimension, &groups, upper_bound);
         let mut rows = Vec::with_capacity(entries.len());
         let mut columns = Vec::with_capacity(entries.len());
         let mut values = Vec::with_capacity(entries.len());
-        for ((row, column), value) in entries {
-            if !value.is_zero() {
-                rows.push(row);
-                columns.push(column);
-                values.push(value);
-            }
+        for entry in entries {
+            rows.push(entry.row);
+            columns.push(entry.column);
+            values.push(entry.value);
         }
         Ok(CooMatrix {
             dimension,
@@ -843,41 +1145,68 @@ impl PauliOperator {
 
     /// Compile deterministic CSR from the canonical COO stream.
     pub fn csr_matrix(&self, max_bytes: u128) -> Result<CsrMatrix, PauliError> {
-        let coo = self.coo_matrix(max_bytes)?;
-        let mut indptr = vec![0_u64; coo.dimension + 1];
-        for &row in &coo.rows {
-            indptr[row as usize + 1] += 1;
+        let (dimension, groups, upper_bound) = self.matrix_groups()?;
+        let candidate_bytes = size_of::<MatrixEntry>() as u128;
+        let output_bytes = (size_of::<u64>() as u128)
+            .checked_mul((dimension + 1) as u128)
+            .and_then(|indptr_bytes| {
+                (size_of::<u64>() as u128 + size_of::<Complex64>() as u128)
+                    .checked_mul(upper_bound as u128)
+                    .and_then(|entries_bytes| indptr_bytes.checked_add(entries_bytes))
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating CSR working memory",
+            })?;
+        check_allocation(
+            (upper_bound as u128)
+                .checked_mul(candidate_bytes)
+                .and_then(|candidate| candidate.checked_add(output_bytes))
+                .ok_or(PauliError::Overflow {
+                    context: "estimating CSR working memory",
+                })?,
+            max_bytes,
+        )?;
+        let entries = sparse_entries(dimension, &groups, upper_bound);
+        let mut indptr = vec![0_u64; dimension + 1];
+        for entry in &entries {
+            let row = entry.row as usize;
+            indptr[row + 1] += 1;
         }
         for row in 1..indptr.len() {
             indptr[row] += indptr[row - 1];
         }
+        let mut columns = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for entry in entries {
+            columns.push(entry.column);
+            values.push(entry.value);
+        }
         Ok(CsrMatrix {
-            dimension: coo.dimension,
+            dimension,
             indptr,
-            columns: coo.columns,
-            values: coo.values,
+            columns,
+            values,
         })
     }
 
     /// Apply the operator without materializing a matrix.
     pub fn mvp(&self, state: &[Complex64], max_bytes: u128) -> Result<Vec<Complex64>, PauliError> {
-        let dimension = matrix_dimension(self.nqubits)?;
-        if state.len() != dimension {
-            return Err(PauliError::InvalidStructureLength {
-                expected: dimension,
-                actual: state.len(),
-            });
-        }
-        check_allocation(dimension as u128 * 16, max_bytes)?;
-        let mut result = vec![Complex64::default(); dimension];
-        for term in &self.terms {
-            let x_mask = matrix_x_mask(&term.word)?;
-            for (column, state_value) in state.iter().enumerate() {
-                let row = column ^ x_mask;
-                result[row] += term.coefficient * matrix_phase(&term.word, column) * *state_value;
-            }
-        }
-        Ok(result)
+        MvpPlan::from_operator(self)?.apply(state, max_bytes)
+    }
+
+    /// Apply a one-shot matrix-free plan into caller-owned storage.
+    pub fn mvp_into(
+        &self,
+        state: &[Complex64],
+        result: &mut [Complex64],
+        max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        MvpPlan::from_operator(self)?.apply_into(state, result, max_bytes)
+    }
+
+    /// Compile a reusable CPU matrix-free application plan.
+    pub fn mvp_plan(&self, max_bytes: u128) -> Result<MvpPlan, PauliError> {
+        MvpPlan::from_operator_reusable(self, max_bytes)
     }
 
     /// Return a versioned pure-array backend MVP plan.
@@ -905,6 +1234,23 @@ impl PauliOperator {
             coefficients,
         })
     }
+
+    fn matrix_groups(&self) -> Result<(usize, Vec<MatrixGroup>, usize), PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        let terms = self
+            .terms
+            .iter()
+            .map(matrix_term)
+            .collect::<Result<Vec<_>, _>>()?;
+        let groups = group_matrix_terms(terms);
+        let upper_bound = groups
+            .len()
+            .checked_mul(dimension)
+            .ok_or(PauliError::Overflow {
+                context: "estimating sparse matrix entries",
+            })?;
+        Ok((dimension, groups, upper_bound))
+    }
 }
 
 fn matrix_dimension(nqubits: usize) -> Result<usize, PauliError> {
@@ -927,38 +1273,83 @@ fn check_allocation(requested: u128, limit: u128) -> Result<(), PauliError> {
     Ok(())
 }
 
-fn matrix_x_mask(word: &PauliWord) -> Result<usize, PauliError> {
+fn matrix_term(term: &PauliTerm) -> Result<MatrixTerm, PauliError> {
+    let word = &term.word;
     if word.nqubits >= usize::BITS as usize {
         return Err(PauliError::Overflow {
             context: "converting matrix X mask",
         });
     }
-    let mut mask = 0_usize;
-    for (qubit, code) in word.codes().into_iter().enumerate() {
-        if code == 1 || code == 2 {
-            mask |= 1_usize << (word.nqubits - 1 - qubit);
+    let mut x_mask = 0_usize;
+    let mut z_mask = 0_usize;
+    let mut y_count = 0_u32;
+    for qubit in 0..word.nqubits {
+        let packed_mask = 1_u64 << (qubit % 64);
+        let x = word.x_words[qubit / 64] & packed_mask != 0;
+        let z = word.z_words[qubit / 64] & packed_mask != 0;
+        let matrix_mask = 1_usize << (word.nqubits - 1 - qubit);
+        if x {
+            x_mask |= matrix_mask;
+        }
+        if z {
+            z_mask |= matrix_mask;
+        }
+        if x && z {
+            y_count += 1;
         }
     }
-    Ok(mask)
+    let y_phase = match y_count % 4 {
+        0 => Complex64::new(1.0, 0.0),
+        1 => Complex64::new(0.0, 1.0),
+        2 => Complex64::new(-1.0, 0.0),
+        _ => Complex64::new(0.0, -1.0),
+    };
+    Ok(MatrixTerm {
+        x_mask,
+        z_mask,
+        weighted_phase: term.coefficient * y_phase,
+    })
 }
 
-fn matrix_phase(word: &PauliWord, column: usize) -> Complex64 {
-    let mut phase = Complex64::new(1.0, 0.0);
-    for (qubit, code) in word.codes().into_iter().enumerate() {
-        let bit = (column >> (word.nqubits - 1 - qubit)) & 1;
-        match code {
-            2 => {
-                phase *= if bit == 0 {
-                    Complex64::new(0.0, 1.0)
-                } else {
-                    Complex64::new(0.0, -1.0)
-                };
+fn group_matrix_terms(terms: Vec<MatrixTerm>) -> Vec<MatrixGroup> {
+    let mut grouped = BTreeMap::<usize, Vec<MatrixTerm>>::new();
+    for term in terms {
+        grouped.entry(term.x_mask).or_default().push(term);
+    }
+    grouped
+        .into_iter()
+        .map(|(x_mask, terms)| MatrixGroup { x_mask, terms })
+        .collect()
+}
+
+fn sparse_entries(
+    dimension: usize,
+    groups: &[MatrixGroup],
+    upper_bound: usize,
+) -> Vec<MatrixEntry> {
+    let mut entries = Vec::with_capacity(upper_bound);
+    for row in 0..dimension {
+        for group in groups {
+            let column = row ^ group.x_mask;
+            let mut value = Complex64::default();
+            for term in &group.terms {
+                let mut contribution = term.weighted_phase;
+                if (term.z_mask & column).count_ones() & 1 != 0 {
+                    contribution = -contribution;
+                }
+                value += contribution;
             }
-            3 if bit == 1 => phase *= -1.0,
-            _ => {}
+            if !value.is_zero() {
+                entries.push(MatrixEntry {
+                    row: row as u64,
+                    column: column as u64,
+                    value,
+                });
+            }
         }
     }
-    phase
+    entries.sort_unstable_by_key(|entry| (entry.row, entry.column));
+    entries
 }
 
 /// Convert a qubit count to a packed word count without integer overflow.

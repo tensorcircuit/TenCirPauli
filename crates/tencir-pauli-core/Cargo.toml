@@ -11,6 +11,9 @@ description = "Pure Rust Pauli algebra core for TenCirPauli"
 name = "tencir_pauli_core"
 path = "src/lib.rs"
 
+[dependencies]
+rayon = "1.10"
+
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
 

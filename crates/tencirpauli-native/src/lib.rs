@@ -1,18 +1,118 @@
 //! Private PyO3 extension for the public `tencirpauli` Python package.
 
+use numpy::{
+    Complex64 as NumpyComplex128, PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadwriteArray1,
+};
 use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     compatibility_matrix, group_words, incompatibility_edges, packed_word_count, Complex64,
-    GroupingAlgorithm, GroupingMode, PauliError, PauliOperator, PauliWord,
+    GroupingAlgorithm, GroupingMode, MvpPlan, MvpStrategy, PauliError, PauliOperator, PauliWord,
 };
 
 type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
+type CanonicalizeBatchOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>, Vec<usize>, Vec<u8>);
 type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 type DenseOutput = (usize, Vec<f64>, Vec<f64>);
 type CooOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 type CsrOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 type BackendPlanOutput = (u8, usize, usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
+type NumpySparseOutput<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+
+fn core_complex_slice(values: &[NumpyComplex128]) -> &[Complex64] {
+    debug_assert_eq!(
+        std::mem::size_of::<NumpyComplex128>(),
+        std::mem::size_of::<Complex64>()
+    );
+    debug_assert_eq!(
+        std::mem::align_of::<NumpyComplex128>(),
+        std::mem::align_of::<Complex64>()
+    );
+    // SAFETY: NumPy complex128 is num_complex::Complex<f64>, which is repr(C)
+    // with the same two f64 fields as the core's repr(C) Complex64. The input
+    // borrow remains alive for the returned slice and no mutable alias is made.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<Complex64>(), values.len()) }
+}
+
+fn core_complex_slice_mut(values: &mut [NumpyComplex128]) -> &mut [Complex64] {
+    debug_assert_eq!(
+        std::mem::size_of::<NumpyComplex128>(),
+        std::mem::size_of::<Complex64>()
+    );
+    debug_assert_eq!(
+        std::mem::align_of::<NumpyComplex128>(),
+        std::mem::align_of::<Complex64>()
+    );
+    // SAFETY: See core_complex_slice. The caller holds the exclusive NumPy
+    // read-write borrow, so the returned core slice is the only mutable view.
+    unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<Complex64>(), values.len()) }
+}
+
+fn numpy_complex_array<'py>(
+    py: Python<'py>,
+    values: Vec<Complex64>,
+) -> Bound<'py, PyArray1<NumpyComplex128>> {
+    PyArray1::from_vec(
+        py,
+        values
+            .into_iter()
+            .map(|value| NumpyComplex128::new(value.re, value.im))
+            .collect(),
+    )
+}
+
+#[pyclass(module = "tencirpauli._native")]
+struct NativeMvpPlan {
+    plan: MvpPlan,
+}
+
+#[pymethods]
+impl NativeMvpPlan {
+    #[getter]
+    fn nqubits(&self) -> usize {
+        self.plan.nqubits()
+    }
+
+    #[getter]
+    fn term_count(&self) -> usize {
+        self.plan.term_count()
+    }
+
+    #[getter]
+    fn strategy(&self) -> &'static str {
+        match self.plan.strategy() {
+            MvpStrategy::XMaskDiagonal => "x_mask_diagonal",
+            MvpStrategy::TermDirect => "term_direct",
+        }
+    }
+
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: usize,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_array = PyArray1::zeros(py, state_slice.len(), false);
+        let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
+        let output_slice = writable
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let state = core_complex_slice(state_slice);
+        let output = core_complex_slice_mut(output_slice);
+        py.allow_threads(|| self.plan.apply_into(state, output, max_bytes as u128))
+            .map_err(map_error)?;
+        drop(writable);
+        Ok(output_array)
+    }
+}
 
 fn map_error(error: PauliError) -> PyErr {
     let message = error.to_string();
@@ -52,6 +152,15 @@ fn operator_output(operator: &PauliOperator) -> CanonicalizeOutput {
         result_im.push(term.coefficient.im);
     }
     (result_structures, result_re, result_im)
+}
+
+fn phase_code(phase: tencir_pauli_core::PauliPhase) -> u8 {
+    match phase {
+        tencir_pauli_core::PauliPhase::PlusOne => 0,
+        tencir_pauli_core::PauliPhase::PlusI => 1,
+        tencir_pauli_core::PauliPhase::MinusOne => 2,
+        tencir_pauli_core::PauliPhase::MinusI => 3,
+    }
 }
 
 fn split_complex(values: &[Complex64]) -> (Vec<f64>, Vec<f64>) {
@@ -163,6 +272,37 @@ fn pauli_canonicalize(
 }
 
 #[pyfunction]
+fn pauli_canonicalize_batch(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+) -> PyResult<CanonicalizeBatchOutput> {
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+    let result =
+        PauliOperator::canonicalize(nqubits, &structures, &coefficients).map_err(map_error)?;
+    let mut result_structures = Vec::with_capacity(result.terms.len());
+    let mut result_re = Vec::with_capacity(result.terms.len());
+    let mut result_im = Vec::with_capacity(result.terms.len());
+    for term in result.terms {
+        result_structures.push(term.word.codes());
+        result_re.push(term.coefficient.re);
+        result_im.push(term.coefficient.im);
+    }
+    Ok((
+        result_structures,
+        result_re,
+        result_im,
+        result.input_to_canonical,
+        result
+            .phase_multipliers
+            .into_iter()
+            .map(phase_code)
+            .collect(),
+    ))
+}
+
+#[pyfunction]
 fn pauli_operator_binary(
     nqubits: usize,
     left: CanonicalizeInput,
@@ -243,6 +383,22 @@ fn pauli_dense(
 }
 
 #[pyfunction]
+fn pauli_dense_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<(usize, Bound<'py, PyArray1<NumpyComplex128>>)> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let (dimension, values) = operator
+        .dense_matrix(max_bytes as u128)
+        .map_err(map_error)?;
+    Ok((dimension, numpy_complex_array(py, values)))
+}
+
+#[pyfunction]
 fn pauli_coo(
     nqubits: usize,
     structures: Vec<Vec<u8>>,
@@ -259,6 +415,25 @@ fn pauli_coo(
         matrix.columns,
         real,
         imaginary,
+    ))
+}
+
+#[pyfunction]
+fn pauli_coo_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NumpySparseOutput<'py>> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let matrix = operator.coo_matrix(max_bytes as u128).map_err(map_error)?;
+    Ok((
+        matrix.dimension,
+        PyArray1::from_vec(py, matrix.rows),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
     ))
 }
 
@@ -283,6 +458,25 @@ fn pauli_csr(
 }
 
 #[pyfunction]
+fn pauli_csr_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NumpySparseOutput<'py>> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let matrix = operator.csr_matrix(max_bytes as u128).map_err(map_error)?;
+    Ok((
+        matrix.dimension,
+        PyArray1::from_vec(py, matrix.indptr),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
+    ))
+}
+
+#[pyfunction]
 fn pauli_mvp(
     nqubits: usize,
     structures: Vec<Vec<u8>>,
@@ -296,6 +490,46 @@ fn pauli_mvp(
     let state = complex_coefficients(state_re, state_im)?;
     let values = operator.mvp(&state, max_bytes as u128).map_err(map_error)?;
     Ok(split_complex(&values))
+}
+
+#[pyfunction]
+fn pauli_mvp_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    state: PyReadonlyArray1<'py, NumpyComplex128>,
+    max_bytes: usize,
+) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let state_slice = state
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+    let output_array = PyArray1::zeros(py, state_slice.len(), false);
+    let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
+    let output_slice = writable
+        .as_slice_mut()
+        .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+    let state = core_complex_slice(state_slice);
+    let output = core_complex_slice_mut(output_slice);
+    py.allow_threads(|| operator.mvp_into(state, output, max_bytes as u128))
+        .map_err(map_error)?;
+    drop(writable);
+    Ok(output_array)
+}
+
+#[pyfunction]
+fn pauli_mvp_plan(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NativeMvpPlan> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let plan = operator.mvp_plan(max_bytes as u128).map_err(map_error)?;
+    Ok(NativeMvpPlan { plan })
 }
 
 #[pyfunction]
@@ -386,6 +620,7 @@ fn pauli_incompatibility_edges(
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add_class::<NativeMvpPlan>()?;
     module.add_function(wrap_pyfunction!(pauli_weight, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_support, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_codes, module)?)?;
@@ -395,14 +630,20 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_symplectic_inner_product, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_commutes, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_canonicalize_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_binary, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_scale, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_adjoint, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_is_hermitian, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_dense, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_dense_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_coo, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_coo_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_csr, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_csr_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_mvp, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_mvp_array, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_mvp_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;

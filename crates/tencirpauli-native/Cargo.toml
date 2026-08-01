@@ -14,5 +14,6 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+numpy = "0.23"
 pyo3.workspace = true
 tencir-pauli-core = { path = "../tencir-pauli-core" }

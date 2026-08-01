@@ -187,6 +187,79 @@ fn benchmark_hamiltonian(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_hamiltonian_scaling(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("hamiltonian/scaling");
+    for (nqubits, count) in [(10_usize, 64_usize), (16, 256)] {
+        let structures = (0..count)
+            .map(|index| {
+                (0..nqubits)
+                    .map(|qubit| ((index / 4_usize.pow(qubit as u32)) % 4) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let coefficients = (0..count)
+            .map(|index| tencir_pauli_core::Complex64::new(1.0 + index as f64 / 100.0, 0.0))
+            .collect::<Vec<_>>();
+        let operator = PauliOperator::from_terms(nqubits, &structures, &coefficients).unwrap();
+        let plan = operator.mvp_plan(u128::MAX).unwrap();
+        let state = (0..(1_usize << nqubits))
+            .map(|index| {
+                tencir_pauli_core::Complex64::new((index as f64).sin(), (index as f64).cos())
+            })
+            .collect::<Vec<_>>();
+        group.throughput(Throughput::Elements((count * (1_usize << nqubits)) as u64));
+        group.bench_with_input(
+            BenchmarkId::new(
+                "reusable_plan_construction",
+                format!("{nqubits}q_{count}terms"),
+            ),
+            &operator,
+            |bencher, operator_input| {
+                bencher.iter(|| black_box(operator_input.mvp_plan(u128::MAX).unwrap()));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("operator_mvp", format!("{nqubits}q_{count}terms")),
+            &(&operator, &state),
+            |bencher, (operator_input, state_input)| {
+                bencher.iter(|| {
+                    black_box(
+                        operator_input
+                            .mvp(black_box(state_input), u128::MAX)
+                            .unwrap(),
+                    )
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("reusable_plan_apply", format!("{nqubits}q_{count}terms")),
+            &(&plan, &state),
+            |bencher, (plan_input, state_input)| {
+                bencher.iter(|| {
+                    black_box(plan_input.apply(black_box(state_input), u128::MAX).unwrap())
+                });
+            },
+        );
+        if nqubits <= 12 {
+            group.bench_with_input(
+                BenchmarkId::new("coo", format!("{nqubits}q_{count}terms")),
+                &operator,
+                |bencher, operator_input| {
+                    bencher.iter(|| black_box(operator_input.coo_matrix(u128::MAX).unwrap()));
+                },
+            );
+            group.bench_with_input(
+                BenchmarkId::new("csr", format!("{nqubits}q_{count}terms")),
+                &operator,
+                |bencher, operator_input| {
+                    bencher.iter(|| black_box(operator_input.csr_matrix(u128::MAX).unwrap()));
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -194,6 +267,7 @@ criterion_group! {
         .measurement_time(Duration::from_secs(2))
         .sample_size(50);
     targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication,
-        benchmark_canonicalization, benchmark_grouping, benchmark_hamiltonian
+        benchmark_canonicalization, benchmark_grouping, benchmark_hamiltonian,
+        benchmark_hamiltonian_scaling
 }
 criterion_main!(benches);
