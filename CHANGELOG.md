@@ -6,7 +6,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
-- Bootstrap the Rust workspace, PyO3 extension, Python package, tests, and CI.
-- Add local Rust/Python benchmark history and manual comparison tooling.
-- Add implementation-ready semantics, Phase 1 milestones, and durable agent status documents.
-- Enforce Rustfmt/Clippy and Black/Ruff/mypy quality gates.
+- Complete the Phase 1 PauliWord, PauliOperator, deterministic grouping, and Hamiltonian compiler vertical slices.
+- Add an independent NumPy dense reference, fixed regression vectors, Rust/PyO3 batch conversion, and deterministic release-mode benchmarks.
+- Add dense/COO/CSR/native MVP/backend MVP targets with explicit allocation guards and a lazy optional TensorCircuit adapter.
+- Refresh the public README, typing surface, examples, and implementation-status evidence.

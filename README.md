@@ -1,63 +1,60 @@
 # TenCirPauli
 
-TenCirPauli is an experimental Rust-native Pauli algebra and propagation library with a first-class Python API. It is developed independently from TensorCircuit while keeping compatible Pauli, gate, qubit-ordering, and Hamiltonian conventions through an optional integration layer.
+TenCirPauli is a Rust-native Pauli algebra, deterministic measurement grouping, and Hamiltonian compiler with a typed Python API compatible with TensorCircuit's Pauli codes and qubit-ordering conventions.
 
-The initial scope includes bit-packed Pauli words, Pauli operator algebra, commuting measurement groups, Hamiltonian matrix/MVP plans, symmetry analysis, and dynamic Pauli-weight-truncated propagation. The implementation does not reproduce TensorCircuit's fixed-buffer top-k sparse propagation.
+The Phase 1 public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, and a versioned backend MVP plan. Symmetry analysis, GateTape, Pauli propagation, and native gradients are intentionally outside Phase 1.
 
 ## Architecture
 
 ```text
-tencir-pauli-core        Pure Rust algorithms; no Python or TensorCircuit dependency
+tencir-pauli-core        Pure Rust algebra, grouping, and Hamiltonian algorithms
         │
         ▼
-tencirpauli-native       PyO3 binding compiled as tencirpauli._native
+tencirpauli-native       Thin PyO3 batch facade, private tencirpauli._native module
         │
         ▼
-tencirpauli              The only public Python package and PyPI distribution
-        └── integrations.tensorcircuit   Optional adapter
+tencirpauli              Typed public Python package
+        └── integrations.tensorcircuit   Optional lazy backend-plan adapter
 ```
 
-## Development status
+The Rust core uses external codes `0=I`, `1=X`, `2=Y`, `3=Z`, packed qubit zero as LSB, and exact four-valued multiplication phases. Matrix targets explicitly map qubit zero to the MSB, matching TensorCircuit's computational-basis ordering. Native numeric coefficients are complex128-compatible and duplicate terms are aggregated deterministically before exact-zero removal.
 
-The project is in bootstrap stage. The current implementation provides a minimal end-to-end `PauliWord` path for validating the Rust core, PyO3 extension, Python wrapper, packaging, and tests. See the [vibe design index](docs/vibe/README.md) for the planned architecture, release process, and acceptance gates.
+## Installation
 
-## Local development
+Install a released wheel or source distribution with `pip install tencirpauli`. For local development, create an environment containing Python, Rust/Cargo, maturin, NumPy, pytest, and the quality tools, then run `maturin develop --release`.
 
-Create an isolated environment containing Python, Rust/Cargo, and maturin, then build the mixed project:
-
-```bash
-conda create -n tencirpauli-dev python=3.11 pip
-conda activate tencirpauli-dev
-conda install -c conda-forge rust maturin pytest
-maturin develop --release
-pytest
-```
-
-Run the repository quality checks with:
-
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-black --check python tests benchmarks scripts
-ruff check python tests benchmarks scripts
-mypy
-```
-
-The complete local pre-commit workflow is `python scripts/check.py`; add `--fix` before staging to apply rustfmt and Black. Enable the tracked hook once per clone with `git config core.hooksPath .githooks`. The hook runs all format, lint, type, test, and local benchmark recording steps before Git accepts a commit.
-
-Project-specific local paths belong in the ignored `AGENTS.local.md`, not in committed files.
+TensorCircuit integration is optional: `pip install 'tencirpauli[tensorcircuit]'`. If it is not installed, importing `tencirpauli` still works; explicitly requesting the adapter raises an actionable `ImportError`.
 
 ## Python example
 
 ```python
-from tencirpauli import PauliWord
+import numpy as np
 
-x0 = PauliWord(nqubits=2, x_words=(0b01,), z_words=(0,))
-z0 = PauliWord(nqubits=2, x_words=(0,), z_words=(0b01,))
+from tencirpauli import PauliOperator, PauliWord
 
-assert x0.weight == 1
-assert not x0.commutes_with(z0)
+word = PauliWord.from_string("XYZ")
+product = PauliWord.from_string("X").multiply(PauliWord.from_string("Y"))
+assert product.word.to_string() == "Z"
+
+hamiltonian = PauliOperator.from_terms(
+    3,
+    (("ZZI", 1.0), ("IZZ", 0.5), ("XII", 0.25)),
+)
+groups = hamiltonian.group_commuting(mode="qubit_wise")
+matrix = hamiltonian.dense()
+state = np.ones(2**3, dtype=np.complex128)
+np.testing.assert_allclose(hamiltonian.mvp(state), matrix @ state)
+plan = hamiltonian.backend_mvp_plan()
+np.testing.assert_allclose(plan.apply(state), matrix @ state)
 ```
+
+`PauliOperator.group_commuting(mode="general")` returns an explicitly algebraic prototype with `measurement_ready=False`; it must not be used as a local single-qubit measurement plan. QWC reconstruction uses the returned group masks and rotated measurement bitstrings.
+
+## Development checks
+
+Run `python scripts/check.py --fix --benchmark smoke` while editing and `python scripts/check.py` before a local commit. The repository also records release-mode Rust Criterion and Python pytest-benchmark results under the ignored `.benchmarks/` directory; use `python benchmarks/run.py compare <baseline-label>` for same-machine comparisons.
+
+The independent dense NumPy oracle and fixed P0 regression vectors are documented in [`docs/vibe/reference-vectors.md`](docs/vibe/reference-vectors.md). The durable implementation evidence and next milestone are tracked in [`docs/vibe/implementation-status.md`](docs/vibe/implementation-status.md).
 
 ## License
 
