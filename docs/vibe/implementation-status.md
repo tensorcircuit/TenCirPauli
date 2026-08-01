@@ -4,7 +4,7 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P5：Public API、TensorCircuit adapter 与交付；实现状态为已完成。
+完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P5：Public API、TensorCircuit adapter 与交付；实现代码已完成，正在进行最终 release benchmark、质量检查和本地提交收尾。
 
 ## Completed foundation
 
@@ -19,6 +19,10 @@
 - P3 Rust core/native grouping 已实现 QWC 与 general symplectic compatibility、largest-first greedy 和 DSATUR；公开 QWC result 提供 canonical membership、basis、coefficient mapping、reconstruction masks 和 `measurement_ready=True`。
 - P3 general grouping 使用独立 `GeneralCommutingGroupingResult`，明确 `measurement_ready=False`，不复用 QWC measurement plan。Dense compatibility matrix 与 bounded streaming incompatibility edge-list 两条路径均已提供。
 - P4 Rust/PyO3/Python Hamiltonian compiler 已完成 dense、COO、CSR、native matrix-free MVP 和 schema-versioned backend MVP plan；matrix action 明确采用 TensorCircuit qubit-zero-is-MSB ordering，packed plan 保持 qubit-zero-is-LSB 并在 executor 边界转换。
+- P2 batch canonicalization 现在提供 `PauliOperator.canonicalize_batch()`，返回 canonical structures、aggregated coefficients、`input_to_canonical` 和 exact `PauliPhase` multipliers；动态结构结果保留 exact-zero keys，静态 `from_terms` 仍使用无 mapping 的 fast path 并删除 exact-zero terms。
+- Native NumPy boundary 使用 `complex128` contiguous array 直接映射到 `repr(C)` Rust complex buffers；MVP 输出由 Rust 直接填充 NumPy allocation，避免逐元素 tuple/实部/虚部转换。COO/CSR/dense 也提供 private NumPy-array bindings，public facade 不再从两个 Python float lists 重建 sparse values。
+- Reusable native MVP plan 公开 `strategy`：`x_mask_diagonal` 表示已预计算每个 X permutation mask 的 diagonal，`term_direct` 表示由于显式 memory limit 选择逐 term direct kernel；这不是语义 fallback，两个策略共享同一 Rust recurrence 和 differential tests。
+- COO/CSR 先按 X mask 聚合 term contributions，再生成 contiguous candidate entries、exact-zero filter 和稳定 row-major sort；CSR 直接从 sorted entries 构造 row pointer、columns 和 values，避免先物化 public COO arrays。
 - P4 物化 target 与 MVP output 都在分配前估算 dimension/bytes；默认 public limit 为 256 MiB，超限映射为 `MemoryError`，dimension overflow 映射为 `OverflowError`。
 - P5 顶层 `tencirpauli` 仅导出 typed public classes/results/targets；private `_native` symbols remain behind Python facades. README、docstrings、typing stub、examples、CHANGELOG 和 CI packaging smoke 已同步。
 - P5 TensorCircuit adapter 已迁移到 lazy optional boundary：缺失 `tensorcircuit-ng` 明确失败；backend plan 使用 TensorCircuit backend operations，支持 NumPy/JAX smoke when those optional dependencies are installed。
@@ -45,7 +49,7 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P2 targeted/full tests：`conda run -p .conda pytest tests`，25 passed；Rust unit/doc tests 4 passed。
 - P3 targeted/full tests：`conda run -p .conda pytest tests`，30 passed；QWC reconstruction、identity, adversarial XX/ZZ graph, deterministic DSATUR and memory-bound matrix/edge paths covered。
 - P4 targeted/full tests：`conda run -p .conda pytest tests`，40 passed；dense/COO/CSR/MVP/backend plan 与独立 NumPy reference 全部通过，覆盖 n=0/首尾 qubit/invalid state/memory guard/overflow。
-- P5 targeted/full tests：默认项目环境 `conda run -p .conda pytest tests` 为 41 passed, 2 skipped；随后在不修改 TensorCircuit 源码、仅用只读 `PYTHONPATH` 加上本地 optional dependencies 的环境中，`PYTHONPATH=.../tensorcircuit conda run -p .conda pytest -q` 为 42 passed, 1 skipped，NumPy/JAX backend differential cases 均通过，唯一 skip 是安装依赖后不适用的 missing-dependency branch。Rust/Python quality and benchmark smoke all passed。
+- P5 targeted/full tests：默认项目环境 `conda run -p .conda pytest -q` 为 45 passed, 2 skipped；随后在不修改 TensorCircuit 源码、仅用只读 `PYTHONPATH` 加上本地 optional dependencies 的环境中，NumPy/JAX backend differential cases 均通过，missing-dependency branch 仍明确失败而不 fallback。Rust/Python quality and benchmark smoke all passed。
 - Rust format：通过。
 - Rust Clippy `-D warnings`：通过。
 - Rust unit/doc tests：2 passed。
@@ -58,17 +62,21 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P4 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已加入 dense/COO/MVP/backend-plan construction/apply；smoke harness 全部通过。P3 clean baseline 为 `p3-acf5c60`，P4 clean label 待 P4 commit 后记录。
 - P5 packaging/integration evidence：`maturin develop --release --locked`、public example tests and optional adapter tests pass; `maturin build --release --locked` produced a macOS abi3 wheel and `maturin sdist` produced a source archive under `/private/tmp` (not tracked). P4 hook benchmark was recorded at commit `9c11117`.
 - Local benchmark：`p0-829221e` 已在 clean commit 上完成 Rust/Python record；Rust weight kernel 为 1.02 ns (64 qubits)、3.00 ns (1024)、41.52 ns (16384)，commutation 为 2.15 ns、4.97 ns、62.93 ns；Python public-path workload mean 为 174.4 µs。该结果是本机 informational baseline，不构成 CI 门禁。
+- Optimization evidence：release Rust Criterion current dirty run measured `hamiltonian/scaling` at approximately 34.1 µs plan construction/64.7 µs one-shot MVP/7.23 µs reusable apply/139.9 µs COO/156.7 µs CSR for 10q/64 terms, and 1.64 ms plan construction/2.45 ms one-shot MVP/436.7 µs reusable apply for 16q/256 terms. Public Python warm measurements were approximately 8.0 µs and 0.41 ms for reusable native apply; sparse COO construction was approximately 0.058/0.204/0.688 ms for 8q/32, 10q/64 and 12q/64. These are dirty-worktree measurements pending final commit label。
+- Same-workload TensorCircuit evidence：complex128 JAX warm MVP was approximately 32 µs and 2.4 ms for 10q/64 and 16q/256, while reusable native was approximately 8 µs and 0.41 ms; JAX first execution remained approximately 100 ms and 0.6 s. TensorCircuit NumPy sparse construction was approximately 3.49/8.58/14.07 ms on 8q/32, 10q/64 and 12q/64, versus TenCirPauli approximately 0.058/0.204/0.688 ms. JAX BCOO warm sparse matvec was approximately 0.16/0.28 ms for 8q/32 and 10q/64；its raw BCOO retains duplicate entries, so this is not a canonical sparse-construction comparison。
+- Profiling evidence：macOS `/usr/bin/sample` on the 16q/256 reusable public workload showed the dominant cost in Rust `MvpPlan::apply_into` and Rayon row-parallel execution；Python/NumPy borrow and allocation bookkeeping was a small boundary component。A single-thread control regressed reusable 16q apply from approximately 0.44 ms to 3.03 ms，confirming that Rayon parallelism is material for this workload。Profile output remains outside the repository。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
 
 ## Next actions
 
-1. Phase 1 final all-workload benchmark is recorded and manually checked under `phase1-c7d18c3` on clean implementation commit `c7d18c3`。
-2. No further Phase 1 REQUIRED work remains; future work must begin from a new milestone and must not add symmetry, GateTape, propagation, or native-gradient scope here。
+1. Run the final unified quality command and record one clean all-workload benchmark label after the focused local commits。
+2. Commit the optimization and documentation slices locally; do not add a remote, push, tag, release or publish。
+3. Future work must begin from a new milestone and must not add symmetry, GateTape, propagation, or native-gradient scope here。
 
 ## Phase 1 completion record
 
-- P0–P5 REQUIRED items and acceptance gates are implemented in local commits `829221e`, `2e0f154`, `6b90270`, `acf5c60`, `9c11117`, and `c7d18c3`; the final documentation-only status update follows the same implementation.
-- Final quality evidence: `python scripts/check.py --fix --benchmark smoke` passed; this covers cargo fmt/clippy/test, Black, Ruff, mypy, release maturin, pytest, Rust benchmark smoke, and Python benchmark smoke. The final test count is 41 passed and 2 skipped because TensorCircuit/JAX are not installed in this workstation; missing-dependency behavior is tested and no fallback is used.
+- P0–P5 REQUIRED items and acceptance gates are implemented in local commits `829221e`, `2e0f154`, `6b90270`, `acf5c60`, `9c11117`, and `c7d18c3`, plus the current local optimization/canonicalization slices pending focused commits。
+- Final quality evidence before the optimization slice: `python scripts/check.py --fix --benchmark smoke` passed. The current slice has independently passed release maturin, cargo clippy/test, Black, Ruff, mypy and `pytest -q` with 45 passed and 2 skipped; the unified final command remains the next closeout action。
 - Final clean benchmark label `phase1-c7d18c3`: Rust canonicalization 128.65 µs/1k, 1.2906 ms/10k, 12.853 ms/100k; QWC grouping 331.28 µs/128 and 21.612 ms/1024; dense/COO/MVP/backend-plan kernels 26.513 µs/51.152 µs/19.905 µs/56.163 ns as reported by Criterion. Python complete-boundary means were 2.187 ms/1k, 22.339 ms/10k, 225.128 ms/100k canonicalization; 13.546 ms/1024 QWC; dense 49.981 ms, native MVP 303.937 µs, COO+CSR 613.707 µs, and backend-plan 6.506 µs on this machine. Numerical error remained within the documented differential tolerances; benchmark results are informational, not CI gates.
 - Known limitation is explicit and intentional: the TensorCircuit adapter remains optional and its missing-dependency branch is only exercised when TensorCircuit is absent. The adapter is lazy, explicit, and never silently falls back to NumPy or native execution; the available NumPy/JAX differential smoke was run against the read-only local TensorCircuit source.
 

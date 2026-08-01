@@ -46,7 +46,13 @@ state = np.ones(2**3, dtype=np.complex128)
 np.testing.assert_allclose(hamiltonian.mvp(state), matrix @ state)
 plan = hamiltonian.backend_mvp_plan()
 np.testing.assert_allclose(plan.apply(state), matrix @ state)
+native_plan = hamiltonian.native_mvp_plan()
+np.testing.assert_allclose(native_plan.apply(state), matrix @ state)
 ```
+
+Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It precomputes phase structure in Rust, releases the GIL during application, and avoids rebuilding the operator on every statevector call. Use `backend_mvp_plan()` when the calculation must remain inside a TensorCircuit backend and JAX autodiff/JIT is required.
+
+`PauliOperator.canonicalize_batch()` is the dynamic/backend-facing batch form: it returns canonical structures, aggregated coefficients including exact-zero keys, `input_to_canonical`, and exact phase multipliers. Static `PauliOperator.from_terms()` keeps its faster exact-zero-dropping path.
 
 `PauliOperator.group_commuting(mode="general")` returns an explicitly algebraic prototype with `measurement_ready=False`; it must not be used as a local single-qubit measurement plan. QWC reconstruction uses the returned group masks and rotated measurement bitstrings.
 

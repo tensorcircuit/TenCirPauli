@@ -26,9 +26,9 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 ### REQUIRED deliverables
 
 - [x] Owner 确认 S1–S4，`semantics.md` 状态改为“已冻结”。
-- [ ] 建立独立的小系统 NumPy dense reference，覆盖 code/string/symplectic/matrix 互转，不调用被测 Rust 实现生成 expected result。
-- [ ] 建立固定 regression vectors：单比特 multiplication table、首尾 qubit ordering、Y phase、duplicate cancellation、empty/identity operator 和无效输入。
-- [ ] 为随机测试固定 seed，并记录 tolerance、dtype 与最大 reference qubit 数。
+- [x] 建立独立的小系统 NumPy dense reference，覆盖 code/string/symplectic/matrix 互转，不调用被测 Rust 实现生成 expected result。
+- [x] 建立固定 regression vectors：单比特 multiplication table、首尾 qubit ordering、Y phase、duplicate cancellation、empty/identity operator 和无效输入。
+- [x] 为随机测试固定 seed，并记录 tolerance、dtype 与最大 reference qubit 数。
 - [x] 创建 scaffold 初始 Git commit；之后 benchmark label 必须包含真实 commit id。
 
 ### Acceptance gate
@@ -39,12 +39,12 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 
 ### REQUIRED deliverables
 
-- [ ] Rust `PauliWord` 完成 construction、code/string conversion、weight、support、commutation、symplectic inner product、multiplication、adjoint 和 stable ordering。
-- [ ] 批量结构转换在一次 Rust 调用中处理二维 code arrays 或 packed buffers；禁止逐 term PyO3 调用成为推荐路径。
-- [ ] Python `PauliWord` 提供稳定、typed、documented public API，`_native` 仍为 private implementation detail。
-- [ ] Typed Rust errors 与 Python exception mapping 覆盖 shape、code、nqubits、overflow 和 incompatible operand。
-- [ ] Rust property tests、Python tests 和 NumPy dense differential tests全部通过。
-- [ ] Criterion 与 pytest-benchmark 覆盖单项 kernel、batch conversion 和完整 Python boundary。
+- [x] Rust `PauliWord` 完成 construction、code/string conversion、weight、support、commutation、symplectic inner product、multiplication、adjoint 和 stable ordering。
+- [x] 批量结构转换在一次 Rust 调用中处理二维 code arrays 或 packed buffers；禁止逐 term PyO3 调用成为推荐路径。
+- [x] Python `PauliWord` 提供稳定、typed、documented public API，`_native` 仍为 private implementation detail。
+- [x] Typed Rust errors 与 Python exception mapping 覆盖 shape、code、nqubits、overflow 和 incompatible operand。
+- [x] Rust property tests、Python tests 和 NumPy dense differential tests全部通过。
+- [x] Criterion 与 pytest-benchmark 覆盖单项 kernel、batch conversion 和完整 Python boundary。
 
 ### Acceptance gate
 
@@ -54,12 +54,12 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 
 ### REQUIRED deliverables
 
-- [ ] Rust `PauliOperator` 实现 canonical terms、coefficient storage、add、scale、multiply、commutator、anticommutator、adjoint 和 Hermiticity validation。
-- [ ] Batch canonicalization 返回 canonical keys、aggregated coefficients、`input_to_canonical` 和 phase multipliers。
-- [ ] Native static operator 与 backend structural plan 分离 exact-zero 和 parameter-dependent coefficient 语义。
-- [ ] Python 支持从 code arrays、strings 和 packed arrays 构造 operator，并返回稳定排序的 terms。
-- [ ] 重复项、相消项、complex phase、NaN/Inf、empty operator 和超大输入预估均有测试。
-- [ ] Benchmark 覆盖 `10^3`、`10^4`、`10^5` term 的 parse/canonicalize/deduplicate，并记录输入转换、kernel 与输出转换。
+- [x] Rust `PauliOperator` 实现 canonical terms、coefficient storage、add、scale、multiply、commutator、anticommutator、adjoint 和 Hermiticity validation。
+- [x] Batch canonicalization 返回 canonical keys、aggregated coefficients、`input_to_canonical` 和 phase multipliers。
+- [x] Native static operator 与 backend structural plan 分离 exact-zero 和 parameter-dependent coefficient 语义。
+- [x] Python 支持从 code arrays、strings 和 packed arrays 构造 operator，并返回稳定排序的 terms。
+- [x] 重复项、相消项、complex phase、NaN/Inf、empty operator 和超大输入预估均有测试。
+- [x] Benchmark 覆盖 `10^3`、`10^4`、`10^5` term 的 parse/canonicalize/deduplicate，并记录输入转换、kernel 与输出转换。
 
 ### Acceptance gate
 
@@ -69,12 +69,12 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 
 ### REQUIRED deliverables
 
-- [ ] 批量 commutation/QWC compatibility kernel 支持 packed input，并明确 full matrix 与 streaming/edge-list 模式的内存成本。
-- [ ] 实现确定性的 largest-first greedy；DSATUR 在 largest-first 正确性稳定后实现。
-- [ ] QWC groups 返回逐 qubit basis、term membership、coefficient mapping 和 bitstring eigenvalue reconstruction masks。
-- [ ] General commuting 按冻结的 S3 决策实现，类型和文档不能把 algebraic partition 与 measurement-ready plan 混淆。
-- [ ] 图 coloring 正确性、deterministic tie-break、identity term、duplicate term 和 adversarial graph 均有测试。
-- [ ] Benchmark 报告 term 数、qubit 数、edge density、group count、basis depth、运行时间和峰值内存。
+- [x] 批量 commutation/QWC compatibility kernel 支持 packed input，并明确 full matrix 与 streaming/edge-list 模式的内存成本。
+- [x] 实现确定性的 largest-first greedy；DSATUR 在 largest-first 正确性稳定后实现。
+- [x] QWC groups 返回逐 qubit basis、term membership、coefficient mapping 和 bitstring eigenvalue reconstruction masks。
+- [x] General commuting 按冻结的 S3 决策实现，类型和文档不能把 algebraic partition 与 measurement-ready plan 混淆。
+- [x] 图 coloring 正确性、deterministic tie-break、identity term、duplicate term 和 adversarial graph 均有测试。
+- [x] Benchmark 报告 term 数、qubit 数、edge density、group count、basis depth、运行时间和峰值内存。
 
 ### Acceptance gate
 
@@ -84,13 +84,13 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 
 ### REQUIRED deliverables
 
-- [ ] Dense target 与 NumPy Kronecker reference 一致，并具有严格的小系统/memory guard。
-- [ ] COO 直接生成、聚合重复 entry、按 `(row,column)` 排序；CSR 由确定性聚合结果构造。
-- [ ] Native MVP 接受一维 complex state，验证 shape/dtype/overflow，不物化完整 matrix。
-- [ ] Backend MVP plan 按冻结的 S4 范围实现版本化 arrays schema 和 reference executor。
-- [ ] 所有物化 target 在分配前估算 dimension、nonzeros 与 bytes，并通过明确的 memory limit fail fast。
-- [ ] Rust/Python differential tests 比较 dense、COO、CSR、native MVP、backend plan 和 Hermiticity。
-- [ ] Benchmark 分开记录 plan construction、first apply、steady apply、input/output conversion 和 peak memory。
+- [x] Dense target 与 NumPy Kronecker reference 一致，并具有严格的小系统/memory guard。
+- [x] COO 直接生成、聚合重复 entry、按 `(row,column)` 排序；CSR 由确定性聚合结果构造。
+- [x] Native MVP 接受一维 complex state，验证 shape/dtype/overflow，不物化完整 matrix。
+- [x] Backend MVP plan 按冻结的 S4 范围实现版本化 arrays schema 和 reference executor。
+- [x] 所有物化 target 在分配前估算 dimension、nonzeros 与 bytes，并通过明确的 memory limit fail fast。
+- [x] Rust/Python differential tests 比较 dense、COO、CSR、native MVP、backend plan 和 Hermiticity。
+- [x] Benchmark 分开记录 plan construction、first apply、steady apply、input/output conversion 和 peak memory。
 
 ### Acceptance gate
 
@@ -100,12 +100,12 @@ Phase 1 只有在所有 REQUIRED checklist、测试、文档和 benchmark worklo
 
 ### REQUIRED deliverables
 
-- [ ] `tencirpauli` 顶层只导出稳定 public classes/functions；所有 `_native` symbol 均通过 typed Python facade 使用。
-- [ ] PyO3 热路径为 batch API，长计算释放 GIL；不存在 Python callback 进入 Rust hot loop。
-- [ ] Optional TensorCircuit adapter 按 S4 范围完成 ordering、dtype、MVP 和缺失依赖行为测试。
-- [ ] README、Python docstrings、typing stub、examples、CHANGELOG 和 `docs/vibe/implementation-status.md` 同步。
-- [ ] Linux/macOS/Windows CI 完成 Rust/Python correctness 与 packaging smoke；性能仍只在本机记录，不增加 CI 门禁。
-- [ ] 本机保存一个包含所有 Phase 1 workload 的最终 benchmark label，并记录关键瓶颈与 go/no-go 数据。
+- [x] `tencirpauli` 顶层只导出稳定 public classes/functions；所有 `_native` symbol 均通过 typed Python facade 使用。
+- [x] PyO3 热路径为 batch API，长计算释放 GIL；不存在 Python callback 进入 Rust hot loop。
+- [x] Optional TensorCircuit adapter 按 S4 范围完成 ordering、dtype、MVP 和缺失依赖行为测试。
+- [x] README、Python docstrings、typing stub、examples、CHANGELOG 和 `docs/vibe/implementation-status.md` 同步。
+- [x] Linux/macOS/Windows CI 完成 Rust/Python correctness 与 packaging smoke；性能仍只在本机记录，不增加 CI 门禁。
+- [x] 本机保存一个包含所有 Phase 1 workload 的最终 benchmark label，并记录关键瓶颈与 go/no-go 数据。
 
 ### Acceptance gate
 
@@ -129,12 +129,12 @@ Rust core public surface至少提供 phase-free/phaseful 选择所需的代数�
 
 ## 12. Phase 1 completion checklist
 
-- [ ] P0–P5 所有 REQUIRED 项和 acceptance gate 完成。
-- [ ] `cargo fmt --check` 通过。
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过。
-- [ ] `cargo test --workspace` 通过。
-- [ ] Black、Ruff、mypy 通过。
-- [ ] `maturin develop --release` 与 pytest 通过。
-- [ ] Phase 1 本地 benchmark 已记录并人工检查，无未解释的重大回归。
-- [ ] Public docs、typing、CHANGELOG、status 与实现一致。
-- [ ] 没有 Phase 2–4 的越界实现或对 TensorCircuit 主仓库的未授权修改。
+- [x] P0–P5 所有 REQUIRED 项和 acceptance gate 完成。
+- [x] `cargo fmt --check` 通过。
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过。
+- [x] `cargo test --workspace` 通过。
+- [x] Black、Ruff、mypy 通过。
+- [x] `maturin develop --release` 与 pytest 通过。
+- [x] Phase 1 本地 benchmark 已记录并人工检查，无未解释的重大回归。
+- [x] Public docs、typing、CHANGELOG、status 与实现一致。
+- [x] 没有 Phase 2–4 的越界实现或对 TensorCircuit 主仓库的未授权修改。
