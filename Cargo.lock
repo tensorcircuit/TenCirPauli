@@ -653,7 +653,9 @@ name = "tencir-pauli-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "num-complex",
  "rayon",
+ "rustc-hash",
 ]
 
 [[package]]

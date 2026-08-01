@@ -13,6 +13,7 @@ from .hamiltonian import (
     NativeMVPPlan,
 )
 from .pauli import (
+    CanonicalizationArrayResult,
     CanonicalizationResult,
     PauliOperator,
     PauliPhase,
@@ -27,6 +28,7 @@ __all__ = [
     "BackendMVPPlan",
     "COOMatrix",
     "CSRMatrix",
+    "CanonicalizationArrayResult",
     "CanonicalizationResult",
     "GeneralCommutingGroupingResult",
     "NativeMVPPlan",

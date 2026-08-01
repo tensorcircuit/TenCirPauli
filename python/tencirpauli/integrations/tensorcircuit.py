@@ -11,7 +11,12 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
-from ..hamiltonian import BackendMVPPlan
+from ..hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    BackendMVPPlan,
+    _check_allocation,
+    _dimension,
+)
 
 
 def require_tensorcircuit() -> Any:
@@ -29,6 +34,7 @@ def backend_mvp(
     plan: BackendMVPPlan,
     coefficients: Optional[Sequence[complex]] = None,
     backend: Any = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> Any:
     """Return a TensorCircuit-backend MVP callable for a pure-array plan.
 
@@ -38,6 +44,9 @@ def backend_mvp(
     """
     tensorcircuit = require_tensorcircuit()
     runtime_backend = backend if backend is not None else tensorcircuit.backend
+    dimension = _dimension(plan.nqubits)
+    estimated_bytes = dimension * ((len(plan.coefficients) + 1) * 8 + 48)
+    _check_allocation(estimated_bytes, max_bytes, "TensorCircuit MVP adapter")
     if coefficients is None:
         coefficient_values = runtime_backend.convert_to_tensor(plan.coefficients)
     elif hasattr(coefficients, "shape"):

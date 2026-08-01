@@ -12,7 +12,9 @@ name = "tencir_pauli_core"
 path = "src/lib.rs"
 
 [dependencies]
+num-complex = "0.4"
 rayon = "1.10"
+rustc-hash = "2"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }

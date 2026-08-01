@@ -347,6 +347,12 @@ Rust-native forward 的建议门槛是：相对非 JIT Python/NumPy 路径至少
 
 为受支持 rotation gates 实现 analytic derivative、reverse mode 和 checkpointing；稳定后增加 `tc.pauli` adapter、文档、examples 和迁移指南。是否开发 JAX custom call 另行立项。
 
+### 阶段五：Qudit generalized Pauli/Weyl 与 Hamiltonian compiler
+
+在 qubit API 和语义稳定后，增加统一局域维数 `d>2` 的 generalized Pauli/Weyl 表示。每个 qudit site 用指数对 `(a,b)` 表示 `X^a Z^b`，其中 `a,b` 按 `d` 取模，`X|j⟩=|j+1 mod d⟩`，`Z|j⟩=ω^j|j⟩`，`ω=exp(2πi/d)`。第一版提供 `QuditPauliWord`、`QuditPauliOperator`、乘法相位、adjoint、commutation、canonicalization 和 deterministic aggregation，并让 Hamiltonian compiler 支持 `d**n` basis 上的 bounded dense、COO/CSR、native MVP 与 backend plan。
+
+该阶段优先支持所有 sites 使用相同 local dimension 的模型，并保持 qudit 0 的 computational-basis ordering 与 TensorCircuit adapter 明确一致。Mixed local dimensions、任意 composite-d stabilizer/symmetry 算法和 qudit propagation 不自动包含在首个 qudit slice 中。Qudit Hamiltonian generation 在这里指从 generalized Pauli/Weyl sums 编译矩阵或 MVP，而不是内置生成特定物理模型；常见 clock/shift、Potts 或 Bose-Hubbard fixtures 可以作为 examples 和 benchmarks。
+
 ## 17. 主要风险与控制措施
 
 ### 17.1 Term explosion
@@ -382,6 +388,9 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
 - Backend MVP plan 的 portable integer dtype 如何兼容 JAX 默认关闭 int64、TensorFlow 和 PyTorch。
 - Weight projection 的误差报告采用 discarded L1/L2 coefficient norm、observable-specific bound，还是同时提供多项指标。
+- Qudit canonical basis 采用直接 `X^a Z^b` 还是带中心相位的 Weyl-normalized `τ^(ab)X^a Z^b`；该选择会影响 multiplication phase、adjoint、Hermiticity 和 `d=2` 与现有 `PauliWord` 的兼容方式，必须在实现前冻结。
+- 首个 qudit slice 是支持任意整数 `d>=2`，还是先限定 prime/prime-power dimension；GF(d) symmetry 方法不能在 composite `d` 上未经说明地复用。
+- Qudit 首版是否只支持 uniform local dimension，mixed-radix systems 后续再做；公开 serialization 必须无歧义记录每个 site 的 dimension 和 exponent ordering。
 
 ## 20. 推荐结论
 

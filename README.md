@@ -56,6 +56,8 @@ Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It
 
 `PauliOperator.canonicalize_batch()` is the dynamic/backend-facing batch form: it returns canonical structures, aggregated coefficients including exact-zero keys, `input_to_canonical`, and exact phase multipliers. Static `PauliOperator.from_terms()` keeps its faster exact-zero-dropping path.
 
+For large numeric batches, use `PauliOperator.from_code_arrays()` to construct a static operator or `PauliOperator.canonicalize_code_arrays_numpy()` to keep canonical structures, coefficients, mappings, and phases in contiguous read-only NumPy arrays without materializing Python objects per term.
+
 `PauliOperator.group_commuting(mode="general")` returns an explicitly algebraic prototype with `measurement_ready=False`; it must not be used as a local single-qubit measurement plan. QWC reconstruction uses the returned group masks and rotated measurement bitstrings.
 
 ## Development checks

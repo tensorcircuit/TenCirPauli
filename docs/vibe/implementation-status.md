@@ -4,7 +4,7 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P5：Public API、TensorCircuit adapter 与交付；实现、最终 release benchmark、质量检查和本地提交均已完成。
+完成 `phase-1-spec.md` 中的 P0–P5。Phase 1 初次验收发现的阻断项已在同日 remediation 中修复并完成本地复验；core/native 机械 module split 也已完成，当前代码与文档构成 Phase 2 handoff baseline。下一 active milestone 是 review `phase-2-spec.md` 提出的 Z2 analysis/tapering 与显式 U1 sector public API，然后从 P0 reference slice 开始实现。项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -20,7 +20,10 @@
 - P3 general grouping 使用独立 `GeneralCommutingGroupingResult`，明确 `measurement_ready=False`，不复用 QWC measurement plan。Dense compatibility matrix 与 bounded streaming incompatibility edge-list 两条路径均已提供。
 - P4 Rust/PyO3/Python Hamiltonian compiler 已完成 dense、COO、CSR、native matrix-free MVP 和 schema-versioned backend MVP plan；matrix action 明确采用 TensorCircuit qubit-zero-is-MSB ordering，packed plan 保持 qubit-zero-is-LSB 并在 executor 边界转换。
 - P2 batch canonicalization 现在提供 `PauliOperator.canonicalize_batch()`，返回 canonical structures、aggregated coefficients、`input_to_canonical` 和 exact `PauliPhase` multipliers；动态结构结果保留 exact-zero keys，静态 `from_terms` 仍使用无 mapping 的 fast path 并删除 exact-zero terms。
-- Native NumPy boundary 使用 `complex128` contiguous array 直接映射到 `repr(C)` Rust complex buffers；MVP 输出由 Rust 直接填充 NumPy allocation，避免逐元素 tuple/实部/虚部转换。COO/CSR/dense 也提供 private NumPy-array bindings，public facade 不再从两个 Python float lists 重建 sparse values。
+- Native NumPy boundary 与 Rust core 统一使用 `num_complex::Complex64`；MVP 输出由 Rust 直接填充 NumPy allocation，dense/COO/CSR complex buffers 直接移交 NumPy，不再需要 unsafe layout cast、逐元素 tuple/实部/虚部转换或第二个完整 value buffer。
+- Phase 1 acceptance remediation 已修复 caller-owned MVP overwrite、Python packed-word canonical invariant、scale/aggregation finite-nonzero invariant、per-term FFI、repeated canonicalization、long-running GIL hold、backend allocation guards 和 unbounded grouping。公开新增 `from_code_arrays()` 与 `canonicalize_code_arrays_numpy()`，后者返回只读 contiguous plan arrays。
+- 行为保持的 module split 已完成：core crate 按 error/scalar/word/operator/grouping/hamiltonian 拆分，native crate 按 convert/word/operator/grouping/hamiltonian 拆分；两个 `lib.rs` 只保留 module declarations、public re-exports 或 PyO3 registration，未新增 crate 或改变 public path。该工作不再出现在 Phase 2 Spike 的实现待办中。
+- Canonicalization 改用 deterministic final sort 的 FxHash aggregation；QWC 使用 packed-bit compatibility，largest-first 缓存 degree，DSATUR 增量维护 neighbor colors，公开输出仍保持 canonical deterministic order。
 - Reusable native MVP plan 公开 `strategy`：`x_mask_diagonal` 表示已预计算每个 X permutation mask 的 diagonal，`term_direct` 表示由于显式 memory limit 选择逐 term direct kernel；这不是语义 fallback，两个策略共享同一 Rust recurrence 和 differential tests。
 - COO/CSR 先按 X mask 聚合 term contributions，再生成按 row 分块的 contiguous entries、exact-zero filter 和稳定 row-major sort；大 workload 使用 Rayon row parallel，CSR 直接从每行计数构造 row pointer、columns 和 values。每个 X mask 只有一个 term 且不存在行内抵消时，COO/CSR 直接写最终数组，跳过候选缓冲区和二次拆分。
 - P4 物化 target 与 MVP output 都在分配前估算 dimension/bytes；默认 public limit `DEFAULT_MAX_BYTES` 为 4 GiB，可通过每次调用的 `max_bytes` 显式降低或提高，超限映射为 `MemoryError`，dimension overflow 映射为 `OverflowError`。
@@ -41,6 +44,10 @@
 - S4 已确认：Phase 1 backend plan 范围为 schema、NumPy executor 和 TensorCircuit NumPy/JAX differential smoke。
 
 S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `semantics.md`；任何修改均需新的 owner decision 与迁移测试。
+
+Phase 2 Spike 当前提出一套具体接口：自动 Z2 Pauli symmetry analysis、可复用的最小完整 tapering plan、显式 `U1Sector` 和 restricted MVP/CSR。它是待 owner review 的接口提案；完整背景和调用形状见 `phase-2-spec.md`。
+
+长期 roadmap 已记录 qudit generalized Pauli/Weyl 支持：以每个 site 的 `X^a Z^b` 指数对构造 `QuditPauliWord`/`QuditPauliOperator`，并编译 qudit dense、COO/CSR、native MVP 和 backend plan。该方向位于现有 qubit symmetry、propagation 与 gradient 路线之后；phase convention、支持的 local dimension 范围和 uniform/mixed-radix 边界必须在实现前单独冻结，当前 Phase 2 不越界实现。
 
 ## Verification evidence
 
@@ -74,11 +81,16 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - JAX sparse storage has a different contract：raw `nse` is `8192/65536/262144` (`terms * 2**n`), with `unique_indices=False`; after `sum_duplicates()` the BCOO `nse` is padded to `2048/8192/32768` and `unique_indices=True`, while exact nonzero data counts are `1984/7680/30720` and `|value|>1e-12` counts are `1920/6912/27648`. TenCirPauli canonical COO exact nnz is `1984/7296/29184`, with values plus row/column storage of `63488/233472/933888` bytes; JAX raw BCOO uses `262144/2097152/8388608` bytes and its padded post-`sum_duplicates()` storage uses `65536/262144/1048576` bytes. JAX duplicate entries are numerically valid for basic matvec, but padded `nse`, floating cancellation residuals and noncanonical raw storage must not be compared as if they were the same COO format。
 - Profiling evidence：macOS `/usr/bin/sample` on the 16q/256 reusable public workload showed the dominant cost in Rust `MvpPlan::apply_into` and Rayon row-parallel execution；Python/NumPy borrow and allocation bookkeeping was a small boundary component。A single-thread control regressed reusable 16q apply from approximately 0.44 ms to 3.03 ms，confirming that Rayon parallelism is material for this workload。Profile output remains outside the repository。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
+- Phase 1 acceptance remediation verification：`scripts/check.py --benchmark smoke` 全部通过；Rust core 8 tests；默认 Python 56 passed/2 skipped；只读 TensorCircuit/JAX 环境 57 passed/1 skipped；完整 release compare 48 benchmark tests passed/36 optional skips。修复后本地 benchmark label 为 `phase1-acceptance-remediation-20260801`，对照的修复前 clean baseline 为 `20260801T104116Z_a872af7f8e5b`；归档证据见 `phase-1-acceptance-review-2026-08-01.md`。
+- Remediation release performance：Rust 100k canonicalization 约 4.23 ms（clean baseline 13.18 ms），Rust 1024-term QWC 约 1.16 ms（baseline 21.84 ms）；public 100k friendly-term canonicalization 约 42.83 ms（baseline 223.67 ms），public 1024-input QWC 约 0.979 ms（baseline 12.95 ms）。Matched 100k contiguous canonicalization 为约 45.5 ms 对 Python tuple/dict 315.0 ms，1024-input QWC 为约 0.979 ms 对 Python 107.4 ms。
+- Post-module-split verification：`python scripts/check.py --benchmark smoke` 完整通过，Rust core 8 tests、默认 Python 56 passed/2 skipped、benchmark harness 48 passed/36 optional skips。对 `phase1-acceptance-remediation-20260801` 的同机 release compare 显示代表性路径保持：Rust 100k canonicalization 约 4.18 ms（约 -0.5%，noise）、Rust 1024-term QWC 约 1.10 ms（约快 6.1%）、reusable MVP apply 约 4.99 µs（10q，no change）和 319 µs（16q，约快 4.3%）；Python public 100k canonicalization 约 43.92 ms、1024-term QWC 约 1.007 ms，均为约 1–2% 波动。机械拆分未显示系统性性能回退；完整 compare 中少量 1–3% microbenchmark 与低轮次 large sparse 波动保留为本机 informational signal。
 
 ## Next actions
 
-1. No Phase 1 REQUIRED work remains. Future work must begin from a new milestone and must not add symmetry, GateTape, propagation, or native-gradient scope here。
-2. Keep benchmark artifacts, local environments and machine-specific profile output untracked；the clean label is reproducible through `python benchmarks/run.py compare 20260801T104116Z_a872af7f8e5b` on this machine。
+1. Review the concrete Phase 2 API in `phase-2-spec.md`; after approval, begin P0 independent GF(2)/dense-sector references, then implement Z2 analysis → tapering → U1 basis → restricted operator in that order。
+2. Treat public canonicalization boundary work as a separate performance follow-up：profile Python object materialization, then prefer a persistent private native operator handle、lazy `.terms` materialization and packed `uint64` x/z array APIs before considering lower-value FFI micro-optimization。
+3. Retain the small one-shot MVP regression for future profile-guided work；reusable MVP remains the recommended repeated-call path，并继续保持 benchmark artifacts、local environments 和 machine-specific profile output 不被跟踪。No pinned MSRV CI work is currently planned。
+4. Preserve the Phase 5 qudit roadmap in `architecture.md`；do not mix `QuditPauliWord`/qudit Hamiltonian work into the current qubit Phase 2 Spike。
 
 ## Phase 1 completion record
 

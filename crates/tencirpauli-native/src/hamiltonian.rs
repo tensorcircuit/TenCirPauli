@@ -1,0 +1,259 @@
+use numpy::{
+    Complex64 as NumpyComplex128, PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadwriteArray1,
+};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use tencir_pauli_core::{MvpPlan, MvpStrategy};
+
+use crate::convert::{
+    build_canonical_operator, map_error, numpy_complex_array, split_complex, BackendPlanOutput,
+    CooOutput, CsrOutput, DenseOutput, NumpySparseOutput,
+};
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativeMvpPlan {
+    plan: MvpPlan,
+}
+
+#[pymethods]
+impl NativeMvpPlan {
+    #[getter]
+    fn nqubits(&self) -> usize {
+        self.plan.nqubits()
+    }
+
+    #[getter]
+    fn term_count(&self) -> usize {
+        self.plan.term_count()
+    }
+
+    #[getter]
+    fn strategy(&self) -> &'static str {
+        match self.plan.strategy() {
+            MvpStrategy::XMaskDiagonal => "x_mask_diagonal",
+            MvpStrategy::TermDirect => "term_direct",
+        }
+    }
+
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: usize,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_array = PyArray1::zeros(py, state_slice.len(), false);
+        let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
+        let output_slice = writable
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        py.allow_threads(|| {
+            self.plan
+                .apply_into(state_slice, output_slice, max_bytes as u128)
+        })
+        .map_err(map_error)?;
+        drop(writable);
+        Ok(output_array)
+    }
+}
+
+#[pyfunction]
+pub(crate) fn pauli_dense(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<DenseOutput> {
+    let (dimension, values) = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.dense_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    let (real, imaginary) = split_complex(&values);
+    Ok((dimension, real, imaginary))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_dense_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<(usize, Bound<'py, PyArray1<NumpyComplex128>>)> {
+    let (dimension, values) = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.dense_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    Ok((dimension, numpy_complex_array(py, values)))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_coo(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<CooOutput> {
+    let matrix = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.coo_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.rows,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_coo_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NumpySparseOutput<'py>> {
+    let matrix = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.coo_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    Ok((
+        matrix.dimension,
+        PyArray1::from_vec(py, matrix.rows),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_csr(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<CsrOutput> {
+    let matrix = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.csr_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.indptr,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_csr_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NumpySparseOutput<'py>> {
+    let matrix = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.csr_matrix(max_bytes as u128).map_err(map_error)
+    })?;
+    Ok((
+        matrix.dimension,
+        PyArray1::from_vec(py, matrix.indptr),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_mvp_array<'py>(
+    py: Python<'py>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    state: PyReadonlyArray1<'py, NumpyComplex128>,
+    max_bytes: usize,
+) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+    let operator = py.allow_threads(|| {
+        build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)
+    })?;
+    let state_slice = state
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+    let output_array = PyArray1::zeros(py, state_slice.len(), false);
+    let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
+    let output_slice = writable
+        .as_slice_mut()
+        .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+    py.allow_threads(|| operator.mvp_into(state_slice, output_slice, max_bytes as u128))
+        .map_err(map_error)?;
+    drop(writable);
+    Ok(output_array)
+}
+
+#[pyfunction]
+pub(crate) fn pauli_mvp_plan(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<NativeMvpPlan> {
+    let plan = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator.mvp_plan(max_bytes as u128).map_err(map_error)
+    })?;
+    Ok(NativeMvpPlan { plan })
+}
+
+#[pyfunction]
+pub(crate) fn pauli_backend_plan(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<BackendPlanOutput> {
+    let plan = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        operator
+            .backend_mvp_plan(max_bytes as u128)
+            .map_err(map_error)
+    })?;
+    let (real, imaginary) = split_complex(&plan.coefficients);
+    Ok((
+        1,
+        plan.nqubits,
+        plan.word_count,
+        plan.x_words,
+        plan.z_words,
+        real,
+        imaginary,
+    ))
+}

@@ -85,7 +85,7 @@ def group_operator(
         raise ValueError("mode must be 'qubit_wise' or 'general'")
     if algorithm_code is None:
         raise ValueError("algorithm must be 'largest_first' or 'dsatur'")
-    structures = tuple(term.word.to_codes() for term in operator.terms)
+    structures = operator._arrays()[0]
     size = len(structures)
     if size * size > max_matrix_entries:
         raise MemoryError(
@@ -93,7 +93,11 @@ def group_operator(
             f"exceeding max_matrix_entries={max_matrix_entries}"
         )
     raw_groups = _native.pauli_group(
-        operator.nqubits, structures, mode_code, algorithm_code
+        operator.nqubits,
+        structures,
+        mode_code,
+        algorithm_code,
+        max_matrix_entries,
     )
     groups = tuple(tuple(group) for group in raw_groups)
     mapping = groups

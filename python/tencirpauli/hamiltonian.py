@@ -120,9 +120,14 @@ class BackendMVPPlan:
     integer_width: int = 64
     required_operations: Tuple[str, ...] = ("xor", "phase", "scatter_add")
 
-    def apply(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
+    def apply(
+        self,
+        state: Sequence[complex],
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]:
         """Apply the plan using only NumPy arrays and deterministic indexing."""
         dimension = _dimension(self.nqubits)
+        _check_allocation(dimension * 80, max_bytes, "backend MVP working memory")
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1 or values.shape[0] != dimension:
             raise ValueError(
@@ -155,6 +160,16 @@ def _dimension(nqubits: int) -> int:
             "matrix dimension cannot be represented by platform indices"
         )
     return 1 << nqubits
+
+
+def _check_allocation(requested: int, limit: int, context: str) -> None:
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise ValueError("max_bytes must be a non-negative integer")
+    if requested > limit:
+        raise MemoryError(
+            f"{context} requires approximately {requested} bytes, "
+            f"exceeding max_bytes={limit}"
+        )
 
 
 def _matrix_mask(

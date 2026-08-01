@@ -58,6 +58,27 @@ def pauli_canonicalize_batch(
     Sequence[int],
     Sequence[int],
 ]: ...
+def pauli_canonicalize_array(
+    nqubits: int,
+    structures: object,
+    coefficients: object,
+) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+def pauli_canonicalize_batch_array(
+    nqubits: int,
+    structures: object,
+    coefficients: object,
+) -> tuple[
+    Sequence[Sequence[int]],
+    Sequence[float],
+    Sequence[float],
+    Sequence[int],
+    Sequence[int],
+]: ...
+def pauli_canonicalize_batch_numpy(
+    nqubits: int,
+    structures: object,
+    coefficients: object,
+) -> tuple[int, object, object, object, object]: ...
 def pauli_operator_binary(
     nqubits: int,
     left: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
@@ -90,6 +111,7 @@ def pauli_group(
     structures: Sequence[Sequence[int]],
     mode: int,
     algorithm: int,
+    max_entries: int,
 ) -> Sequence[Sequence[int]]: ...
 def pauli_compatibility_matrix(
     nqubits: int,
@@ -145,15 +167,6 @@ def pauli_csr_array(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, object, object, object]: ...
-def pauli_mvp(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    state_re: Sequence[float],
-    state_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[Sequence[float], Sequence[float]]: ...
 def pauli_mvp_array(
     nqubits: int,
     structures: Sequence[Sequence[int]],

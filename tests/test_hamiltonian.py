@@ -93,6 +93,8 @@ def test_backend_plan_has_versioned_arrays_and_independent_numpy_executor() -> N
     np.testing.assert_allclose(
         plan.apply(state), operator.dense() @ state, rtol=1e-12, atol=1e-12
     )
+    with pytest.raises(MemoryError, match="backend MVP working memory"):
+        plan.apply(state, max_bytes=1)
 
 
 def test_native_mvp_plan_reuses_compiled_masks() -> None:
