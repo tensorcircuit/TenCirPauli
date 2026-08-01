@@ -300,6 +300,23 @@ def test_tensorcircuit_jax_20q_heisenberg_mvp_warm(
 
 
 @pytest.mark.parametrize("next_nearest", (False, True))
+def test_tensorcircuit_jax_16q_heisenberg_sparse_warm(
+    benchmark: BenchmarkFixture, next_nearest: bool
+) -> None:
+    """Measure raw JAX BCOO construction for the local 16-qubit chains."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    _, structures, weights, _ = make_heisenberg_chain(16, next_nearest=next_nearest)
+    expected = _make_jax_sparse(structures, weights)
+    _sync_sparse(expected)
+    result = benchmark(_make_jax_sparse_synced, structures, weights)
+    _sync_sparse(result)
+    _assert_jax_sparse_shape(result, 16, len(structures), canonical=False)
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
 def test_tensorcircuit_jax_16q_heisenberg_sparse_sum_duplicates_warm(
     benchmark: BenchmarkFixture, next_nearest: bool
 ) -> None:

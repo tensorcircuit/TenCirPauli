@@ -46,6 +46,8 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 局域 Heisenberg benchmark 说明了 locality 的实际边界：20q 最近邻链（57 terms）约为 `6.82 ms` MVP、`107.9 ms` COO、`103.1 ms` CSR；加入次近邻后（111 terms）约为 `13.38/214.5/199.4 ms`。这些显式输出实际约占 `352/273 MB` 和 `652/497 MB`（COO/CSR），因此当前 4 GiB 默认预算可以覆盖这类 workload；MVP 仍避免这些 index/value allocations。
 
+同一 workload 的 TensorCircuit 1.8.0/JAX 0.10.0 complex128 对照显示：20q MVP 约为 `6.84/14.21 ms`（最近邻/次近邻），TenCirPauli native 约为 `5.70/13.37 ms`。16q raw JAX BCOO construction 约为 `12.4/26.8 ms`，warm `sum_duplicates()` 约为 `207/414 ms`；TenCirPauli canonical COO/CSR 约为 `5.7/4.8 ms` 和 `9.6/9.0 ms`。这说明局域模型上 native MVP 的优势约为 `1.1–1.2x`，显式 sparse raw construction 约为 `2.2–3.0x`，而要求 unique/sorted canonical sparse 时差距更大；所有 JAX timed calls 都在内部同步。
+
 ## 3.1 Rust sparse/MVP 性能的根因
 
 旧 Rust COO 的核心循环是 `term -> column -> BTreeMap<(row,column), value>`。该设计虽正确，却有树查找、比较和节点分配开销。当前实现按 MSB X mask 分组；一般路径按 row 分块聚合、exact-zero filter 和稳定 row-major sort，并使用 Rayon 处理大 workload，CSR 直接从 row counts 构造；当每个 X mask 只有一个 term 时则直接填充最终 COO/CSR arrays，避免候选 entries、row 字段和二次拆分。TensorCircuit 的 NumPy 路径则先用向量化 bit operations 生成整列 indices/values，再交给 SciPy 的 C 实现合并；JAX 路径进一步用 `vmap`/XLA 执行，所以不能用“Rust 语言”本身解释差距。
