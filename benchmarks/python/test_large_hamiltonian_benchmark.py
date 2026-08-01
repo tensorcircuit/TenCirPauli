@@ -121,6 +121,15 @@ def _sum_duplicates_synced(value: Any) -> Any:
     return result
 
 
+def _make_jax_sparse_canonical_synced(structures: Terms, weights: Weights) -> Any:
+    """Construct, canonicalize, and synchronize one JAX BCOO value."""
+    raw = _make_jax_sparse(structures, weights)
+    _sync_sparse(raw)
+    result = raw.sum_duplicates()
+    _sync_sparse(result)
+    return result
+
+
 def _assert_jax_sparse_shape(
     value: Any, nqubits: int, count: int, *, canonical: bool
 ) -> None:
@@ -344,6 +353,38 @@ def test_tensorcircuit_jax_16q_heisenberg_sparse_sum_duplicates_warm(
     )
 
 
+@pytest.mark.parametrize("next_nearest", (False, True))
+def test_tensorcircuit_jax_16q_heisenberg_sparse_end_to_end_warm(
+    benchmark: BenchmarkFixture, next_nearest: bool
+) -> None:
+    """Measure complete local 16q JAX sparse construction and canonicalization."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, weights, _ = make_heisenberg_chain(
+        16, next_nearest=next_nearest
+    )
+    expected = _make_jax_sparse_canonical_synced(structures, weights)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark.pedantic(
+        _make_jax_sparse_canonical_synced,
+        args=(structures, weights),
+        rounds=5,
+        iterations=1,
+        warmup_rounds=1,
+    )
+    _sync_sparse(result)
+    assert bool(result.unique_indices)
+    assert bool(result.indices_sorted)
+    assert (
+        int(np.count_nonzero(np.abs(np.asarray(result.data)) > 1e-12)) == canonical_nnz
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.data), np.asarray(expected.data), rtol=1e-12, atol=1e-12
+    )
+
+
 def test_tensorcircuit_jax_20q_heisenberg_sparse_warm(
     benchmark: BenchmarkFixture,
 ) -> None:
@@ -391,6 +432,35 @@ def test_tensorcircuit_jax_20q_heisenberg_sparse_sum_duplicates_warm(
     assert bool(result.unique_indices)
     assert bool(result.indices_sorted)
     assert int(result.nse) == 20 * (1 << 20)
+    assert (
+        int(np.count_nonzero(np.abs(np.asarray(result.data)) > 1e-12)) == canonical_nnz
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.data), np.asarray(expected.data), rtol=1e-12, atol=1e-12
+    )
+
+
+def test_tensorcircuit_jax_20q_heisenberg_sparse_end_to_end_warm(
+    benchmark: BenchmarkFixture,
+) -> None:
+    """Measure complete local 20q JAX sparse construction and canonicalization."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, weights, _ = make_heisenberg_chain(20, next_nearest=False)
+    expected = _make_jax_sparse_canonical_synced(structures, weights)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark.pedantic(
+        _make_jax_sparse_canonical_synced,
+        args=(structures, weights),
+        rounds=3,
+        iterations=1,
+        warmup_rounds=1,
+    )
+    _sync_sparse(result)
+    assert bool(result.unique_indices)
+    assert bool(result.indices_sorted)
     assert (
         int(np.count_nonzero(np.abs(np.asarray(result.data)) > 1e-12)) == canonical_nnz
     )
