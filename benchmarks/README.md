@@ -24,6 +24,8 @@ The runner stores Criterion baselines, pytest-benchmark JSON, and a metadata man
 
 The repository pre-commit hook runs `python scripts/check.py`, which records a full benchmark only after formatting, linting, typing, and correctness tests pass. Use `python scripts/check.py --benchmark smoke` for a fast manual harness check or `--benchmark skip` when benchmarking is intentionally handled separately; the installed hook always uses `record`.
 
+Current Hamiltonian coverage includes PauliWord/public batch conversion, operator canonicalization, QWC grouping, dense/COO/CSR/native MVP/backend-plan targets, TensorCircuit NumPy/JAX sparse construction and canonicalization, and 20-qubit sparse/MVP workloads with explicit memory-guard cases. General commuting grouping, full operator algebra throughput, backend-plan execution, and larger propagation workloads remain separate benchmark candidates rather than unreported performance claims.
+
 ## Compare with an earlier run
 
 List available local records and compare the current checkout with one baseline:

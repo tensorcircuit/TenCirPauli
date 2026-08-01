@@ -16,7 +16,7 @@
 | P0 | 当前 public native MVP 的默认一次性调用仍会重新编译 operator；此前缺少可复用 plan 的问题已修复。 | 新增 `PauliOperator.native_mvp_plan()`、NumPy zero-copy PyO3 input/output 和 reusable Rust plan；一次性 `PauliOperator.mvp()` 仍保留直接路径。 | 后续 benchmark 必须区分一次性 native MVP 和重复 apply 的 reusable plan；重复 workload 应使用 reusable plan。 |
 | P1 | Rust MVP inner loop 的临时 `codes()` 扫描问题已修复，但仍需持续 profile。 | 当前 term 只预计算 packed X/Z masks 和 Y phase；reusable plan 按 X mask 预计算 diagonal。 | 已解决当前 slice：NumPy boundary zero-copy complex buffers、Rust output direct-fill、Rayon row-parallel apply；`/usr/bin/sample` 已确认热路径为 `MvpPlan::apply_into`/Rayon。只有 profile 证明必要时再评估更底层 SIMD。 |
 | P1 | `BackendMVPPlan` 的 NumPy executor 和 TensorCircuit adapter 仍在 Python 中逐 term 组织 mask、flip 和累加。 | `hamiltonian.py` 和 `integrations/tensorcircuit.py` 都有 term/qubit Python loops；同机 JAX warm 性能没有明显优于 TensorCircuit 原生 MVP。 | 将它定位为 portable reference/plan adapter；若要成为性能路径，应批量化 masks/indices，并单独 benchmark setup、compile、warm apply。 |
-| P1 | sparse matrix 的跨实现 benchmark 曾尚未进入最终持久化性能证据。 | 当前实现已按 X mask 分组后生成 contiguous candidate entries；同 workload 的 release 补测已明显快于 TensorCircuit NumPy 和 JAX raw construction。 | 已解决：clean label `20260801T101504Z_dc089491dd43` 包含 TenCirPauli public COO、TensorCircuit NumPy COO construction、JAX BCOO first/warm construction、first/warm `sum_duplicates()` 和 warm matvec。 |
+| P1 | sparse matrix 的跨实现 benchmark 曾尚未进入最终持久化性能证据。 | 当前实现已按 X mask 分组后生成 contiguous candidate entries；同 workload 的 release 补测已覆盖 TensorCircuit NumPy/JAX construction、canonicalization 和 matvec。 | 已解决：clean label `20260801T104116Z_a872af7f8e5b` 包含同步后的 TenCirPauli public COO、TensorCircuit NumPy COO construction、JAX BCOO first/warm construction、first/warm `sum_duplicates()`、warm matvec，以及 20-qubit sparse/MVP workload。 |
 | P1 | 当前 benchmark workload 与 JAX 对照 workload 不完全一致。 | Phase 1 Rust Hamiltonian benchmark 使用 duplicate-heavy 小系统；JAX 对照使用 10/16 qubits 的 unique terms。 | 保留历史 benchmark，同时新增一套同结构、同 canonical term count、同 dtype 的 cross-implementation workload。 |
 | P1 | 性能原则要求 profiling，但当前交付记录主要是 timing，没有 allocation/peak-memory/profile evidence。 | `implementation-status.md` 记录 Criterion/pytest-benchmark 数字，但没有 profiler 或 allocation breakdown。 | 对 native MVP、COO/CSR 和 grouping 至少保存一次本机 profile 摘要；不要把 profile 文件提交进仓库，只提交 workload、命令和结论。 |
 | P2 | TensorCircuit adapter 的 setup 成本可能抵消 backend plan 的收益。 | 同机 complex128 测量中，10/16 qubits 的 TenCirPauli adapter setup 约 35/62 ms；TensorCircuit 原生 MVP setup 约 1/4 ms。 | 若 adapter 保留，预构造并缓存 backend-friendly masks；或者明确它只保证语义/plan reuse，不承诺一次性 setup 加速。 |
@@ -28,19 +28,21 @@
 
 TenCirPauli backend plan 加 JAX 仍然是另一条 backend/AD 路径；native reusable plan 的优势来自 Rust CPU 预计算，不应与 backend plan 的 JAX warm 数字混淆。backend plan 继续用于需要 TensorCircuit backend、JAX JIT 或 AD 的工作流。
 
-本次 sparse 补测使用相同的 unique terms、complex128 和 CPU；结果来自 release-mode `pytest-benchmark` clean label `20260801T101504Z_dc089491dd43`：
+本次 sparse 补测使用相同的 unique terms、complex128 和 CPU；JAX 数据在 timed callable 内显式 `block_until_ready()`，结果来自 release-mode `pytest-benchmark` clean label `20260801T104116Z_a872af7f8e5b`：
 
 | workload | TenCirPauli COO | TensorCircuit NumPy COO | JAX BCOO first / warm construction | JAX first / warm `sum_duplicates()` |
 | --- | ---: | ---: | ---: | ---: |
-| 8q / 32 terms | 0.057 ms | 3.51 ms | 219 ms / 0.794 ms | 453 ms / 1.668 ms |
-| 10q / 64 terms | 0.200 ms | 9.20 ms | 165 ms / 1.337 ms | 427 ms / 4.981 ms |
-| 12q / 64 terms | 0.715 ms | 20.91 ms | 160 ms / 1.457 ms | 450 ms / 20.739 ms |
+| 8q / 32 terms | 0.057 ms | 3.50 ms | 179 ms / 0.799 ms | 421 ms / 1.429 ms |
+| 10q / 64 terms | 0.198 ms | 8.97 ms | 170 ms / 1.342 ms | 449 ms / 5.898 ms |
+| 12q / 64 terms | 0.696 ms | 19.96 ms | 164 ms / 2.606 ms | 464 ms / 21.841 ms |
 
-TenCirPauli COO 相对 JAX raw warm construction 约快 `14.0x/6.7x/2.0x`，相对 JAX warm duplicate canonicalization 约快 `29x/25x/29x`；在 `n=8` 上跨实现 dense reconstruction 的最大误差小于 `5e-15`。
+TenCirPauli COO 相对 JAX raw warm construction 约快 `14.0x/6.8x/3.7x`，相对 JAX warm duplicate canonicalization 约快 `25x/30x/31x`；在 `n=8` 上跨实现 dense reconstruction 的最大误差小于 `5e-15`。此前没有在 timed callable 内同步的 JAX warm 数字已废弃。
 
 Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的 raw `nse` 为 `8192/65536/262144`，即 `terms * 2**n`，且 `unique_indices=False`；调用 `sum_duplicates()` 后它变成 `unique_indices=True` 的 padded BCOO，`nse` 为 `2048/8192/32768`，exact nonzero data count 为 `1984/7680/30720`，而 TenCirPauli canonical COO exact nnz 为 `1984/7296/29184`。JAX 的 `sum_duplicates()` 可能因浮点重复求和留下约 `1e-16` 的 cancellation residual，因此“精确非零数”和阈值后的数学 support 也要分开记录；JAX raw 和 padded canonical storage 仍都大于 TenCirPauli 的 exact canonical COO storage。
 
 重复 entry 并不会让 JAX BCOO 的基本矩阵乘法失效：当前 n=8 对照中 `unique_indices=False`、`nse=8192`，直接执行 `sparse @ state` 与 `sparse.todense() @ state` 的最大误差仍约为 `7.3e-15`。但 raw BCOO 不是 canonical COO；如果后续算子要求 unique/sorted indices、稳定 nnz、低内存或 exact aggregation，就必须在 plan 阶段生成 canonical structure，或者显式承担 JAX `sum_duplicates()` 的首次编译和 warm canonicalization 成本。
+
+20-qubit full-width workload 的结果进一步说明了这个边界：对 64 terms 的 matrix-free MVP，TenCirPauli native plan/apply 约为 `0.084/8.06 ms`，JAX first/warm MVP 约为 `1.192 s/20.12 ms`；对 3 terms 的 materialized sparse target，TenCirPauli COO/CSR 约为 `85.15/87.05 ms`，JAX raw BCOO first/warm construction 约为 `259.6/17.87 ms`，JAX first/warm `sum_duplicates()` 约为 `543.6/208.9 ms`。因此 JAX raw BCOO 在“只生成可执行的未 canonical sparse entries”时更快，但完成 unique/sorted canonicalization 后 Rust 更快；20q/64 terms 的 COO/CSR 则由默认 256 MiB memory guard 在分配前拒绝。
 
 ## 3.1 Rust sparse/MVP 性能的根因
 
@@ -58,7 +60,7 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 3. 是否接受 Rust native MVP 只作为当前正确性实现，暂不承诺超过 JAX warm kernel？当前固定 workload 的 reusable native plan 已超过 TensorCircuit JAX warm；仍需在随机高 X-mask cardinality workload 上验证 memory fallback 和 scaling，不能扩大结论到所有 Hamiltonian。
 
-4. COO/CSR 与 TensorCircuit NumPy/JAX sparse 对照已加入 benchmark harness 并进入 clean label；JAX BCOO 的 raw `nse`、padded canonical `nse`、exact data count、thresholded support 和 storage bytes 必须继续分开报告。
+4. COO/CSR 与 TensorCircuit NumPy/JAX sparse 对照已加入 benchmark harness 并进入 clean label；JAX BCOO 的 raw `nse`、padded canonical `nse`、exact data count、thresholded support 和 storage bytes 必须继续分开报告，且所有异步 JAX target 必须在 timed callable 内同步。
 
 5. `phase-1-spec.md` checklist 已与实现同步为 `[x]`；最终 completion record 仍以 unified check、clean benchmark label 和本地 commits 为准。
 
@@ -71,4 +73,4 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 ## 6. 审核后的执行顺序
 
-执行记录：canonicalization mapping 语义已明确并实现；native reusable MVP plan 已公开策略；native MVP 已完成 release/profile 优化；COO/CSR/JAX sparse cross-implementation benchmark 已加入并写入 clean status label，且已补齐 JAX BCOO construction 与 duplicate canonicalization 的 cold/warm 对照。Phase 1 closeout 已完成。
+执行记录：canonicalization mapping 语义已明确并实现；native reusable MVP plan 已公开策略；native MVP 已完成 release/profile 优化；COO/CSR/JAX sparse cross-implementation benchmark 已加入并写入 clean status label，且已补齐 JAX BCOO construction、duplicate canonicalization、20-qubit sparse/MVP 和异步同步校正。Phase 1 closeout 已完成。
