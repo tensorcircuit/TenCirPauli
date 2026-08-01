@@ -4,7 +4,7 @@
 
 ## 1. 审查范围
 
-审查对象是基于 `0ae1973` 的当前本地 Phase 1 实现、`phase-1-spec.md`、`implementation-status.md`、release-mode Rust benchmark、public Python boundary benchmark，以及同机 TensorCircuit/JAX 对照。当前代码修改均未提交，TensorCircuit 仓库只读、未修改；TenCirPauli 仓库未配置 Git remote，也没有执行 push。
+审查对象是基于 `0ae1973` 演进到 `0a546a6` 的当前本地 Phase 1 实现、`phase-1-spec.md`、`implementation-status.md`、release-mode Rust benchmark、public Python boundary benchmark，以及同机 TensorCircuit/JAX 对照。性能代码和文档已提交到本地 focused commits；TensorCircuit 仓库只读、未修改；TenCirPauli 仓库未配置 Git remote，也没有执行 push。
 
 ## 2. 已确认的问题
 
@@ -16,7 +16,7 @@
 | P0 | 当前 public native MVP 的默认一次性调用仍会重新编译 operator；此前缺少可复用 plan 的问题已修复。 | 新增 `PauliOperator.native_mvp_plan()`、NumPy zero-copy PyO3 input/output 和 reusable Rust plan；一次性 `PauliOperator.mvp()` 仍保留直接路径。 | 后续 benchmark 必须区分一次性 native MVP 和重复 apply 的 reusable plan；重复 workload 应使用 reusable plan。 |
 | P1 | Rust MVP inner loop 的临时 `codes()` 扫描问题已修复，但仍需持续 profile。 | 当前 term 只预计算 packed X/Z masks 和 Y phase；reusable plan 按 X mask 预计算 diagonal。 | 已解决当前 slice：NumPy boundary zero-copy complex buffers、Rust output direct-fill、Rayon row-parallel apply；`/usr/bin/sample` 已确认热路径为 `MvpPlan::apply_into`/Rayon。只有 profile 证明必要时再评估更底层 SIMD。 |
 | P1 | `BackendMVPPlan` 的 NumPy executor 和 TensorCircuit adapter 仍在 Python 中逐 term 组织 mask、flip 和累加。 | `hamiltonian.py` 和 `integrations/tensorcircuit.py` 都有 term/qubit Python loops；同机 JAX warm 性能没有明显优于 TensorCircuit 原生 MVP。 | 将它定位为 portable reference/plan adapter；若要成为性能路径，应批量化 masks/indices，并单独 benchmark setup、compile、warm apply。 |
-| P1 | sparse matrix 的跨实现 benchmark 尚未进入最终持久化性能证据。 | 当前实现已按 X mask 分组后生成 contiguous candidate entries；同 workload 的 release 补测已明显快于 TensorCircuit NumPy。 | 已加入 benchmark harness：TenCirPauli public COO、TensorCircuit NumPy COO construction，以及 JAX BCOO warm matvec；最终 clean label 仍待本地提交后记录。 |
+| P1 | sparse matrix 的跨实现 benchmark 曾尚未进入最终持久化性能证据。 | 当前实现已按 X mask 分组后生成 contiguous candidate entries；同 workload 的 release 补测已明显快于 TensorCircuit NumPy。 | 已解决：clean label `20260801T093405Z_0a546a696d38` 包含 TenCirPauli public COO、TensorCircuit NumPy COO construction，以及 JAX BCOO warm matvec。 |
 | P1 | 当前 benchmark workload 与 JAX 对照 workload 不完全一致。 | Phase 1 Rust Hamiltonian benchmark 使用 duplicate-heavy 小系统；JAX 对照使用 10/16 qubits 的 unique terms。 | 保留历史 benchmark，同时新增一套同结构、同 canonical term count、同 dtype 的 cross-implementation workload。 |
 | P1 | 性能原则要求 profiling，但当前交付记录主要是 timing，没有 allocation/peak-memory/profile evidence。 | `implementation-status.md` 记录 Criterion/pytest-benchmark 数字，但没有 profiler 或 allocation breakdown。 | 对 native MVP、COO/CSR 和 grouping 至少保存一次本机 profile 摘要；不要把 profile 文件提交进仓库，只提交 workload、命令和结论。 |
 | P2 | TensorCircuit adapter 的 setup 成本可能抵消 backend plan 的收益。 | 同机 complex128 测量中，10/16 qubits 的 TenCirPauli adapter setup 约 35/62 ms；TensorCircuit 原生 MVP setup 约 1/4 ms。 | 若 adapter 保留，预构造并缓存 backend-friendly masks；或者明确它只保证语义/plan reuse，不承诺一次性 setup 加速。 |
@@ -46,11 +46,11 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 1. `input_to_canonical`、phase multipliers 和动态 coefficient reduction 已按 Phase 1 REQUIRED 补齐；code-array 输入的 phase multipliers 明确全部为 exact `+1`，后续 phaseful input 不能复用该 API 而静默改变语义。
 
-2. 是否把 reusable native MVP plan/apply 作为 Phase 1 的性能修正？当前工作区已实现，待 clean benchmark label 和 commit 固化。
+2. reusable native MVP plan/apply 已作为 Phase 1 性能修正固化在本地 commits `ff02ae8`/`4b10598`，clean benchmark label 为 `20260801T093405Z_0a546a696d38`。
 
 3. 是否接受 Rust native MVP 只作为当前正确性实现，暂不承诺超过 JAX warm kernel？当前固定 workload 的 reusable native plan 已超过 TensorCircuit JAX warm；仍需在随机高 X-mask cardinality workload 上验证 memory fallback 和 scaling，不能扩大结论到所有 Hamiltonian。
 
-4. COO/CSR 与 TensorCircuit NumPy/JAX sparse 对照已加入 benchmark harness，当前 clean-label 仍需在本地 focused commits 后记录；JAX BCOO 的 raw `nse` 与 canonical nnz 必须继续分开报告。
+4. COO/CSR 与 TensorCircuit NumPy/JAX sparse 对照已加入 benchmark harness 并进入 clean label；JAX BCOO 的 raw `nse` 与 canonical nnz 必须继续分开报告。
 
 5. `phase-1-spec.md` checklist 已与实现同步为 `[x]`；最终 completion record 仍以 unified check、clean benchmark label 和本地 commits 为准。
 
@@ -63,4 +63,4 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 ## 6. 审核后的执行顺序
 
-执行记录：canonicalization mapping 语义已明确并实现；native reusable MVP plan 已公开策略；native MVP 已完成 release/profile 优化；COO/CSR/JAX sparse cross-implementation benchmark 已加入并写入 status。剩余工作仅是最终 clean benchmark label、unified checks 和 local commits。
+执行记录：canonicalization mapping 语义已明确并实现；native reusable MVP plan 已公开策略；native MVP 已完成 release/profile 优化；COO/CSR/JAX sparse cross-implementation benchmark 已加入并写入 clean status label。Phase 1 closeout 已完成。
