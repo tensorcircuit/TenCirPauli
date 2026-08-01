@@ -8,7 +8,9 @@ from typing import Any, Sequence, Tuple, cast
 import numpy as np
 
 
-DEFAULT_MAX_BYTES = 256 * 1024 * 1024
+# A practical default for explicit statevector Hamiltonian targets. Users can
+# lower or raise this per call through the public ``max_bytes`` parameter.
+DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)

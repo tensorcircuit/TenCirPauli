@@ -42,7 +42,9 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 重复 entry 并不会让 JAX BCOO 的基本矩阵乘法失效：当前 n=8 对照中 `unique_indices=False`、`nse=8192`，直接执行 `sparse @ state` 与 `sparse.todense() @ state` 的最大误差仍约为 `7.3e-15`。但 raw BCOO 不是 canonical COO；如果后续算子要求 unique/sorted indices、稳定 nnz、低内存或 exact aggregation，就必须在 plan 阶段生成 canonical structure，或者显式承担 JAX `sum_duplicates()` 的首次编译和 warm canonicalization 成本。
 
-20-qubit full-width workload 的历史 clean-label 结果进一步说明了这个边界：对 64 terms 的 matrix-free MVP，TenCirPauli native plan/apply 约为 `0.084/8.06 ms`，JAX first/warm MVP 约为 `1.192 s/20.12 ms`；优化前对 3 terms 的 materialized sparse target，TenCirPauli COO/CSR 约为 `85.15/87.05 ms`，JAX raw BCOO first/warm construction 约为 `259.6/17.87 ms`。row-parallel direct-output 优化后的完整 Python benchmark record `20260801T111756Z_96ab8a52ae97-dirty` 测得同一 native 20q/3-term COO/CSR 约为 `7.49/5.77 ms`，已经快于 JAX raw warm construction；JAX first/warm `sum_duplicates()` 仍约为 `543.6/208.9 ms`。20q/64 terms 的 COO/CSR 仍由默认 256 MiB memory guard 在分配前拒绝，但现在按最终输出估算约为 `2.147/1.619 GB`。
+20-qubit full-width workload 的历史 clean-label 结果进一步说明了这个边界：对 64 terms 的 matrix-free MVP，TenCirPauli native plan/apply 约为 `0.084/8.06 ms`，JAX first/warm MVP 约为 `1.192 s/20.12 ms`；优化前对 3 terms 的 materialized sparse target，TenCirPauli COO/CSR 约为 `85.15/87.05 ms`，JAX raw BCOO first/warm construction 约为 `259.6/17.87 ms`。row-parallel direct-output 优化后的完整 Python benchmark record `20260801T111756Z_96ab8a52ae97-dirty` 测得同一 native 20q/3-term COO/CSR 约为 `7.49/5.77 ms`，已经快于 JAX raw warm construction；JAX first/warm `sum_duplicates()` 仍约为 `543.6/208.9 ms`。默认 materialization budget 已从 256 MiB 调整为公开的 4 GiB `DEFAULT_MAX_BYTES`；更大的请求仍由 source-level guard 拒绝，除非调用者显式提高 `max_bytes`。
+
+局域 Heisenberg benchmark 说明了 locality 的实际边界：20q 最近邻链（57 terms）约为 `6.82 ms` MVP、`107.9 ms` COO、`103.1 ms` CSR；加入次近邻后（111 terms）约为 `13.38/214.5/199.4 ms`。这些显式输出实际约占 `352/273 MB` 和 `652/497 MB`（COO/CSR），因此当前 4 GiB 默认预算可以覆盖这类 workload；MVP 仍避免这些 index/value allocations。
 
 ## 3.1 Rust sparse/MVP 性能的根因
 

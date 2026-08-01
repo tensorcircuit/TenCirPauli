@@ -13,6 +13,7 @@ from tencirpauli import PauliOperator
 
 Terms = Tuple[Tuple[int, ...], ...]
 Weights = Tuple[float, ...]
+MVP_TEST_MAX_BYTES = 256 * 1024 * 1024
 
 
 def make_terms(nqubits: int, count: int, seed: int) -> Tuple[Terms, Weights]:
@@ -36,6 +37,34 @@ def make_operator(
     state = rng.normal(size=1 << nqubits) + 1j * rng.normal(size=1 << nqubits)
     state = (state / np.linalg.norm(state)).astype(np.complex128)
     return operator, structures, weights, state
+
+
+def make_heisenberg_chain(
+    nqubits: int, *, next_nearest: bool
+) -> Tuple[PauliOperator, Terms, Weights, np.ndarray[Any, Any]]:
+    """Build a deterministic open Heisenberg chain with local Pauli terms."""
+    structures = []
+    weights = []
+    distances = (1, 2) if next_nearest else (1,)
+    for distance in distances:
+        coupling = 1.0 if distance == 1 else 0.5
+        for left in range(nqubits - distance):
+            for code in (1, 2, 3):
+                structure = [0] * nqubits
+                structure[left] = code
+                structure[left + distance] = code
+                structures.append(tuple(structure))
+                weights.append(coupling)
+    structure_tuple = tuple(structures)
+    weight_tuple = tuple(weights)
+    operator = PauliOperator.from_terms(
+        nqubits, tuple(zip(structure_tuple, weight_tuple))
+    )
+    state = np.random.default_rng(20260801 + nqubits).normal(
+        size=1 << nqubits
+    ) + 1j * np.random.default_rng(7 + nqubits).normal(size=1 << nqubits)
+    state = (state / np.linalg.norm(state)).astype(np.complex128)
+    return operator, structure_tuple, weight_tuple, state
 
 
 def _sync(value: Any) -> None:
@@ -105,11 +134,11 @@ def _assert_jax_sparse_shape(
 
 
 @pytest.mark.parametrize("target", ("coo", "csr"))
-def test_native_20q_sparse_memory_guard(
+def test_native_22q_sparse_memory_guard(
     benchmark: BenchmarkFixture, target: str
 ) -> None:
-    """Measure explicit refusal of an oversized 20q/64-term matrix target."""
-    operator, _, _, _ = make_operator(20, 64, 20260820)
+    """Measure explicit refusal of a matrix target above the 4 GiB default."""
+    operator, _, _, _ = make_operator(22, 64, 20260820)
     compile_target = getattr(operator, target)
 
     def reject_oversized_target() -> str:
@@ -117,7 +146,7 @@ def test_native_20q_sparse_memory_guard(
             compile_target()
         except MemoryError as error:
             return str(error)
-        raise AssertionError(f"20q/64-term {target} target unexpectedly succeeded")
+        raise AssertionError(f"22q/64-term {target} target unexpectedly succeeded")
 
     message = benchmark(reject_oversized_target)
     assert "exceeds memory limit" in message
@@ -147,8 +176,8 @@ def test_native_20q_csr_warm(benchmark: BenchmarkFixture) -> None:
 def test_native_20q_mvp_plan_construction(benchmark: BenchmarkFixture) -> None:
     """Measure 20q/64-term reusable native MVP plan construction."""
     operator, _, _, _ = make_operator(20, 64, 20260820)
-    expected = operator.native_mvp_plan()
-    result = benchmark(operator.native_mvp_plan)
+    expected = operator.native_mvp_plan(max_bytes=MVP_TEST_MAX_BYTES)
+    result = benchmark(operator.native_mvp_plan, max_bytes=MVP_TEST_MAX_BYTES)
     assert result.strategy == expected.strategy == "term_direct"
     assert result.term_count == expected.term_count == 64
 
@@ -156,10 +185,55 @@ def test_native_20q_mvp_plan_construction(benchmark: BenchmarkFixture) -> None:
 def test_native_20q_mvp_warm(benchmark: BenchmarkFixture) -> None:
     """Measure 20q/64-term reusable native MVP application."""
     operator, _, _, state = make_operator(20, 64, 20260820)
+    plan = operator.native_mvp_plan(max_bytes=MVP_TEST_MAX_BYTES)
+    expected = plan.apply(state)
+    result = benchmark.pedantic(plan.apply, args=(state,), rounds=5, iterations=1)
+    np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
+def test_native_20q_heisenberg_mvp_warm(
+    benchmark: BenchmarkFixture, next_nearest: bool
+) -> None:
+    """Measure MVP for a 20-qubit nearest/next-nearest Heisenberg chain."""
+    operator, _, _, state = make_heisenberg_chain(20, next_nearest=next_nearest)
     plan = operator.native_mvp_plan()
     expected = plan.apply(state)
     result = benchmark.pedantic(plan.apply, args=(state,), rounds=5, iterations=1)
     np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
+@pytest.mark.parametrize("target", ("coo", "csr"))
+def test_native_16q_heisenberg_sparse_warm(
+    benchmark: BenchmarkFixture, target: str, next_nearest: bool
+) -> None:
+    """Measure explicit sparse construction for a local 16-qubit chain."""
+    operator, _, _, _ = make_heisenberg_chain(16, next_nearest=next_nearest)
+    compile_target = getattr(operator, target)
+    expected = compile_target()
+    result = benchmark.pedantic(compile_target, rounds=5, iterations=1)
+    assert result.data.size == expected.data.size
+    np.testing.assert_allclose(result.data, expected.data, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
+@pytest.mark.parametrize("target", ("coo", "csr"))
+def test_native_20q_heisenberg_sparse_with_default_budget(
+    benchmark: BenchmarkFixture, target: str, next_nearest: bool
+) -> None:
+    """Measure local 20-qubit sparse construction under the 4 GiB default."""
+    operator, _, _, _ = make_heisenberg_chain(20, next_nearest=next_nearest)
+    compile_target = getattr(operator, target)
+    expected = compile_target()
+    result = benchmark.pedantic(
+        compile_target,
+        rounds=3,
+        iterations=1,
+        warmup_rounds=1,
+    )
+    assert result.data.size == expected.data.size
+    np.testing.assert_allclose(result.data, expected.data, rtol=1e-12, atol=1e-12)
 
 
 def test_tensorcircuit_jax_20q_mvp_first(benchmark: BenchmarkFixture) -> None:
@@ -200,6 +274,56 @@ def test_tensorcircuit_jax_20q_mvp_warm(benchmark: BenchmarkFixture) -> None:
     _sync(result)
     np.testing.assert_allclose(
         tc.backend.numpy(result), tc.backend.numpy(expected), rtol=1e-12, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
+def test_tensorcircuit_jax_20q_heisenberg_mvp_warm(
+    benchmark: BenchmarkFixture, next_nearest: bool
+) -> None:
+    """Measure TensorCircuit/JAX MVP for the same local 20-qubit chains."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    _, structures, weights, state = make_heisenberg_chain(20, next_nearest=next_nearest)
+    compiled, backend_state = _make_jax_mvp(structures, weights, state)
+    expected = compiled(backend_state)
+    _sync(expected)
+    result = benchmark.pedantic(
+        _apply_jax_synced, args=(compiled, backend_state), rounds=5, iterations=1
+    )
+    _sync(result)
+    np.testing.assert_allclose(
+        tc.backend.numpy(result), tc.backend.numpy(expected), rtol=1e-12, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("next_nearest", (False, True))
+def test_tensorcircuit_jax_16q_heisenberg_sparse_sum_duplicates_warm(
+    benchmark: BenchmarkFixture, next_nearest: bool
+) -> None:
+    """Measure JAX sparse canonicalization for the local 16-qubit chains."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, weights, _ = make_heisenberg_chain(
+        16, next_nearest=next_nearest
+    )
+    raw = _make_jax_sparse(structures, weights)
+    _sync_sparse(raw)
+    expected = raw.sum_duplicates()
+    _sync_sparse(expected)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark(_sum_duplicates_synced, raw)
+    _sync_sparse(result)
+    assert int(raw.nse) == len(structures) * (1 << 16)
+    assert int(result.nse) >= canonical_nnz
+    assert bool(result.unique_indices)
+    assert bool(result.indices_sorted)
+    np.testing.assert_allclose(
+        np.asarray(result.data), np.asarray(expected.data), rtol=1e-12, atol=1e-12
     )
 
 

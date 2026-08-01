@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union, cast
 import numpy as np
 
 from . import _native
+from .hamiltonian import DEFAULT_MAX_BYTES
 
 
 if TYPE_CHECKING:
@@ -445,7 +446,7 @@ class PauliOperator:
             )
         )
 
-    def dense(self, max_bytes: int = 256 * 1024 * 1024) -> np.ndarray[Any, Any]:
+    def dense(self, max_bytes: int = DEFAULT_MAX_BYTES) -> np.ndarray[Any, Any]:
         """Materialize a bounded complex128 dense Hamiltonian matrix."""
         from . import _native
 
@@ -462,7 +463,7 @@ class PauliOperator:
         )
         return result
 
-    def coo(self, max_bytes: int = 256 * 1024 * 1024) -> "COOMatrix":
+    def coo(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "COOMatrix":
         """Compile deterministic, duplicate-aggregated COO arrays."""
         from . import _native
         from .hamiltonian import COOMatrix
@@ -482,7 +483,7 @@ class PauliOperator:
             (dimension, dimension),
         )
 
-    def csr(self, max_bytes: int = 256 * 1024 * 1024) -> "CSRMatrix":
+    def csr(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "CSRMatrix":
         """Compile deterministic CSR arrays from the canonical COO stream."""
         from . import _native
         from .hamiltonian import CSRMatrix
@@ -505,7 +506,7 @@ class PauliOperator:
     def mvp(
         self,
         state: Sequence[complex],
-        max_bytes: int = 256 * 1024 * 1024,
+        max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the Hamiltonian to a one-dimensional complex128 state."""
         from . import _native
@@ -529,7 +530,7 @@ class PauliOperator:
             ),
         )
 
-    def backend_mvp_plan(self, max_bytes: int = 256 * 1024 * 1024) -> "BackendMVPPlan":
+    def backend_mvp_plan(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "BackendMVPPlan":
         """Compile a versioned pure-array plan for backend execution."""
         from . import _native
         from .hamiltonian import BackendMVPPlan
@@ -554,7 +555,7 @@ class PauliOperator:
             + 1j * np.asarray(imaginary, dtype=np.float64),
         )
 
-    def native_mvp_plan(self, max_bytes: int = 256 * 1024 * 1024) -> "NativeMVPPlan":
+    def native_mvp_plan(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "NativeMVPPlan":
         """Compile a reusable Rust-native matrix-free MVP plan."""
         from . import _native
         from .hamiltonian import NativeMVPPlan
@@ -575,7 +576,7 @@ class PauliOperator:
             self.nqubits, len(self.terms), native_plan.strategy, native_plan
         )
 
-    def compile(self, target: str, max_bytes: int = 256 * 1024 * 1024) -> Any:
+    def compile(self, target: str, max_bytes: int = DEFAULT_MAX_BYTES) -> Any:
         """Compile one named Hamiltonian target through the public API."""
         if target == "dense":
             return self.dense(max_bytes=max_bytes)

@@ -50,6 +50,8 @@ native_plan = hamiltonian.native_mvp_plan()
 np.testing.assert_allclose(native_plan.apply(state), matrix @ state)
 ```
 
+Explicit `dense`, `coo`, `csr`, and MVP targets use the public `DEFAULT_MAX_BYTES` budget, currently 4 GiB. Pass `max_bytes` per call to lower the safety budget for a memory-constrained job or raise it when the host has enough RAM; a `MemoryError` reports the estimated request before a large allocation is attempted.
+
 Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It precomputes phase structure in Rust, releases the GIL during application, and avoids rebuilding the operator on every statevector call. Use `backend_mvp_plan()` when the calculation must remain inside a TensorCircuit backend and JAX autodiff/JIT is required.
 
 `PauliOperator.canonicalize_batch()` is the dynamic/backend-facing batch form: it returns canonical structures, aggregated coefficients including exact-zero keys, `input_to_canonical`, and exact phase multipliers. Static `PauliOperator.from_terms()` keeps its faster exact-zero-dropping path.

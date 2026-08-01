@@ -24,7 +24,7 @@ The runner stores Criterion baselines, pytest-benchmark JSON, and a metadata man
 
 The repository pre-commit hook runs `python scripts/check.py`, which records a full benchmark only after formatting, linting, typing, and correctness tests pass. Use `python scripts/check.py --benchmark smoke` for a fast manual harness check or `--benchmark skip` when benchmarking is intentionally handled separately; the installed hook always uses `record`.
 
-当前面向科学计算用户的性能覆盖包括：创建和检查 Pauli 项（权重、支集、对易性、乘法）；把大量 Pauli 项合并成确定性的 Pauli Hamiltonian；把 Hamiltonian 生成 dense、COO 或 CSR 矩阵；不生成矩阵而直接计算 `H|ψ⟩`；重复使用同一个 Hamiltonian 的 native MVP plan；把 Pauli 项分成可共同测量的 QWC groups；以及在 TensorCircuit/JAX 中执行 Hamiltonian MVP 和 sparse matrix。当前还覆盖了 20-qubit 的 Hamiltonian/MVP 规模和超出内存时的明确拒绝。general-commuting 分组、完整 operator algebra 吞吐、backend plan 的实际执行和更大规模 propagation 仍是后续 benchmark 候选，不把它们写成已经有性能结论的功能。
+当前面向科学计算用户的性能覆盖包括：创建和检查 Pauli 项（权重、支集、对易性、乘法）；把大量 Pauli 项合并成确定性的 Pauli Hamiltonian；把 Hamiltonian 生成 dense、COO 或 CSR 矩阵；不生成矩阵而直接计算 `H|ψ⟩`；重复使用同一个 Hamiltonian 的 native MVP plan；把 Pauli 项分成可共同测量的 QWC groups；以及在 TensorCircuit/JAX 中执行 Hamiltonian MVP 和 sparse matrix。当前还覆盖了 20-qubit 的随机与局域 Heisenberg Hamiltonian/MVP、4 GiB 默认预算下的显式 materialization，以及真正超过默认预算时的明确拒绝。general-commuting 分组、完整 operator algebra 吞吐、backend plan 的实际执行和更大规模 propagation 仍是后续 benchmark 候选，不把它们写成已经有性能结论的功能。
 
 ## Compare with an earlier run
 

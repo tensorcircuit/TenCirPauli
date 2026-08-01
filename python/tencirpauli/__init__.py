@@ -5,7 +5,13 @@ from .grouping import (
     GeneralCommutingGroupingResult,
     QWCGroupingResult,
 )
-from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix, NativeMVPPlan
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    BackendMVPPlan,
+    COOMatrix,
+    CSRMatrix,
+    NativeMVPPlan,
+)
 from .pauli import (
     CanonicalizationResult,
     PauliOperator,
@@ -17,6 +23,7 @@ from .pauli import (
 
 
 __all__ = [
+    "DEFAULT_MAX_BYTES",
     "BackendMVPPlan",
     "COOMatrix",
     "CSRMatrix",
