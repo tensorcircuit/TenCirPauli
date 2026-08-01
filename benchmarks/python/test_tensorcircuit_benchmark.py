@@ -52,6 +52,22 @@ def _make_tensorcircuit_jax_sparse(
     return tc.quantum.PauliStringSum2COO(structures, weights)
 
 
+def _make_tensorcircuit_jax_sparse_synced(
+    structures: Tuple[Tuple[int, ...], ...], weights: Tuple[float, ...]
+) -> Any:
+    """Construct and synchronize a JAX BCOO value inside the timed call."""
+    result = _make_tensorcircuit_jax_sparse(structures, weights)
+    _sync_sparse(result)
+    return result
+
+
+def _sum_duplicates_synced(value: Any) -> Any:
+    """Canonicalize and synchronize a JAX BCOO value inside the timed call."""
+    result = value.sum_duplicates()
+    _sync_sparse(result)
+    return result
+
+
 def _assert_jax_sparse_metadata(
     raw: Any, canonical: Any, raw_nse: int, canonical_nnz: int
 ) -> None:
@@ -135,7 +151,7 @@ def test_tensorcircuit_jax_sparse_construction_first(
     _, structures, _ = make_workload(nqubits, count)
     weights = tuple(1.0 + index / 100.0 for index in range(count))
     result = benchmark.pedantic(
-        _make_tensorcircuit_jax_sparse,
+        _make_tensorcircuit_jax_sparse_synced,
         args=(structures, weights),
         rounds=1,
         iterations=1,
@@ -161,7 +177,11 @@ def test_tensorcircuit_jax_sparse_sum_duplicates_first(
     _sync_sparse(raw)
     canonical_nnz = int(operator.coo().data.size)
     result = benchmark.pedantic(
-        raw.sum_duplicates, rounds=1, iterations=1, warmup_rounds=0
+        _sum_duplicates_synced,
+        args=(raw,),
+        rounds=1,
+        iterations=1,
+        warmup_rounds=0,
     )
     _sync_sparse(result)
     _assert_jax_sparse_metadata(raw, result, count * (1 << nqubits), canonical_nnz)
@@ -181,7 +201,7 @@ def test_tensorcircuit_jax_sparse_construction_warm(
     expected = _make_tensorcircuit_jax_sparse(structures, weights)
     _sync_sparse(expected)
     canonical_nnz = int(operator.coo().data.size)
-    result = benchmark(_make_tensorcircuit_jax_sparse, structures, weights)
+    result = benchmark(_make_tensorcircuit_jax_sparse_synced, structures, weights)
     _sync_sparse(result)
     canonical = result.sum_duplicates()
     _sync_sparse(canonical)
@@ -207,7 +227,7 @@ def test_tensorcircuit_jax_sparse_sum_duplicates_warm(
     expected = raw.sum_duplicates()
     _sync_sparse(expected)
     canonical_nnz = int(operator.coo().data.size)
-    result = benchmark(raw.sum_duplicates)
+    result = benchmark(_sum_duplicates_synced, raw)
     _sync_sparse(result)
     _assert_jax_sparse_metadata(raw, result, count * (1 << nqubits), canonical_nnz)
     np.testing.assert_allclose(
