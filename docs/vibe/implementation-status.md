@@ -45,7 +45,7 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P2 targeted/full tests：`conda run -p .conda pytest tests`，25 passed；Rust unit/doc tests 4 passed。
 - P3 targeted/full tests：`conda run -p .conda pytest tests`，30 passed；QWC reconstruction、identity, adversarial XX/ZZ graph, deterministic DSATUR and memory-bound matrix/edge paths covered。
 - P4 targeted/full tests：`conda run -p .conda pytest tests`，40 passed；dense/COO/CSR/MVP/backend plan 与独立 NumPy reference 全部通过，覆盖 n=0/首尾 qubit/invalid state/memory guard/overflow。
-- P5 targeted/full tests：`conda run -p .conda pytest tests`，41 passed, 2 skipped；skip 是当前本机未安装 TensorCircuit/JAX 的 optional backend differential cases，missing-dependency behavior 通过。Rust/Python quality and benchmark smoke all passed。
+- P5 targeted/full tests：默认项目环境 `conda run -p .conda pytest tests` 为 41 passed, 2 skipped；随后在不修改 TensorCircuit 源码、仅用只读 `PYTHONPATH` 加上本地 optional dependencies 的环境中，`PYTHONPATH=.../tensorcircuit conda run -p .conda pytest -q` 为 42 passed, 1 skipped，NumPy/JAX backend differential cases 均通过，唯一 skip 是安装依赖后不适用的 missing-dependency branch。Rust/Python quality and benchmark smoke all passed。
 - Rust format：通过。
 - Rust Clippy `-D warnings`：通过。
 - Rust unit/doc tests：2 passed。
@@ -70,7 +70,7 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P0–P5 REQUIRED items and acceptance gates are implemented in local commits `829221e`, `2e0f154`, `6b90270`, `acf5c60`, `9c11117`, and `c7d18c3`; the final documentation-only status update follows the same implementation.
 - Final quality evidence: `python scripts/check.py --fix --benchmark smoke` passed; this covers cargo fmt/clippy/test, Black, Ruff, mypy, release maturin, pytest, Rust benchmark smoke, and Python benchmark smoke. The final test count is 41 passed and 2 skipped because TensorCircuit/JAX are not installed in this workstation; missing-dependency behavior is tested and no fallback is used.
 - Final clean benchmark label `phase1-c7d18c3`: Rust canonicalization 128.65 µs/1k, 1.2906 ms/10k, 12.853 ms/100k; QWC grouping 331.28 µs/128 and 21.612 ms/1024; dense/COO/MVP/backend-plan kernels 26.513 µs/51.152 µs/19.905 µs/56.163 ns as reported by Criterion. Python complete-boundary means were 2.187 ms/1k, 22.339 ms/10k, 225.128 ms/100k canonicalization; 13.546 ms/1024 QWC; dense 49.981 ms, native MVP 303.937 µs, COO+CSR 613.707 µs, and backend-plan 6.506 µs on this machine. Numerical error remained within the documented differential tolerances; benchmark results are informational, not CI gates.
-- Known limitation is environmental only: optional TensorCircuit NumPy/JAX differential cases require installing those dependencies and are skipped locally. The adapter is lazy, explicit, and tested for missing dependency failure; it never silently falls back to NumPy or native execution.
+- Known limitation is explicit and intentional: the TensorCircuit adapter remains optional and its missing-dependency branch is only exercised when TensorCircuit is absent. The adapter is lazy, explicit, and never silently falls back to NumPy or native execution; the available NumPy/JAX differential smoke was run against the read-only local TensorCircuit source.
 
 ## Update protocol
 
