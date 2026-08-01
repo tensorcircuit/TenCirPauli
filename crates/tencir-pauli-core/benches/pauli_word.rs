@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tencir_pauli_core::{PauliOperator, PauliWord};
+use tencir_pauli_core::{group_words, GroupingAlgorithm, GroupingMode, PauliOperator, PauliWord};
 
 const SIZES: [usize; 3] = [64, 1_024, 16_384];
 
@@ -124,6 +124,38 @@ fn benchmark_canonicalization(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_grouping(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("grouping/qwc");
+    for count in [128_usize, 1_024] {
+        let words = (0..count)
+            .map(|index| {
+                PauliWord::from_codes(
+                    8,
+                    &(0..8)
+                        .map(|qubit| ((index / (qubit + 1)) % 4) as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(count),
+            &words,
+            |bencher, words_input| {
+                bencher.iter(|| {
+                    black_box(group_words(
+                        black_box(words_input),
+                        GroupingMode::QubitWise,
+                        GroupingAlgorithm::LargestFirst,
+                    ))
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -131,6 +163,6 @@ criterion_group! {
         .measurement_time(Duration::from_secs(2))
         .sample_size(50);
     targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication,
-        benchmark_canonicalization
+        benchmark_canonicalization, benchmark_grouping
 }
 criterion_main!(benches);

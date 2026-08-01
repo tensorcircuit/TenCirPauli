@@ -4,7 +4,7 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P3：Commutation 与 measurement grouping。
+完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P4：Hamiltonian compiler。
 
 ## Completed foundation
 
@@ -16,6 +16,8 @@
 - P1 typed error paths 已覆盖 invalid code/shape, incompatible qubit count, packed word length and non-negative nqubit validation。
 - P2 `PauliOperator` 已完成 deterministic canonical terms、complex128 coefficient storage、add、scale、multiply、commutator、anticommutator、adjoint 和 explicit-tolerance Hermiticity validation。
 - P2 static canonicalization 只删除 exact-zero aggregated terms；duplicate contributions 按 IEEE bit pattern deterministic reduction，结构与 coefficients 保持分离，未引入 parameter-dependent cutoff。
+- P3 Rust core/native grouping 已实现 QWC 与 general symplectic compatibility、largest-first greedy 和 DSATUR；公开 QWC result 提供 canonical membership、basis、coefficient mapping、reconstruction masks 和 `measurement_ready=True`。
+- P3 general grouping 使用独立 `GeneralCommutingGroupingResult`，明确 `measurement_ready=False`，不复用 QWC measurement plan。Dense compatibility matrix 与 bounded streaming incompatibility edge-list 两条路径均已提供。
 - Minimal phase-free `PauliWord` weight/commutation 路径已贯通 Rust、PyO3、Python 和 tests；S1 已确认该 phase-free 方向。
 - Linux/macOS/Windows correctness/package CI 与 GitHub Release/PyPI workflow 已建立。
 - 本地 Criterion + pytest-benchmark 记录/比较基础设施已建立；性能结果不进入 CI 门禁。
@@ -37,6 +39,7 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P0 targeted tests：`python -m pytest tests/test_numpy_reference.py`，13 passed。
 - P1 targeted tests：`conda run -p .conda pytest tests`，21 passed；Rust unit/doc tests 4 passed。
 - P2 targeted/full tests：`conda run -p .conda pytest tests`，25 passed；Rust unit/doc tests 4 passed。
+- P3 targeted/full tests：`conda run -p .conda pytest tests`，30 passed；QWC reconstruction、identity, adversarial XX/ZZ graph, deterministic DSATUR and memory-bound matrix/edge paths covered。
 - Rust format：通过。
 - Rust Clippy `-D warnings`：通过。
 - Rust unit/doc tests：2 passed。
@@ -45,13 +48,14 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - `scripts/check.py --benchmark smoke`：完整通过，包括 Rust/Python benchmark harness。
 - P1 benchmark workloads：Rust Criterion 已加入 code round-trip/multiply（6/64/256 qubits），Python pytest-benchmark 已加入 1,024-term batch conversion；smoke harness 全部通过。
 - P2 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已覆盖 1,000、10,000、100,000-term duplicate-heavy canonicalization；smoke harness 全部通过。P1 clean baseline 为 `p1-2e0f154`，P2 clean label 待 P2 commit 后记录。
+- P3 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已加入 QWC grouping（128/1,024 terms）；smoke harness 全部通过。P2 clean baseline 为 `p2-6b90270`，P3 clean label 待 P3 commit 后记录。
 - Local benchmark：`p0-829221e` 已在 clean commit 上完成 Rust/Python record；Rust weight kernel 为 1.02 ns (64 qubits)、3.00 ns (1024)、41.52 ns (16384)，commutation 为 2.15 ns、4.97 ns、62.93 ns；Python public-path workload mean 为 174.4 µs。该结果是本机 informational baseline，不构成 CI 门禁。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
 
 ## Next actions
 
-1. 在 P2 commit 后记录 clean benchmark label，并手动比较 canonicalization path 结果。
-2. 完成 P3：deterministic commutation kernel、QWC grouping、general algebraic prototype 和 reconstruction metadata。
+1. 在 P3 commit 后记录 clean benchmark label，并手动检查 group count、edge cost 和 reconstruction correctness。
+2. 完成 P4：dense/COO/CSR/native MVP/backend MVP plan 与 bounded allocation guards。
 
 ## Update protocol
 

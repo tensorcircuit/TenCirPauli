@@ -60,6 +60,24 @@ def pauli_operator_is_hermitian(
     coefficients_im: Sequence[float],
     tolerance: float,
 ) -> bool: ...
+def pauli_group(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    mode: int,
+    algorithm: int,
+) -> Sequence[Sequence[int]]: ...
+def pauli_compatibility_matrix(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    mode: int,
+    max_entries: int,
+) -> Sequence[bool]: ...
+def pauli_incompatibility_edges(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    mode: int,
+    max_edges: int,
+) -> Sequence[tuple[int, int]]: ...
 def pauli_commutes(
     nqubits: int,
     x_words_left: Sequence[int],

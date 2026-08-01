@@ -5,9 +5,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Iterable, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union
+
+import numpy as np
 
 from . import _native
+
+
+if TYPE_CHECKING:
+    from .grouping import GroupingResult
 
 
 class PauliPhase(IntEnum):
@@ -335,6 +341,54 @@ class PauliOperator:
                 coefficients_re,
                 coefficients_im,
                 tolerance,
+            )
+        )
+
+    def group_commuting(
+        self,
+        mode: str = "qubit_wise",
+        algorithm: str = "largest_first",
+        max_matrix_entries: int = 10_000_000,
+    ) -> "GroupingResult":
+        """Return a deterministic QWC or general-commuting grouping result."""
+        from .grouping import group_operator
+
+        return group_operator(
+            self,
+            mode=mode,
+            algorithm=algorithm,
+            max_matrix_entries=max_matrix_entries,
+        )
+
+    def compatibility_matrix(
+        self, mode: str = "general", max_entries: int = 10_000_000
+    ) -> np.ndarray[Any, Any]:
+        """Return a bounded dense compatibility matrix for canonical terms."""
+        mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
+        if mode_code is None:
+            raise ValueError("mode must be 'qubit_wise' or 'general'")
+        structures = tuple(term.word.to_codes() for term in self.terms)
+        values = _native.pauli_compatibility_matrix(
+            self.nqubits, structures, mode_code, max_entries
+        )
+        size = len(structures)
+        matrix: np.ndarray[Any, Any] = np.asarray(values, dtype=np.bool_).reshape(
+            (size, size)
+        )
+        return matrix
+
+    def incompatibility_edges(
+        self, mode: str = "general", max_edges: int = 10_000_000
+    ) -> Tuple[Tuple[int, int], ...]:
+        """Return a bounded streaming edge list without dense matrix allocation."""
+        mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
+        if mode_code is None:
+            raise ValueError("mode must be 'qubit_wise' or 'general'")
+        structures = tuple(term.word.to_codes() for term in self.terms)
+        return tuple(
+            (left, right)
+            for left, right in _native.pauli_incompatibility_edges(
+                self.nqubits, structures, mode_code, max_edges
             )
         )
 

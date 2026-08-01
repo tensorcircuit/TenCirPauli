@@ -1,8 +1,11 @@
 //! Private PyO3 extension for the public `tencirpauli` Python package.
 
-use pyo3::exceptions::{PyOverflowError, PyValueError};
+use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
-use tencir_pauli_core::{packed_word_count, Complex64, PauliError, PauliOperator, PauliWord};
+use tencir_pauli_core::{
+    compatibility_matrix, group_words, incompatibility_edges, packed_word_count, Complex64,
+    GroupingAlgorithm, GroupingMode, PauliError, PauliOperator, PauliWord,
+};
 
 type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
@@ -10,6 +13,7 @@ type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 fn map_error(error: PauliError) -> PyErr {
     let message = error.to_string();
     match error {
+        PauliError::MemoryLimit { .. } => PyMemoryError::new_err(message),
         PauliError::Overflow { .. } => PyOverflowError::new_err(message),
         _ => PyValueError::new_err(message),
     }
@@ -214,6 +218,67 @@ fn pauli_operator_is_hermitian(
     Ok(operator.is_hermitian(tolerance))
 }
 
+#[pyfunction]
+fn pauli_group(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    mode: u8,
+    algorithm: u8,
+) -> PyResult<Vec<Vec<usize>>> {
+    let words = structures
+        .iter()
+        .map(|structure| PauliWord::from_codes(nqubits, structure).map_err(map_error))
+        .collect::<PyResult<Vec<_>>>()?;
+    let grouping_mode = match mode {
+        0 => GroupingMode::QubitWise,
+        1 => GroupingMode::General,
+        _ => return Err(PyValueError::new_err("grouping mode must be 0 or 1")),
+    };
+    let grouping_algorithm = match algorithm {
+        0 => GroupingAlgorithm::LargestFirst,
+        1 => GroupingAlgorithm::Dsatur,
+        _ => return Err(PyValueError::new_err("grouping algorithm must be 0 or 1")),
+    };
+    group_words(&words, grouping_mode, grouping_algorithm).map_err(map_error)
+}
+
+fn parse_grouping_mode(mode: u8) -> PyResult<GroupingMode> {
+    match mode {
+        0 => Ok(GroupingMode::QubitWise),
+        1 => Ok(GroupingMode::General),
+        _ => Err(PyValueError::new_err("grouping mode must be 0 or 1")),
+    }
+}
+
+fn build_grouping_words(nqubits: usize, structures: &[Vec<u8>]) -> PyResult<Vec<PauliWord>> {
+    structures
+        .iter()
+        .map(|structure| PauliWord::from_codes(nqubits, structure).map_err(map_error))
+        .collect()
+}
+
+#[pyfunction]
+fn pauli_compatibility_matrix(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    mode: u8,
+    max_entries: usize,
+) -> PyResult<Vec<bool>> {
+    let words = build_grouping_words(nqubits, &structures)?;
+    compatibility_matrix(&words, parse_grouping_mode(mode)?, max_entries).map_err(map_error)
+}
+
+#[pyfunction]
+fn pauli_incompatibility_edges(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    mode: u8,
+    max_edges: usize,
+) -> PyResult<Vec<(usize, usize)>> {
+    let words = build_grouping_words(nqubits, &structures)?;
+    incompatibility_edges(&words, parse_grouping_mode(mode)?, max_edges).map_err(map_error)
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -230,5 +295,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_operator_scale, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_adjoint, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_is_hermitian, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_incompatibility_edges, module)?)?;
     Ok(())
 }
