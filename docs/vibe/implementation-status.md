@@ -4,7 +4,7 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P5：Public API、TensorCircuit adapter 与交付。
+完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P5：Public API、TensorCircuit adapter 与交付；实现状态为已完成。
 
 ## Completed foundation
 
@@ -56,14 +56,21 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 - P2 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已覆盖 1,000、10,000、100,000-term duplicate-heavy canonicalization；smoke harness 全部通过。P1 clean baseline 为 `p1-2e0f154`，P2 clean label 待 P2 commit 后记录。
 - P3 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已加入 QWC grouping（128/1,024 terms）；smoke harness 全部通过。P2 clean baseline 为 `p2-6b90270`，P3 clean label 待 P3 commit 后记录。
 - P4 benchmark workloads：Rust Criterion 与 Python pytest-benchmark 已加入 dense/COO/MVP/backend-plan construction/apply；smoke harness 全部通过。P3 clean baseline 为 `p3-acf5c60`，P4 clean label 待 P4 commit 后记录。
-- P5 packaging/integration evidence：`maturin develop --release --locked`、public example tests and optional adapter tests pass; `maturin build`/`maturin sdist` smoke remains part of final handoff. P4 hook benchmark was recorded at commit `9c11117`; final clean all-workload label is required after the P5 commit.
+- P5 packaging/integration evidence：`maturin develop --release --locked`、public example tests and optional adapter tests pass; `maturin build --release --locked` produced a macOS abi3 wheel and `maturin sdist` produced a source archive under `/private/tmp` (not tracked). P4 hook benchmark was recorded at commit `9c11117`.
 - Local benchmark：`p0-829221e` 已在 clean commit 上完成 Rust/Python record；Rust weight kernel 为 1.02 ns (64 qubits)、3.00 ns (1024)、41.52 ns (16384)，commutation 为 2.15 ns、4.97 ns、62.93 ns；Python public-path workload mean 为 174.4 µs。该结果是本机 informational baseline，不构成 CI 门禁。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
 
 ## Next actions
 
-1. 运行 final release-mode packaging and all-workload benchmark on the clean P5 commit。
-2. 手动核对 final benchmark、CI matrix、optional integration limitation and working-tree cleanliness, then mark Phase 1 complete.
+1. Phase 1 final all-workload benchmark is recorded and manually checked under `phase1-c7d18c3` on clean implementation commit `c7d18c3`。
+2. No further Phase 1 REQUIRED work remains; future work must begin from a new milestone and must not add symmetry, GateTape, propagation, or native-gradient scope here。
+
+## Phase 1 completion record
+
+- P0–P5 REQUIRED items and acceptance gates are implemented in local commits `829221e`, `2e0f154`, `6b90270`, `acf5c60`, `9c11117`, and `c7d18c3`; the final documentation-only status update follows the same implementation.
+- Final quality evidence: `python scripts/check.py --fix --benchmark smoke` passed; this covers cargo fmt/clippy/test, Black, Ruff, mypy, release maturin, pytest, Rust benchmark smoke, and Python benchmark smoke. The final test count is 41 passed and 2 skipped because TensorCircuit/JAX are not installed in this workstation; missing-dependency behavior is tested and no fallback is used.
+- Final clean benchmark label `phase1-c7d18c3`: Rust canonicalization 128.65 µs/1k, 1.2906 ms/10k, 12.853 ms/100k; QWC grouping 331.28 µs/128 and 21.612 ms/1024; dense/COO/MVP/backend-plan kernels 26.513 µs/51.152 µs/19.905 µs/56.163 ns as reported by Criterion. Python complete-boundary means were 2.187 ms/1k, 22.339 ms/10k, 225.128 ms/100k canonicalization; 13.546 ms/1024 QWC; dense 49.981 ms, native MVP 303.937 µs, COO+CSR 613.707 µs, and backend-plan 6.506 µs on this machine. Numerical error remained within the documented differential tolerances; benchmark results are informational, not CI gates.
+- Known limitation is environmental only: optional TensorCircuit NumPy/JAX differential cases require installing those dependencies and are skipped locally. The adapter is lazy, explicit, and tested for missing dependency failure; it never silently falls back to NumPy or native execution.
 
 ## Update protocol
 
