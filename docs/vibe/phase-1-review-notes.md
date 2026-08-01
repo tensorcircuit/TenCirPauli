@@ -42,11 +42,11 @@ Sparse 输出不能只按 construction 时间比较：TensorCircuit JAX BCOO 的
 
 重复 entry 并不会让 JAX BCOO 的基本矩阵乘法失效：当前 n=8 对照中 `unique_indices=False`、`nse=8192`，直接执行 `sparse @ state` 与 `sparse.todense() @ state` 的最大误差仍约为 `7.3e-15`。但 raw BCOO 不是 canonical COO；如果后续算子要求 unique/sorted indices、稳定 nnz、低内存或 exact aggregation，就必须在 plan 阶段生成 canonical structure，或者显式承担 JAX `sum_duplicates()` 的首次编译和 warm canonicalization 成本。
 
-20-qubit full-width workload 的结果进一步说明了这个边界：对 64 terms 的 matrix-free MVP，TenCirPauli native plan/apply 约为 `0.084/8.06 ms`，JAX first/warm MVP 约为 `1.192 s/20.12 ms`；对 3 terms 的 materialized sparse target，TenCirPauli COO/CSR 约为 `85.15/87.05 ms`，JAX raw BCOO first/warm construction 约为 `259.6/17.87 ms`，JAX first/warm `sum_duplicates()` 约为 `543.6/208.9 ms`。因此 JAX raw BCOO 在“只生成可执行的未 canonical sparse entries”时更快，但完成 unique/sorted canonicalization 后 Rust 更快；20q/64 terms 的 COO/CSR 则由默认 256 MiB memory guard 在分配前拒绝。
+20-qubit full-width workload 的历史 clean-label 结果进一步说明了这个边界：对 64 terms 的 matrix-free MVP，TenCirPauli native plan/apply 约为 `0.084/8.06 ms`，JAX first/warm MVP 约为 `1.192 s/20.12 ms`；优化前对 3 terms 的 materialized sparse target，TenCirPauli COO/CSR 约为 `85.15/87.05 ms`，JAX raw BCOO first/warm construction 约为 `259.6/17.87 ms`。row-parallel direct-output 优化后的完整 Python benchmark record `20260801T111756Z_96ab8a52ae97-dirty` 测得同一 native 20q/3-term COO/CSR 约为 `7.49/5.77 ms`，已经快于 JAX raw warm construction；JAX first/warm `sum_duplicates()` 仍约为 `543.6/208.9 ms`。20q/64 terms 的 COO/CSR 仍由默认 256 MiB memory guard 在分配前拒绝，但现在按最终输出估算约为 `2.147/1.619 GB`。
 
 ## 3.1 Rust sparse/MVP 性能的根因
 
-旧 Rust COO 的核心循环是 `term -> column -> BTreeMap<(row,column), value>`。该设计虽正确，却有树查找、比较和节点分配开销。当前实现已改为按 MSB X mask 分组，在 contiguous candidate buffer 中聚合同一 permutation，再做 exact-zero filter 和一次稳定 row-major sort；CSR 直接复用 sorted entries，不先物化 public COO arrays。TensorCircuit 的 NumPy 路径则先用向量化 bit operations 生成整列 indices/values，再交给 SciPy 的 C 实现合并；JAX 路径进一步用 `vmap`/XLA 执行，所以不能用“Rust 语言”本身解释差距。
+旧 Rust COO 的核心循环是 `term -> column -> BTreeMap<(row,column), value>`。该设计虽正确，却有树查找、比较和节点分配开销。当前实现按 MSB X mask 分组；一般路径按 row 分块聚合、exact-zero filter 和稳定 row-major sort，并使用 Rayon 处理大 workload，CSR 直接从 row counts 构造；当每个 X mask 只有一个 term 时则直接填充最终 COO/CSR arrays，避免候选 entries、row 字段和二次拆分。TensorCircuit 的 NumPy 路径则先用向量化 bit operations 生成整列 indices/values，再交给 SciPy 的 C 实现合并；JAX 路径进一步用 `vmap`/XLA 执行，所以不能用“Rust 语言”本身解释差距。
 
 旧 Rust `matrix_x_mask` 和 `matrix_phase` 会反复调用 `word.codes()`；当前 term 已预计算 packed X/Z masks 和 Y phase，reusable plan 再按 X mask 预计算 diagonal。当前 Python native API 的一次性路径仍会重新 `build_operator`，这是明确的 setup 成本；重复 state-vector workload 应使用 reusable plan。NumPy complex128 state/output 已在 PyO3 boundary 直接映射和填充，消除了旧的 Python tuple/实部/虚部复制。这些是实现策略，不是算法下界。
 

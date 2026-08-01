@@ -433,11 +433,15 @@ struct MatrixTerm {
     weighted_phase: Complex64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct MatrixEntry {
-    row: u64,
+#[derive(Clone, Copy, Debug, Default)]
+struct SparseEntry {
     column: u64,
     value: Complex64,
+}
+
+struct SparseEntries {
+    entries: Vec<SparseEntry>,
+    row_counts: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -1116,24 +1120,54 @@ impl PauliOperator {
     /// Compile deterministic, duplicate-aggregated COO entries.
     pub fn coo_matrix(&self, max_bytes: u128) -> Result<CooMatrix, PauliError> {
         let (dimension, groups, upper_bound) = self.matrix_groups()?;
-        let candidate_bytes = size_of::<MatrixEntry>() as u128;
         let output_bytes = (2 * size_of::<u64>() + size_of::<Complex64>()) as u128;
+        if groups.iter().all(|group| group.terms.len() == 1) {
+            check_allocation(
+                (upper_bound as u128)
+                    .checked_mul(output_bytes)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating direct COO output memory",
+                    })?,
+                max_bytes,
+            )?;
+            let (rows, columns, values) = direct_coo_arrays(&groups, upper_bound);
+            return Ok(CooMatrix {
+                dimension,
+                rows,
+                columns,
+                values,
+            });
+        }
+        let candidate_bytes = size_of::<SparseEntry>() as u128;
+        let row_count_bytes = (dimension as u128)
+            .checked_mul(size_of::<usize>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating COO row-count memory",
+            })?;
         check_allocation(
             (upper_bound as u128)
                 .checked_mul(candidate_bytes + output_bytes)
+                .and_then(|bytes| bytes.checked_add(row_count_bytes))
                 .ok_or(PauliError::Overflow {
                     context: "estimating COO working memory",
                 })?,
             max_bytes,
         )?;
-        let entries = sparse_entries(dimension, &groups, upper_bound);
-        let mut rows = Vec::with_capacity(entries.len());
-        let mut columns = Vec::with_capacity(entries.len());
-        let mut values = Vec::with_capacity(entries.len());
-        for entry in entries {
-            rows.push(entry.row);
-            columns.push(entry.column);
-            values.push(entry.value);
+        let sparse = sparse_entries(dimension, &groups, upper_bound);
+        let entry_count = sparse.entries.len();
+        let mut rows = Vec::with_capacity(entry_count);
+        let mut columns = Vec::with_capacity(entry_count);
+        let mut values = Vec::with_capacity(entry_count);
+        let mut offset = 0;
+        for (row, &count) in sparse.row_counts.iter().enumerate() {
+            for _ in 0..count {
+                rows.push(row as u64);
+            }
+            for entry in &sparse.entries[offset..offset + count] {
+                columns.push(entry.column);
+                values.push(entry.value);
+            }
+            offset += count;
         }
         Ok(CooMatrix {
             dimension,
@@ -1146,7 +1180,6 @@ impl PauliOperator {
     /// Compile deterministic CSR from the canonical COO stream.
     pub fn csr_matrix(&self, max_bytes: u128) -> Result<CsrMatrix, PauliError> {
         let (dimension, groups, upper_bound) = self.matrix_groups()?;
-        let candidate_bytes = size_of::<MatrixEntry>() as u128;
         let output_bytes = (size_of::<u64>() as u128)
             .checked_mul((dimension + 1) as u128)
             .and_then(|indptr_bytes| {
@@ -1157,27 +1190,43 @@ impl PauliOperator {
             .ok_or(PauliError::Overflow {
                 context: "estimating CSR working memory",
             })?;
+        if groups.iter().all(|group| group.terms.len() == 1) {
+            check_allocation(output_bytes, max_bytes)?;
+            let (indptr, columns, values) = direct_csr_arrays(dimension, &groups, upper_bound);
+            return Ok(CsrMatrix {
+                dimension,
+                indptr,
+                columns,
+                values,
+            });
+        }
+        let candidate_bytes = size_of::<SparseEntry>() as u128;
+        let row_count_bytes = (dimension as u128)
+            .checked_mul(size_of::<usize>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating CSR row-count memory",
+            })?;
         check_allocation(
             (upper_bound as u128)
                 .checked_mul(candidate_bytes)
                 .and_then(|candidate| candidate.checked_add(output_bytes))
+                .and_then(|bytes| bytes.checked_add(row_count_bytes))
                 .ok_or(PauliError::Overflow {
                     context: "estimating CSR working memory",
                 })?,
             max_bytes,
         )?;
-        let entries = sparse_entries(dimension, &groups, upper_bound);
+        let sparse = sparse_entries(dimension, &groups, upper_bound);
         let mut indptr = vec![0_u64; dimension + 1];
-        for entry in &entries {
-            let row = entry.row as usize;
-            indptr[row + 1] += 1;
+        for (row, &count) in sparse.row_counts.iter().enumerate() {
+            indptr[row + 1] = count as u64;
         }
         for row in 1..indptr.len() {
             indptr[row] += indptr[row - 1];
         }
-        let mut columns = Vec::with_capacity(entries.len());
-        let mut values = Vec::with_capacity(entries.len());
-        for entry in entries {
+        let mut columns = Vec::with_capacity(sparse.entries.len());
+        let mut values = Vec::with_capacity(sparse.entries.len());
+        for entry in sparse.entries {
             columns.push(entry.column);
             values.push(entry.value);
         }
@@ -1322,34 +1371,192 @@ fn group_matrix_terms(terms: Vec<MatrixTerm>) -> Vec<MatrixGroup> {
         .collect()
 }
 
-fn sparse_entries(
-    dimension: usize,
+fn sparse_entries(dimension: usize, groups: &[MatrixGroup], upper_bound: usize) -> SparseEntries {
+    let width = groups.len();
+    let mut entries = vec![SparseEntry::default(); upper_bound];
+    let mut row_counts = vec![0_usize; dimension];
+    if width == 0 {
+        return SparseEntries {
+            entries,
+            row_counts,
+        };
+    }
+
+    if upper_bound >= 1 << 18 {
+        entries
+            .par_chunks_mut(width)
+            .zip(row_counts.par_iter_mut())
+            .enumerate()
+            .for_each(|(row, (output, count))| {
+                *count = fill_sparse_row(row, groups, output);
+            });
+    } else {
+        for (row, (output, count)) in entries
+            .chunks_exact_mut(width)
+            .zip(row_counts.iter_mut())
+            .enumerate()
+        {
+            *count = fill_sparse_row(row, groups, output);
+        }
+    }
+
+    let mut write = 0;
+    for (row, &count) in row_counts.iter().enumerate() {
+        let start = row * width;
+        if count != 0 {
+            entries.copy_within(start..start + count, write);
+            write += count;
+        }
+    }
+    entries.truncate(write);
+    SparseEntries {
+        entries,
+        row_counts,
+    }
+}
+
+fn direct_coo_arrays(
     groups: &[MatrixGroup],
     upper_bound: usize,
-) -> Vec<MatrixEntry> {
-    let mut entries = Vec::with_capacity(upper_bound);
-    for row in 0..dimension {
-        for group in groups {
-            let column = row ^ group.x_mask;
-            let mut value = Complex64::default();
-            for term in &group.terms {
-                let mut contribution = term.weighted_phase;
-                if (term.z_mask & column).count_ones() & 1 != 0 {
-                    contribution = -contribution;
-                }
-                value += contribution;
-            }
-            if !value.is_zero() {
-                entries.push(MatrixEntry {
-                    row: row as u64,
-                    column: column as u64,
-                    value,
-                });
+) -> (Vec<u64>, Vec<u64>, Vec<Complex64>) {
+    let width = groups.len();
+    if width == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    let mut rows = vec![0_u64; upper_bound];
+    let mut columns = vec![0_u64; upper_bound];
+    let mut values = vec![Complex64::default(); upper_bound];
+    if upper_bound >= 1 << 18 {
+        rows.par_chunks_mut(width)
+            .zip(columns.par_chunks_mut(width))
+            .zip(values.par_chunks_mut(width))
+            .enumerate()
+            .for_each_init(
+                || Vec::with_capacity(width),
+                |scratch, (row, ((row_output, column_output), value_output))| {
+                    scratch.clear();
+                    scratch.resize(width, SparseEntry::default());
+                    fill_sparse_row(row, groups, scratch);
+                    row_output.fill(row as u64);
+                    for (index, entry) in scratch.iter().enumerate() {
+                        column_output[index] = entry.column;
+                        value_output[index] = entry.value;
+                    }
+                },
+            );
+    } else {
+        let mut scratch = vec![SparseEntry::default(); width];
+        for (row, ((row_output, column_output), value_output)) in rows
+            .chunks_exact_mut(width)
+            .zip(columns.chunks_exact_mut(width))
+            .zip(values.chunks_exact_mut(width))
+            .enumerate()
+        {
+            fill_sparse_row(row, groups, &mut scratch);
+            row_output.fill(row as u64);
+            for (index, entry) in scratch.iter().enumerate() {
+                column_output[index] = entry.column;
+                value_output[index] = entry.value;
             }
         }
     }
-    entries.sort_unstable_by_key(|entry| (entry.row, entry.column));
-    entries
+    (rows, columns, values)
+}
+
+fn direct_csr_arrays(
+    dimension: usize,
+    groups: &[MatrixGroup],
+    upper_bound: usize,
+) -> (Vec<u64>, Vec<u64>, Vec<Complex64>) {
+    let width = groups.len();
+    let mut indptr = vec![0_u64; dimension + 1];
+    if width == 0 {
+        return (indptr, Vec::new(), Vec::new());
+    }
+    for (row, pointer) in indptr.iter_mut().enumerate() {
+        *pointer = (row * width) as u64;
+    }
+    let mut columns = vec![0_u64; upper_bound];
+    let mut values = vec![Complex64::default(); upper_bound];
+    if upper_bound >= 1 << 18 {
+        columns
+            .par_chunks_mut(width)
+            .zip(values.par_chunks_mut(width))
+            .enumerate()
+            .for_each_init(
+                || Vec::with_capacity(width),
+                |scratch, (row, (column_output, value_output))| {
+                    scratch.clear();
+                    scratch.resize(width, SparseEntry::default());
+                    fill_sparse_row(row, groups, scratch);
+                    for (index, entry) in scratch.iter().enumerate() {
+                        column_output[index] = entry.column;
+                        value_output[index] = entry.value;
+                    }
+                },
+            );
+    } else {
+        let mut scratch = vec![SparseEntry::default(); width];
+        for (row, (column_output, value_output)) in columns
+            .chunks_exact_mut(width)
+            .zip(values.chunks_exact_mut(width))
+            .enumerate()
+        {
+            fill_sparse_row(row, groups, &mut scratch);
+            for (index, entry) in scratch.iter().enumerate() {
+                column_output[index] = entry.column;
+                value_output[index] = entry.value;
+            }
+        }
+    }
+    (indptr, columns, values)
+}
+
+fn fill_sparse_row(row: usize, groups: &[MatrixGroup], output: &mut [SparseEntry]) -> usize {
+    let mut count = 0;
+    for group in groups {
+        let column = row ^ group.x_mask;
+        let mut value = Complex64::default();
+        for term in &group.terms {
+            let mut contribution = term.weighted_phase;
+            if (term.z_mask & column).count_ones() & 1 != 0 {
+                contribution = -contribution;
+            }
+            value += contribution;
+        }
+        if !value.is_zero() {
+            output[count] = SparseEntry {
+                column: column as u64,
+                value,
+            };
+            count += 1;
+        }
+    }
+    sort_sparse_row(&mut output[..count]);
+    count
+}
+
+fn sort_sparse_row(entries: &mut [SparseEntry]) {
+    match entries.len() {
+        0 | 1 => {}
+        2 => {
+            if entries[0].column > entries[1].column {
+                entries.swap(0, 1);
+            }
+        }
+        3 => {
+            if entries[0].column > entries[1].column {
+                entries.swap(0, 1);
+            }
+            if entries[1].column > entries[2].column {
+                entries.swap(1, 2);
+            }
+            if entries[0].column > entries[1].column {
+                entries.swap(0, 1);
+            }
+        }
+        _ => entries.sort_unstable_by_key(|entry| entry.column),
+    }
 }
 
 /// Convert a qubit count to a packed word count without integer overflow.

@@ -6,7 +6,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
-- Optimize Rust matrix targets with precomputed packed phase masks, deterministic X-mask grouped COO aggregation, direct CSR construction, parallel native MVP, and a reusable zero-copy NumPy/PyO3 native MVP plan. Add typed batch canonicalization mapping and exact phase metadata.
+- Optimize Rust matrix targets with precomputed packed phase masks, deterministic X-mask grouped COO aggregation, row-parallel sparse generation, direct singleton-X-mask COO/CSR output, direct CSR construction, parallel native MVP, and a reusable zero-copy NumPy/PyO3 native MVP plan. Add typed batch canonicalization mapping and exact phase metadata.
 - Add release-mode cross-implementation sparse benchmarks for TensorCircuit NumPy COO and JAX BCOO first/warm construction, duplicate canonicalization, storage, and warm matvec semantics.
 - Add synchronized 20-qubit COO/CSR/native-MVP/JAX-MVP benchmarks, explicit materialization memory-guard cases, and asynchronous JAX timing safeguards.
 - Complete the Phase 1 PauliWord, PauliOperator, deterministic grouping, and Hamiltonian compiler vertical slices.
