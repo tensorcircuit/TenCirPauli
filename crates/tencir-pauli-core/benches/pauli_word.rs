@@ -156,6 +156,37 @@ fn benchmark_grouping(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_hamiltonian(criterion: &mut Criterion) {
+    let structures = (0..32)
+        .map(|index| {
+            (0..8)
+                .map(|qubit| ((index + qubit) % 4) as u8)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let coefficients = (0..32)
+        .map(|index| tencir_pauli_core::Complex64::new(index as f64 + 1.0, 0.0))
+        .collect::<Vec<_>>();
+    let operator = PauliOperator::from_terms(8, &structures, &coefficients).unwrap();
+    let state = (0..256)
+        .map(|index| tencir_pauli_core::Complex64::new(index as f64, 0.0))
+        .collect::<Vec<_>>();
+    let mut group = criterion.benchmark_group("hamiltonian/targets");
+    group.bench_function("dense", |bencher| {
+        bencher.iter(|| black_box(operator.dense_matrix(u128::MAX).unwrap()))
+    });
+    group.bench_function("coo", |bencher| {
+        bencher.iter(|| black_box(operator.coo_matrix(u128::MAX).unwrap()))
+    });
+    group.bench_function("mvp", |bencher| {
+        bencher.iter(|| black_box(operator.mvp(black_box(&state), u128::MAX).unwrap()))
+    });
+    group.bench_function("backend_plan", |bencher| {
+        bencher.iter(|| black_box(operator.backend_mvp_plan(u128::MAX).unwrap()))
+    });
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -163,6 +194,6 @@ criterion_group! {
         .measurement_time(Duration::from_secs(2))
         .sample_size(50);
     targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication,
-        benchmark_canonicalization, benchmark_grouping
+        benchmark_canonicalization, benchmark_grouping, benchmark_hamiltonian
 }
 criterion_main!(benches);

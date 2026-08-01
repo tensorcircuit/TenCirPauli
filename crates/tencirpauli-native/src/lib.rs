@@ -9,6 +9,10 @@ use tencir_pauli_core::{
 
 type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
+type DenseOutput = (usize, Vec<f64>, Vec<f64>);
+type CooOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
+type CsrOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
+type BackendPlanOutput = (u8, usize, usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 
 fn map_error(error: PauliError) -> PyErr {
     let message = error.to_string();
@@ -48,6 +52,10 @@ fn operator_output(operator: &PauliOperator) -> CanonicalizeOutput {
         result_im.push(term.coefficient.im);
     }
     (result_structures, result_re, result_im)
+}
+
+fn split_complex(values: &[Complex64]) -> (Vec<f64>, Vec<f64>) {
+    values.iter().map(|value| (value.re, value.im)).unzip()
 }
 
 fn build_operator(
@@ -219,6 +227,102 @@ fn pauli_operator_is_hermitian(
 }
 
 #[pyfunction]
+fn pauli_dense(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<DenseOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let (dimension, values) = operator
+        .dense_matrix(max_bytes as u128)
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&values);
+    Ok((dimension, real, imaginary))
+}
+
+#[pyfunction]
+fn pauli_coo(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<CooOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let matrix = operator.coo_matrix(max_bytes as u128).map_err(map_error)?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.rows,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+fn pauli_csr(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<CsrOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let matrix = operator.csr_matrix(max_bytes as u128).map_err(map_error)?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.indptr,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+fn pauli_mvp(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    state_re: Vec<f64>,
+    state_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let state = complex_coefficients(state_re, state_im)?;
+    let values = operator.mvp(&state, max_bytes as u128).map_err(map_error)?;
+    Ok(split_complex(&values))
+}
+
+#[pyfunction]
+fn pauli_backend_plan(
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: usize,
+) -> PyResult<BackendPlanOutput> {
+    let operator = build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+    let plan = operator
+        .backend_mvp_plan(max_bytes as u128)
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&plan.coefficients);
+    Ok((
+        1,
+        plan.nqubits,
+        plan.word_count,
+        plan.x_words,
+        plan.z_words,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
 fn pauli_group(
     nqubits: usize,
     structures: Vec<Vec<u8>>,
@@ -295,6 +399,11 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_operator_scale, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_adjoint, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_is_hermitian, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_dense, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_coo, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_csr, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_mvp, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_incompatibility_edges, module)?)?;

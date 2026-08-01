@@ -14,6 +14,7 @@ from . import _native
 
 if TYPE_CHECKING:
     from .grouping import GroupingResult
+    from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix
 
 
 class PauliPhase(IntEnum):
@@ -390,6 +391,132 @@ class PauliOperator:
             for left, right in _native.pauli_incompatibility_edges(
                 self.nqubits, structures, mode_code, max_edges
             )
+        )
+
+    def dense(self, max_bytes: int = 256 * 1024 * 1024) -> np.ndarray[Any, Any]:
+        """Materialize a bounded complex128 dense Hamiltonian matrix."""
+        from . import _native
+
+        structures, coefficients_re, coefficients_im = self._arrays()
+        dimension, real, imaginary = _native.pauli_dense(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            max_bytes,
+        )
+        result: np.ndarray[Any, Any] = np.asarray(real, dtype=np.float64).reshape(
+            (dimension, dimension)
+        ) + 1j * np.asarray(imaginary, dtype=np.float64).reshape((dimension, dimension))
+        return result
+
+    def coo(self, max_bytes: int = 256 * 1024 * 1024) -> "COOMatrix":
+        """Compile deterministic, duplicate-aggregated COO arrays."""
+        from . import _native
+        from .hamiltonian import COOMatrix
+
+        structures, coefficients_re, coefficients_im = self._arrays()
+        dimension, rows, columns, real, imaginary = _native.pauli_coo(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            max_bytes,
+        )
+        return COOMatrix(
+            np.asarray(rows, dtype=np.uint64),
+            np.asarray(columns, dtype=np.uint64),
+            np.asarray(real, dtype=np.float64)
+            + 1j * np.asarray(imaginary, dtype=np.float64),
+            (dimension, dimension),
+        )
+
+    def csr(self, max_bytes: int = 256 * 1024 * 1024) -> "CSRMatrix":
+        """Compile deterministic CSR arrays from the canonical COO stream."""
+        from . import _native
+        from .hamiltonian import CSRMatrix
+
+        structures, coefficients_re, coefficients_im = self._arrays()
+        dimension, indptr, indices, real, imaginary = _native.pauli_csr(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            max_bytes,
+        )
+        return CSRMatrix(
+            np.asarray(indptr, dtype=np.uint64),
+            np.asarray(indices, dtype=np.uint64),
+            np.asarray(real, dtype=np.float64)
+            + 1j * np.asarray(imaginary, dtype=np.float64),
+            (dimension, dimension),
+        )
+
+    def mvp(
+        self,
+        state: Sequence[complex],
+        max_bytes: int = 256 * 1024 * 1024,
+    ) -> np.ndarray[Any, Any]:
+        """Apply the Hamiltonian to a one-dimensional complex128 state."""
+        from . import _native
+
+        values = np.asarray(state, dtype=np.complex128)
+        if values.ndim != 1:
+            raise ValueError(f"state must be one-dimensional, got shape {values.shape}")
+        structures, coefficients_re, coefficients_im = self._arrays()
+        real, imaginary = _native.pauli_mvp(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            tuple(float(value.real) for value in values),
+            tuple(float(value.imag) for value in values),
+            max_bytes,
+        )
+        result: np.ndarray[Any, Any] = np.asarray(
+            real, dtype=np.float64
+        ) + 1j * np.asarray(imaginary, dtype=np.float64)
+        return result
+
+    def backend_mvp_plan(self, max_bytes: int = 256 * 1024 * 1024) -> "BackendMVPPlan":
+        """Compile a versioned pure-array plan for backend execution."""
+        from . import _native
+        from .hamiltonian import BackendMVPPlan
+
+        structures, coefficients_re, coefficients_im = self._arrays()
+        schema, nqubits, word_count, x_words, z_words, real, imaginary = (
+            _native.pauli_backend_plan(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                max_bytes,
+            )
+        )
+        return BackendMVPPlan(
+            schema,
+            nqubits,
+            word_count,
+            np.asarray(x_words, dtype=np.uint64).reshape((len(real), word_count)),
+            np.asarray(z_words, dtype=np.uint64).reshape((len(real), word_count)),
+            np.asarray(real, dtype=np.float64)
+            + 1j * np.asarray(imaginary, dtype=np.float64),
+        )
+
+    def compile(self, target: str, max_bytes: int = 256 * 1024 * 1024) -> Any:
+        """Compile one named Hamiltonian target through the public API."""
+        if target == "dense":
+            return self.dense(max_bytes=max_bytes)
+        if target == "coo":
+            return self.coo(max_bytes=max_bytes)
+        if target == "csr":
+            return self.csr(max_bytes=max_bytes)
+        if target == "backend_mvp":
+            return self.backend_mvp_plan(max_bytes=max_bytes)
+        if target == "native_mvp":
+            return lambda state: self.mvp(state, max_bytes=max_bytes)
+        raise ValueError(
+            "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
         )
 
     def _binary(self, other: "PauliOperator", operation: int) -> "PauliOperator":

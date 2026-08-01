@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 /// A small dependency-free complex number used by the native numeric path.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -80,6 +80,18 @@ impl Mul<f64> for Complex64 {
 
     fn mul(self, rhs: f64) -> Self::Output {
         Self::new(self.re * rhs, self.im * rhs)
+    }
+}
+
+impl MulAssign for Complex64 {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl MulAssign<f64> for Complex64 {
+    fn mul_assign(&mut self, rhs: f64) {
+        *self = *self * rhs;
     }
 }
 
@@ -407,6 +419,44 @@ pub struct PauliOperator {
     terms: Vec<PauliTerm>,
 }
 
+/// Deterministic sparse COO output from the Rust core.
+pub struct CooMatrix {
+    /// Matrix dimension.
+    pub dimension: usize,
+    /// Row indices in row-major order.
+    pub rows: Vec<u64>,
+    /// Column indices in row-major order.
+    pub columns: Vec<u64>,
+    /// Complex128-compatible values.
+    pub values: Vec<Complex64>,
+}
+
+/// Deterministic sparse CSR output from the Rust core.
+pub struct CsrMatrix {
+    /// Matrix dimension.
+    pub dimension: usize,
+    /// Row pointer array.
+    pub indptr: Vec<u64>,
+    /// Column indices.
+    pub columns: Vec<u64>,
+    /// Complex128-compatible values.
+    pub values: Vec<Complex64>,
+}
+
+/// Pure-array backend MVP plan data.
+pub struct BackendMvpPlan {
+    /// Qubit count.
+    pub nqubits: usize,
+    /// Packed words per term.
+    pub word_count: usize,
+    /// Flat X masks.
+    pub x_words: Vec<u64>,
+    /// Flat Z masks.
+    pub z_words: Vec<u64>,
+    /// Coefficients in canonical term order.
+    pub coefficients: Vec<Complex64>,
+}
+
 /// Compatibility relation used by deterministic measurement grouping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupingMode {
@@ -662,7 +712,7 @@ impl PauliOperator {
         }
         let mut result = self.clone();
         for term in &mut result.terms {
-            term.coefficient = term.coefficient * scalar;
+            term.coefficient *= scalar;
         }
         Ok(result)
     }
@@ -728,6 +778,187 @@ impl PauliOperator {
         }
         Ok(())
     }
+
+    /// Compile a dense row-major matrix using qubit zero as the MSB.
+    pub fn dense_matrix(&self, max_bytes: u128) -> Result<(usize, Vec<Complex64>), PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        let entries = dimension
+            .checked_mul(dimension)
+            .ok_or(PauliError::Overflow {
+                context: "estimating dense matrix entries",
+            })?;
+        check_allocation(entries as u128 * 16, max_bytes)?;
+        let mut matrix = vec![Complex64::default(); entries];
+        for term in &self.terms {
+            let x_mask = matrix_x_mask(&term.word)?;
+            for column in 0..dimension {
+                let row = column ^ x_mask;
+                let phase = matrix_phase(&term.word, column);
+                matrix[row * dimension + column] += term.coefficient * phase;
+            }
+        }
+        Ok((dimension, matrix))
+    }
+
+    /// Compile deterministic, duplicate-aggregated COO entries.
+    pub fn coo_matrix(&self, max_bytes: u128) -> Result<CooMatrix, PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        let upper_bound = self
+            .terms
+            .len()
+            .checked_mul(dimension)
+            .ok_or(PauliError::Overflow {
+                context: "estimating COO entries",
+            })?;
+        check_allocation(upper_bound as u128 * 40, max_bytes)?;
+        let mut entries = BTreeMap::<(u64, u64), Complex64>::new();
+        for term in &self.terms {
+            let x_mask = matrix_x_mask(&term.word)?;
+            for column in 0..dimension {
+                let row = column ^ x_mask;
+                let value = term.coefficient * matrix_phase(&term.word, column);
+                entries
+                    .entry((row as u64, column as u64))
+                    .and_modify(|current| *current += value)
+                    .or_insert(value);
+            }
+        }
+        let mut rows = Vec::with_capacity(entries.len());
+        let mut columns = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for ((row, column), value) in entries {
+            if !value.is_zero() {
+                rows.push(row);
+                columns.push(column);
+                values.push(value);
+            }
+        }
+        Ok(CooMatrix {
+            dimension,
+            rows,
+            columns,
+            values,
+        })
+    }
+
+    /// Compile deterministic CSR from the canonical COO stream.
+    pub fn csr_matrix(&self, max_bytes: u128) -> Result<CsrMatrix, PauliError> {
+        let coo = self.coo_matrix(max_bytes)?;
+        let mut indptr = vec![0_u64; coo.dimension + 1];
+        for &row in &coo.rows {
+            indptr[row as usize + 1] += 1;
+        }
+        for row in 1..indptr.len() {
+            indptr[row] += indptr[row - 1];
+        }
+        Ok(CsrMatrix {
+            dimension: coo.dimension,
+            indptr,
+            columns: coo.columns,
+            values: coo.values,
+        })
+    }
+
+    /// Apply the operator without materializing a matrix.
+    pub fn mvp(&self, state: &[Complex64], max_bytes: u128) -> Result<Vec<Complex64>, PauliError> {
+        let dimension = matrix_dimension(self.nqubits)?;
+        if state.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: state.len(),
+            });
+        }
+        check_allocation(dimension as u128 * 16, max_bytes)?;
+        let mut result = vec![Complex64::default(); dimension];
+        for term in &self.terms {
+            let x_mask = matrix_x_mask(&term.word)?;
+            for (column, state_value) in state.iter().enumerate() {
+                let row = column ^ x_mask;
+                result[row] += term.coefficient * matrix_phase(&term.word, column) * *state_value;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Return a versioned pure-array backend MVP plan.
+    pub fn backend_mvp_plan(&self, max_bytes: u128) -> Result<BackendMvpPlan, PauliError> {
+        let word_count = packed_word_count(self.nqubits);
+        let bytes = (self.terms.len() as u128)
+            .checked_mul((word_count as u128).saturating_mul(16).saturating_add(16))
+            .ok_or(PauliError::Overflow {
+                context: "estimating backend plan bytes",
+            })?;
+        check_allocation(bytes, max_bytes)?;
+        let mut x_words = Vec::with_capacity(self.terms.len() * word_count);
+        let mut z_words = Vec::with_capacity(self.terms.len() * word_count);
+        let mut coefficients = Vec::with_capacity(self.terms.len());
+        for term in &self.terms {
+            x_words.extend_from_slice(term.word.x_words());
+            z_words.extend_from_slice(term.word.z_words());
+            coefficients.push(term.coefficient);
+        }
+        Ok(BackendMvpPlan {
+            nqubits: self.nqubits,
+            word_count,
+            x_words,
+            z_words,
+            coefficients,
+        })
+    }
+}
+
+fn matrix_dimension(nqubits: usize) -> Result<usize, PauliError> {
+    if nqubits >= usize::BITS as usize {
+        return Err(PauliError::Overflow {
+            context: "computing matrix dimension",
+        });
+    }
+    1_usize
+        .checked_shl(nqubits as u32)
+        .ok_or(PauliError::Overflow {
+            context: "computing matrix dimension",
+        })
+}
+
+fn check_allocation(requested: u128, limit: u128) -> Result<(), PauliError> {
+    if requested > limit {
+        return Err(PauliError::MemoryLimit { requested, limit });
+    }
+    Ok(())
+}
+
+fn matrix_x_mask(word: &PauliWord) -> Result<usize, PauliError> {
+    if word.nqubits >= usize::BITS as usize {
+        return Err(PauliError::Overflow {
+            context: "converting matrix X mask",
+        });
+    }
+    let mut mask = 0_usize;
+    for (qubit, code) in word.codes().into_iter().enumerate() {
+        if code == 1 || code == 2 {
+            mask |= 1_usize << (word.nqubits - 1 - qubit);
+        }
+    }
+    Ok(mask)
+}
+
+fn matrix_phase(word: &PauliWord, column: usize) -> Complex64 {
+    let mut phase = Complex64::new(1.0, 0.0);
+    for (qubit, code) in word.codes().into_iter().enumerate() {
+        let bit = (column >> (word.nqubits - 1 - qubit)) & 1;
+        match code {
+            2 => {
+                phase *= if bit == 0 {
+                    Complex64::new(0.0, 1.0)
+                } else {
+                    Complex64::new(0.0, -1.0)
+                };
+            }
+            3 if bit == 1 => phase *= -1.0,
+            _ => {}
+        }
+    }
+    phase
 }
 
 /// Convert a qubit count to a packed word count without integer overflow.

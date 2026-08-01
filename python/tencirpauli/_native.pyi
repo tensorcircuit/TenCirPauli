@@ -78,6 +78,45 @@ def pauli_incompatibility_edges(
     mode: int,
     max_edges: int,
 ) -> Sequence[tuple[int, int]]: ...
+def pauli_dense(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, Sequence[float], Sequence[float]]: ...
+def pauli_coo(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_csr(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_mvp(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    state_re: Sequence[float],
+    state_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[Sequence[float], Sequence[float]]: ...
+def pauli_backend_plan(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[
+    int, int, int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]
+]: ...
 def pauli_commutes(
     nqubits: int,
     x_words_left: Sequence[int],
