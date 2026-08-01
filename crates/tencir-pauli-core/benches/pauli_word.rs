@@ -52,12 +52,48 @@ fn benchmark_commutation(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_conversion_and_multiplication(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("pauli_word/algebra");
+    for nqubits in [6_usize, 64, 256] {
+        let left_codes = (0..nqubits)
+            .map(|index| (index % 4) as u8)
+            .collect::<Vec<_>>();
+        let right_codes = (0..nqubits)
+            .map(|index| ((index + 1) % 4) as u8)
+            .collect::<Vec<_>>();
+        group.bench_with_input(
+            BenchmarkId::new("codes_round_trip", nqubits),
+            &left_codes,
+            |bencher, codes| {
+                bencher.iter(|| {
+                    let word = PauliWord::from_codes(nqubits, black_box(codes)).unwrap();
+                    black_box(word.codes())
+                });
+            },
+        );
+        let left = PauliWord::from_codes(nqubits, &left_codes).unwrap();
+        let right = PauliWord::from_codes(nqubits, &right_codes).unwrap();
+        group.bench_with_input(
+            BenchmarkId::new("multiply", nqubits),
+            &(&left, &right),
+            |bencher, (left_input, right_input)| {
+                bencher.iter(|| {
+                    black_box(left_input)
+                        .multiply(black_box(right_input))
+                        .unwrap()
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
         .sample_size(50);
-    targets = benchmark_weight, benchmark_commutation
+    targets = benchmark_weight, benchmark_commutation, benchmark_conversion_and_multiplication
 }
 criterion_main!(benches);

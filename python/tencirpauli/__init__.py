@@ -1,7 +1,7 @@
 """Public Python API for TenCirPauli."""
 
 from ._native import __version__
-from .pauli import PauliWord
+from .pauli import PauliPhase, PauliProduct, PauliWord
 
 
-__all__ = ["PauliWord", "__version__"]
+__all__ = ["PauliPhase", "PauliProduct", "PauliWord", "__version__"]

@@ -1,51 +1,201 @@
-//! Pure Rust Pauli algebra primitives for TenCirPauli.
+//! Pure Rust Pauli algebra and deterministic structural utilities.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
-/// Errors produced while constructing or combining Pauli words.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PauliError {
-    /// The packed word count does not match the declared number of qubits.
-    InvalidWordCount {
-        /// Number of words required for `nqubits`.
-        expected: usize,
-        /// Number of X words supplied by the caller.
-        x_words: usize,
-        /// Number of Z words supplied by the caller.
-        z_words: usize,
-    },
-    /// Two Pauli words describe different Hilbert spaces.
-    IncompatibleQubitCounts {
-        /// Number of qubits in the left operand.
-        left: usize,
-        /// Number of qubits in the right operand.
-        right: usize,
-    },
+/// A small dependency-free complex number used by the native numeric path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Complex64 {
+    /// Real component.
+    pub re: f64,
+    /// Imaginary component.
+    pub im: f64,
 }
 
-impl Display for PauliError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+impl Complex64 {
+    /// Construct a complex number from its components.
+    pub const fn new(re: f64, im: f64) -> Self {
+        Self { re, im }
+    }
+
+    /// Return the complex conjugate.
+    pub const fn conj(self) -> Self {
+        Self::new(self.re, -self.im)
+    }
+
+    /// Return the squared magnitude.
+    pub fn norm_sqr(self) -> f64 {
+        self.re.mul_add(self.re, self.im * self.im)
+    }
+
+    /// Return whether both components are exactly zero.
+    pub fn is_zero(self) -> bool {
+        self.re == 0.0 && self.im == 0.0
+    }
+}
+
+impl Add for Complex64 {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::new(self.re + rhs.re, self.im + rhs.im)
+    }
+}
+
+impl AddAssign for Complex64 {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl Sub for Complex64 {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self::new(self.re - rhs.re, self.im - rhs.im)
+    }
+}
+
+impl SubAssign for Complex64 {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl Mul for Complex64 {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self::new(
+            self.re.mul_add(rhs.re, -(self.im * rhs.im)),
+            self.re.mul_add(rhs.im, self.im * rhs.re),
+        )
+    }
+}
+
+impl Mul<f64> for Complex64 {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        Self::new(self.re * rhs, self.im * rhs)
+    }
+}
+
+impl Neg for Complex64 {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self::new(-self.re, -self.im)
+    }
+}
+
+/// Typed errors shared by the Rust core and the Python exception mapping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PauliError {
+    /// A code was not one of I/X/Y/Z.
+    InvalidCode { code: u8, index: usize },
+    /// Packed arrays do not have the required number of words.
+    InvalidWordLength { expected: usize, actual: usize },
+    /// Two operands use different qubit counts.
+    IncompatibleQubitCounts { left: usize, right: usize },
+    /// A structure has the wrong number of sites.
+    InvalidStructureLength { expected: usize, actual: usize },
+    /// A non-finite coefficient was supplied.
+    NonFiniteCoefficient { index: usize },
+    /// A requested dimension cannot be represented or allocated.
+    Overflow { context: &'static str },
+    /// A requested allocation exceeds an explicit limit.
+    MemoryLimit { requested: u128, limit: u128 },
+}
+
+impl fmt::Display for PauliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidWordCount {
-                expected,
-                x_words,
-                z_words,
-            } => write!(
-                formatter,
-                "expected {expected} packed words, received {x_words} X words and {z_words} Z words"
-            ),
+            Self::InvalidCode { code, index } => {
+                write!(
+                    formatter,
+                    "invalid Pauli code {code} at index {index}; expected 0..3"
+                )
+            }
+            Self::InvalidWordLength { expected, actual } => {
+                write!(formatter, "expected {expected} packed words, got {actual}")
+            }
             Self::IncompatibleQubitCounts { left, right } => {
                 write!(formatter, "incompatible qubit counts: {left} and {right}")
+            }
+            Self::InvalidStructureLength { expected, actual } => {
+                write!(
+                    formatter,
+                    "expected structure length {expected}, got {actual}"
+                )
+            }
+            Self::NonFiniteCoefficient { index } => {
+                write!(formatter, "coefficient at index {index} is not finite")
+            }
+            Self::Overflow { context } => write!(formatter, "integer overflow while {context}"),
+            Self::MemoryLimit { requested, limit } => {
+                write!(
+                    formatter,
+                    "requested {requested} bytes exceeds memory limit {limit}"
+                )
             }
         }
     }
 }
 
-impl Error for PauliError {}
+impl std::error::Error for PauliError {}
+
+/// The exact phase generated by multiplying two Hermitian Pauli words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauliPhase {
+    /// `+1`.
+    PlusOne,
+    /// `+i`.
+    PlusI,
+    /// `-1`.
+    MinusOne,
+    /// `-i`.
+    MinusI,
+}
+
+impl PauliPhase {
+    /// Return the phase as a complex128-compatible value.
+    pub const fn as_complex(self) -> Complex64 {
+        match self {
+            Self::PlusOne => Complex64::new(1.0, 0.0),
+            Self::PlusI => Complex64::new(0.0, 1.0),
+            Self::MinusOne => Complex64::new(-1.0, 0.0),
+            Self::MinusI => Complex64::new(0.0, -1.0),
+        }
+    }
+
+    fn exponent(self) -> u8 {
+        match self {
+            Self::PlusOne => 0,
+            Self::PlusI => 1,
+            Self::MinusOne => 2,
+            Self::MinusI => 3,
+        }
+    }
+
+    fn from_exponent(exponent: u8) -> Self {
+        match exponent % 4 {
+            0 => Self::PlusOne,
+            1 => Self::PlusI,
+            2 => Self::MinusOne,
+            _ => Self::MinusI,
+        }
+    }
+
+    fn multiply(self, rhs: Self) -> Self {
+        Self::from_exponent(self.exponent() + rhs.exponent())
+    }
+}
 
 /// A phase-free Pauli word in binary symplectic representation.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct PauliWord {
     nqubits: usize,
     x_words: Vec<u64>,
@@ -53,27 +203,30 @@ pub struct PauliWord {
 }
 
 impl PauliWord {
-    /// Constructs a canonical word and clears unused bits above `nqubits`.
+    /// Build and canonicalize a word from packed little-endian masks.
     pub fn from_words(
         nqubits: usize,
         mut x_words: Vec<u64>,
         mut z_words: Vec<u64>,
     ) -> Result<Self, PauliError> {
-        let expected = nqubits.div_ceil(64);
-        if x_words.len() != expected || z_words.len() != expected {
-            return Err(PauliError::InvalidWordCount {
+        let expected = packed_word_count(nqubits);
+        if x_words.len() != expected {
+            return Err(PauliError::InvalidWordLength {
                 expected,
-                x_words: x_words.len(),
-                z_words: z_words.len(),
+                actual: x_words.len(),
             });
         }
-
+        if z_words.len() != expected {
+            return Err(PauliError::InvalidWordLength {
+                expected,
+                actual: z_words.len(),
+            });
+        }
         if let Some(mask) = final_word_mask(nqubits) {
             let last = expected - 1;
             x_words[last] &= mask;
             z_words[last] &= mask;
         }
-
         Ok(Self {
             nqubits,
             x_words,
@@ -81,22 +234,67 @@ impl PauliWord {
         })
     }
 
-    /// Returns the number of qubits represented by the word.
+    /// Build a word from external I/X/Y/Z codes.
+    pub fn from_codes(nqubits: usize, codes: &[u8]) -> Result<Self, PauliError> {
+        if codes.len() != nqubits {
+            return Err(PauliError::InvalidStructureLength {
+                expected: nqubits,
+                actual: codes.len(),
+            });
+        }
+        let word_count = packed_word_count(nqubits);
+        let mut x_words = vec![0; word_count];
+        let mut z_words = vec![0; word_count];
+        for (qubit, &code) in codes.iter().enumerate() {
+            let (x, z) = code_bits(code, qubit)?;
+            x_words[qubit / 64] |= x << (qubit % 64);
+            z_words[qubit / 64] |= z << (qubit % 64);
+        }
+        Self::from_words(nqubits, x_words, z_words)
+    }
+
+    /// Return the number of qubits represented by the word.
     pub fn nqubits(&self) -> usize {
         self.nqubits
     }
 
-    /// Returns the packed X masks.
+    /// Return the packed X masks.
     pub fn x_words(&self) -> &[u64] {
         &self.x_words
     }
 
-    /// Returns the packed Z masks.
+    /// Return the packed Z masks.
     pub fn z_words(&self) -> &[u64] {
         &self.z_words
     }
 
-    /// Returns the number of non-identity sites.
+    /// Convert to external I/X/Y/Z codes in qubit order.
+    pub fn codes(&self) -> Vec<u8> {
+        (0..self.nqubits)
+            .map(|qubit| {
+                let x = (self.x_words[qubit / 64] >> (qubit % 64)) & 1;
+                let z = (self.z_words[qubit / 64] >> (qubit % 64)) & 1;
+                match (x, z) {
+                    (0, 0) => 0,
+                    (1, 0) => 1,
+                    (1, 1) => 2,
+                    (0, 1) => 3,
+                    _ => unreachable!("packed symplectic bits are binary"),
+                }
+            })
+            .collect()
+    }
+
+    /// Return the non-identity qubit indices.
+    pub fn support(&self) -> Vec<usize> {
+        self.codes()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, code)| (code != 0).then_some(index))
+            .collect()
+    }
+
+    /// Return the number of non-identity sites.
     pub fn weight(&self) -> u32 {
         self.x_words
             .iter()
@@ -105,15 +303,9 @@ impl PauliWord {
             .sum()
     }
 
-    /// Returns whether this word commutes with `other`.
-    pub fn commutes_with(&self, other: &Self) -> Result<bool, PauliError> {
-        if self.nqubits != other.nqubits {
-            return Err(PauliError::IncompatibleQubitCounts {
-                left: self.nqubits,
-                right: other.nqubits,
-            });
-        }
-
+    /// Return the binary symplectic inner product.
+    pub fn symplectic_inner_product(&self, other: &Self) -> Result<u8, PauliError> {
+        self.ensure_compatible(other)?;
         let parity = self
             .x_words
             .iter()
@@ -128,22 +320,259 @@ impl PauliWord {
                         ^ ((z_left & x_right).count_ones() & 1)
                 },
             );
-        Ok(parity == 0)
+        Ok((parity & 1) as u8)
     }
+
+    /// Return whether this word commutes with `other`.
+    pub fn commutes_with(&self, other: &Self) -> Result<bool, PauliError> {
+        Ok(self.symplectic_inner_product(other)? == 0)
+    }
+
+    /// Multiply two phase-free words and return the exact discrete phase.
+    pub fn multiply(&self, other: &Self) -> Result<(Self, PauliPhase), PauliError> {
+        self.ensure_compatible(other)?;
+        let result = Self::from_words(
+            self.nqubits,
+            self.x_words
+                .iter()
+                .zip(&other.x_words)
+                .map(|(left, right)| left ^ right)
+                .collect(),
+            self.z_words
+                .iter()
+                .zip(&other.z_words)
+                .map(|(left, right)| left ^ right)
+                .collect(),
+        )?;
+        let mut phase = PauliPhase::PlusOne;
+        for (left, right) in self.codes().into_iter().zip(other.codes()) {
+            phase = phase.multiply(local_product(left, right).1);
+        }
+        Ok((result, phase))
+    }
+
+    /// Return the adjoint word. Phase-free Pauli basis words are Hermitian.
+    pub fn adjoint(&self) -> Self {
+        self.clone()
+    }
+
+    fn ensure_compatible(&self, other: &Self) -> Result<(), PauliError> {
+        if self.nqubits != other.nqubits {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: self.nqubits,
+                right: other.nqubits,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Ord for PauliWord {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.nqubits
+            .cmp(&other.nqubits)
+            .then_with(|| self.codes().cmp(&other.codes()))
+    }
+}
+
+impl PartialOrd for PauliWord {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A coefficient-bearing canonical Pauli term.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PauliTerm {
+    /// Phase-free Pauli structure.
+    pub word: PauliWord,
+    /// Complex128-compatible coefficient.
+    pub coefficient: Complex64,
+}
+
+/// A deterministic, canonical Pauli operator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PauliOperator {
+    nqubits: usize,
+    terms: Vec<PauliTerm>,
+}
+
+impl PauliOperator {
+    /// Construct an operator, aggregate duplicate words, sort by code tuple,
+    /// and remove only exact-zero coefficients.
+    pub fn from_terms(
+        nqubits: usize,
+        structures: &[Vec<u8>],
+        coefficients: &[Complex64],
+    ) -> Result<Self, PauliError> {
+        if structures.len() != coefficients.len() {
+            return Err(PauliError::InvalidStructureLength {
+                expected: structures.len(),
+                actual: coefficients.len(),
+            });
+        }
+        let mut aggregate = BTreeMap::<PauliWord, Complex64>::new();
+        for (index, (structure, &coefficient)) in structures.iter().zip(coefficients).enumerate() {
+            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index });
+            }
+            let word = PauliWord::from_codes(nqubits, structure)?;
+            aggregate
+                .entry(word)
+                .and_modify(|value| *value += coefficient)
+                .or_insert(coefficient);
+        }
+        let terms = aggregate
+            .into_iter()
+            .filter_map(|(word, coefficient)| {
+                (!coefficient.is_zero()).then_some(PauliTerm { word, coefficient })
+            })
+            .collect();
+        Ok(Self { nqubits, terms })
+    }
+
+    /// Construct an empty operator on `nqubits`.
+    pub fn empty(nqubits: usize) -> Self {
+        Self {
+            nqubits,
+            terms: Vec::new(),
+        }
+    }
+
+    /// Return the qubit count.
+    pub fn nqubits(&self) -> usize {
+        self.nqubits
+    }
+
+    /// Return canonical terms.
+    pub fn terms(&self) -> &[PauliTerm] {
+        &self.terms
+    }
+
+    /// Add two operators and canonicalize the result.
+    pub fn add(&self, other: &Self) -> Result<Self, PauliError> {
+        self.ensure_compatible(other)?;
+        let mut structures = Vec::with_capacity(self.terms.len() + other.terms.len());
+        let mut coefficients = Vec::with_capacity(structures.capacity());
+        for term in self.terms.iter().chain(&other.terms) {
+            structures.push(term.word.codes());
+            coefficients.push(term.coefficient);
+        }
+        Self::from_terms(self.nqubits, &structures, &coefficients)
+    }
+
+    /// Scale all coefficients by a finite complex scalar.
+    pub fn scale(&self, scalar: Complex64) -> Result<Self, PauliError> {
+        if !scalar.re.is_finite() || !scalar.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index: 0 });
+        }
+        let mut result = self.clone();
+        for term in &mut result.terms {
+            term.coefficient = term.coefficient * scalar;
+        }
+        Ok(result)
+    }
+
+    /// Multiply two canonical operators with exact Pauli phases.
+    pub fn multiply(&self, other: &Self) -> Result<Self, PauliError> {
+        self.ensure_compatible(other)?;
+        let mut structures = Vec::with_capacity(self.terms.len() * other.terms.len());
+        let mut coefficients = Vec::with_capacity(structures.capacity());
+        for left in &self.terms {
+            for right in &other.terms {
+                let (word, phase) = left.word.multiply(&right.word)?;
+                structures.push(word.codes());
+                coefficients.push(left.coefficient * right.coefficient * phase.as_complex());
+            }
+        }
+        Self::from_terms(self.nqubits, &structures, &coefficients)
+    }
+
+    /// Compute `[self, other]`.
+    pub fn commutator(&self, other: &Self) -> Result<Self, PauliError> {
+        self.multiply(other)?
+            .add(&other.multiply(self)?.scale(Complex64::new(-1.0, 0.0))?)
+    }
+
+    /// Compute `{self, other}`.
+    pub fn anticommutator(&self, other: &Self) -> Result<Self, PauliError> {
+        self.multiply(other)?.add(&other.multiply(self)?)
+    }
+
+    /// Return the adjoint operator.
+    pub fn adjoint(&self) -> Self {
+        Self {
+            nqubits: self.nqubits,
+            terms: self
+                .terms
+                .iter()
+                .map(|term| PauliTerm {
+                    word: term.word.adjoint(),
+                    coefficient: term.coefficient.conj(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Check exact Hermiticity or Hermiticity within an explicit tolerance.
+    pub fn is_hermitian(&self, tolerance: f64) -> bool {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return false;
+        }
+        self.terms.iter().all(|term| {
+            let difference = term.coefficient - term.coefficient.conj();
+            difference.norm_sqr() <= tolerance * tolerance
+        })
+    }
+
+    fn ensure_compatible(&self, other: &Self) -> Result<(), PauliError> {
+        if self.nqubits != other.nqubits {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: self.nqubits,
+                right: other.nqubits,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Convert a qubit count to a packed word count without integer overflow.
+pub fn packed_word_count(nqubits: usize) -> usize {
+    nqubits / 64 + usize::from(nqubits % 64 != 0)
 }
 
 fn final_word_mask(nqubits: usize) -> Option<u64> {
     let remainder = nqubits % 64;
-    if remainder == 0 {
-        None
-    } else {
-        Some((1_u64 << remainder) - 1)
+    (remainder != 0).then(|| (1_u64 << remainder) - 1)
+}
+
+fn code_bits(code: u8, index: usize) -> Result<(u64, u64), PauliError> {
+    match code {
+        0 => Ok((0, 0)),
+        1 => Ok((1, 0)),
+        2 => Ok((1, 1)),
+        3 => Ok((0, 1)),
+        _ => Err(PauliError::InvalidCode { code, index }),
+    }
+}
+
+fn local_product(left: u8, right: u8) -> (u8, PauliPhase) {
+    match (left, right) {
+        (0, code) | (code, 0) => (code, PauliPhase::PlusOne),
+        (1, 1) | (2, 2) | (3, 3) => (0, PauliPhase::PlusOne),
+        (1, 2) => (3, PauliPhase::PlusI),
+        (2, 1) => (3, PauliPhase::MinusI),
+        (1, 3) => (2, PauliPhase::MinusI),
+        (3, 1) => (2, PauliPhase::PlusI),
+        (2, 3) => (1, PauliPhase::PlusI),
+        (3, 2) => (1, PauliPhase::MinusI),
+        _ => unreachable!("PauliWord validates local codes before multiplication"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PauliWord;
+    use super::{Complex64, PauliOperator, PauliPhase, PauliWord};
 
     #[test]
     fn computes_weight_and_canonicalizes_unused_bits() {
@@ -158,8 +587,44 @@ mod tests {
         let z0 = PauliWord::from_words(2, vec![0], vec![0b01]).unwrap();
         let xx = PauliWord::from_words(2, vec![0b11], vec![0]).unwrap();
         let zz = PauliWord::from_words(2, vec![0], vec![0b11]).unwrap();
-
         assert!(!x0.commutes_with(&z0).unwrap());
         assert!(xx.commutes_with(&zz).unwrap());
+    }
+
+    #[test]
+    fn covers_phase_table_and_round_trip() {
+        let expected = [
+            (1, 2, 3, PauliPhase::PlusI),
+            (2, 1, 3, PauliPhase::MinusI),
+            (1, 3, 2, PauliPhase::MinusI),
+            (3, 1, 2, PauliPhase::PlusI),
+            (2, 3, 1, PauliPhase::PlusI),
+            (3, 2, 1, PauliPhase::MinusI),
+        ];
+        for (left, right, result, phase) in expected {
+            let left_word = PauliWord::from_codes(1, &[left]).unwrap();
+            let right_word = PauliWord::from_codes(1, &[right]).unwrap();
+            let (actual, actual_phase) = left_word.multiply(&right_word).unwrap();
+            assert_eq!(actual.codes(), vec![result]);
+            assert_eq!(actual_phase, phase);
+        }
+        let word = PauliWord::from_codes(130, &[2; 130]).unwrap();
+        assert_eq!(word.codes(), vec![2; 130]);
+    }
+
+    #[test]
+    fn canonical_operator_algebra_aggregates_exact_zeros() {
+        let operator = PauliOperator::from_terms(
+            1,
+            &[vec![1], vec![1], vec![2]],
+            &[
+                Complex64::new(1.0, 0.0),
+                Complex64::new(-1.0, 0.0),
+                Complex64::new(2.0, 0.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(operator.terms().len(), 1);
+        assert!(operator.is_hermitian(0.0));
     }
 }

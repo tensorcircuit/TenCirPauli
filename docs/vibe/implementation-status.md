@@ -4,12 +4,16 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P0：语义冻结与 reference。
+完成 `phase-1-spec.md` 中的 P0–P5。当前 active milestone 是 P2：PauliOperator 与 canonicalization。
 
 ## Completed foundation
 
 - 独立 Cargo workspace、pure Rust core crate、PyO3 native crate 和单一 Python package 已建立。
 - P0 NumPy dense reference 与固定 regression vectors 已建立；reference 独立使用 I/X/Y/Z matrices、`np.kron` 和显式 local product table，不调用被测实现。
+- P0 acceptance gate 已满足：来源、seed、dtype、tolerance 和最大 reference system 已记录在 `docs/vibe/reference-vectors.md`；P0 commit 为 `829221e`。
+- P1 Rust `PauliWord` 已完成 code/string/packed conversion、weight、support、symplectic inner product、commutation、exact four-valued multiplication phase、adjoint 和 canonical ordering。
+- P1 batch conversion 已通过单次 native call 处理二维 code structures；Python facade 已提供 typed `PauliWord.from_codes`, `from_string`, `batch_from_codes` 和 `PauliProduct`。
+- P1 typed error paths 已覆盖 invalid code/shape, incompatible qubit count, packed word length and non-negative nqubit validation。
 - Minimal phase-free `PauliWord` weight/commutation 路径已贯通 Rust、PyO3、Python 和 tests；S1 已确认该 phase-free 方向。
 - Linux/macOS/Windows correctness/package CI 与 GitHub Release/PyPI workflow 已建立。
 - 本地 Criterion + pytest-benchmark 记录/比较基础设施已建立；性能结果不进入 CI 门禁。
@@ -29,19 +33,21 @@ S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `
 ## Verification evidence
 
 - P0 targeted tests：`python -m pytest tests/test_numpy_reference.py`，13 passed。
+- P1 targeted tests：`conda run -p .conda pytest tests`，21 passed；Rust unit/doc tests 4 passed。
 - Rust format：通过。
 - Rust Clippy `-D warnings`：通过。
 - Rust unit/doc tests：2 passed。
 - Python package tests：3 passed。
 - Black、Ruff、strict mypy：通过。
 - `scripts/check.py --benchmark smoke`：完整通过，包括 Rust/Python benchmark harness。
-- Local benchmark：`bootstrap` 已完成 Rust/Python record 与 compare；它产生于 scaffold 初始 commit 之前，只用于验证基础设施，不是长期性能基线。P0 的真实 commit benchmark 将在 P0 commit 后记录。
+- P1 benchmark workloads：Rust Criterion 已加入 code round-trip/multiply（6/64/256 qubits），Python pytest-benchmark 已加入 1,024-term batch conversion；smoke harness 全部通过。
+- Local benchmark：`p0-829221e` 已在 clean commit 上完成 Rust/Python record；Rust weight kernel 为 1.02 ns (64 qubits)、3.00 ns (1024)、41.52 ns (16384)，commutation 为 2.15 ns、4.97 ns、62.93 ns；Python public-path workload mean 为 174.4 µs。该结果是本机 informational baseline，不构成 CI 门禁。
 - Public-file/local-secret audit：通过；`.conda/`、`.benchmarks/`、`AGENTS.local.md`、build artifacts 均被忽略。
 
 ## Next actions
 
-1. 在 P0 commit 后记录第一个带真实 commit id 的本机 benchmark baseline。
-2. 进入 P1：完成 PauliWord 代数、批量结构转换和 typed errors。
+1. 在 P1 commit 后记录 clean benchmark label，并手动比较 batch path 结果。
+2. 完成 P2：PauliOperator canonicalization、operator algebra 和 structural/dynamic coefficient separation。
 
 ## Update protocol
 

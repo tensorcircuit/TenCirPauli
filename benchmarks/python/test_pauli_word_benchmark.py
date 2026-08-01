@@ -62,3 +62,11 @@ def test_public_api_workload(benchmark: BenchmarkFixture) -> None:
     expected = evaluate_workload(words)
     result = benchmark(evaluate_workload, words)
     assert result == expected
+
+
+def test_public_api_batch_conversion(benchmark: BenchmarkFixture) -> None:
+    """Measure one batched FFI conversion for a thousand structures."""
+    structures = tuple(((index % 4, (index + 1) % 4) * 32) for index in range(1_024))
+    expected = PauliWord.batch_from_codes(64, structures)
+    result = benchmark(PauliWord.batch_from_codes, 64, structures)
+    assert result == expected
