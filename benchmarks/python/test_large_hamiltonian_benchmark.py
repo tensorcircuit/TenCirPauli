@@ -344,6 +344,61 @@ def test_tensorcircuit_jax_16q_heisenberg_sparse_sum_duplicates_warm(
     )
 
 
+def test_tensorcircuit_jax_20q_heisenberg_sparse_warm(
+    benchmark: BenchmarkFixture,
+) -> None:
+    """Measure 20q nearest-neighbor raw BCOO construction within 16 GiB."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    _, structures, weights, _ = make_heisenberg_chain(20, next_nearest=False)
+    expected = _make_jax_sparse(structures, weights)
+    _sync_sparse(expected)
+    result = benchmark.pedantic(
+        _make_jax_sparse_synced,
+        args=(structures, weights),
+        rounds=3,
+        iterations=1,
+        warmup_rounds=1,
+    )
+    _sync_sparse(result)
+    _assert_jax_sparse_shape(result, 20, len(structures), canonical=False)
+
+
+def test_tensorcircuit_jax_20q_heisenberg_sparse_sum_duplicates_warm(
+    benchmark: BenchmarkFixture,
+) -> None:
+    """Measure 20q nearest-neighbor BCOO canonicalization within 16 GiB."""
+    tc = pytest.importorskip("tensorcircuit")
+    pytest.importorskip("jax")
+    tc.set_backend("jax")
+    tc.set_dtype("complex128")
+    operator, structures, weights, _ = make_heisenberg_chain(20, next_nearest=False)
+    raw = _make_jax_sparse(structures, weights)
+    _sync_sparse(raw)
+    expected = raw.sum_duplicates()
+    _sync_sparse(expected)
+    canonical_nnz = int(operator.coo().data.size)
+    result = benchmark.pedantic(
+        _sum_duplicates_synced,
+        args=(raw,),
+        rounds=3,
+        iterations=1,
+        warmup_rounds=1,
+    )
+    _sync_sparse(result)
+    assert bool(result.unique_indices)
+    assert bool(result.indices_sorted)
+    assert int(result.nse) == 20 * (1 << 20)
+    assert (
+        int(np.count_nonzero(np.abs(np.asarray(result.data)) > 1e-12)) == canonical_nnz
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.data), np.asarray(expected.data), rtol=1e-12, atol=1e-12
+    )
+
+
 def test_tensorcircuit_jax_20q_sparse_first(benchmark: BenchmarkFixture) -> None:
     """Measure first 20q/3-term raw JAX BCOO construction."""
     tc = pytest.importorskip("tensorcircuit")
