@@ -119,7 +119,16 @@ def test_phase5_basis_order_and_packed_padding(
 
 @pytest.mark.parametrize(
     ("nqubits", "particle_number"),
-    [(63, 1), (64, 1), (65, 2), (127, 1), (128, 2), (129, 2), (256, 1)],
+    [
+        (63, 1),
+        (64, 1),
+        (65, 2),
+        (65, 63),
+        (127, 1),
+        (128, 2),
+        (129, 2),
+        (256, 1),
+    ],
 )
 def test_phase5_wide_restriction_matches_big_int_sparse_reference(
     nqubits: int, particle_number: int

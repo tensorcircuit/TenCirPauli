@@ -134,6 +134,10 @@ impl U1Sector {
             .iter()
             .map(|word| word.count_ones() as usize)
             .sum::<usize>();
+        self.rank_words_known_weight(words, weight)
+    }
+
+    fn rank_words_known_weight(&self, words: &[u64], weight: usize) -> Result<u64, PauliError> {
         if weight != self.particle_number {
             return Err(PauliError::InvalidIndex {
                 context: "packed basis word has the wrong Hamming weight",
@@ -349,8 +353,9 @@ impl U1RestrictedOperator {
         let mut source = vec![0_u64; sector.word_count()];
         let mut destination = vec![0_u64; sector.word_count()];
         let mut aggregate = Vec::with_capacity(terms.groups.len());
+        let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
-            sector.unrank_into(source_index as u64, &mut source)?;
+            source_iterator.write_to(&mut source);
             aggregate_source(
                 source_index as u64,
                 &source,
@@ -367,6 +372,7 @@ impl U1RestrictedOperator {
                             context: "counting U1 restricted transitions",
                         })?;
             }
+            source_iterator.advance();
         }
 
         let mut indptr = vec![0_usize; dimension + 1];
@@ -382,8 +388,9 @@ impl U1RestrictedOperator {
         let mut columns = vec![0_usize; entry_count];
         let mut values = vec![Complex64::default(); entry_count];
         let mut next = indptr[..dimension].to_vec();
+        let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
-            sector.unrank_into(source_index as u64, &mut source)?;
+            source_iterator.write_to(&mut source);
             aggregate_source(
                 source_index as u64,
                 &source,
@@ -398,6 +405,7 @@ impl U1RestrictedOperator {
                 values[position] = value;
                 next[destination] += 1;
             }
+            source_iterator.advance();
         }
 
         Ok(Self {
@@ -647,60 +655,236 @@ struct CompiledU1Terms {
     groups: Vec<U1XGroup>,
 }
 
-#[derive(Clone)]
-struct PrecompiledU1Term {
-    x_words: Vec<u64>,
-    z_words: Vec<u64>,
-    coefficient: Complex64,
+/// Incremental fixed-weight iterator in ascending public computational order.
+///
+/// The iterator keeps its combination in public integer bit order (bit zero is
+/// the least significant computational bit) and converts only the selected
+/// bits into the internal qubit-little-endian packed layout. This makes the
+/// low-particle and low-hole source paths proportional to the active weight,
+/// while retaining the exact `unrank` ordering contract.
+struct U1BasisIterator {
+    nqubits: usize,
+    word_count: usize,
+    complement: bool,
+    positions: Vec<usize>,
+    finished: bool,
+}
+
+impl U1BasisIterator {
+    fn new(sector: &U1Sector) -> Self {
+        let word_count = sector.word_count();
+        let active_number = sector.active_number;
+        let first_position = if sector.complement {
+            sector.nqubits - sector.active_number
+        } else {
+            0
+        };
+        Self {
+            nqubits: sector.nqubits,
+            word_count,
+            complement: sector.complement,
+            positions: (first_position..first_position + active_number).collect(),
+            finished: false,
+        }
+    }
+
+    fn write_to(&self, output: &mut [u64]) {
+        debug_assert_eq!(output.len(), self.word_count);
+        if self.complement {
+            for (index, word) in output.iter_mut().enumerate() {
+                *word = if index + 1 == self.word_count {
+                    tail_mask(self.nqubits)
+                } else {
+                    u64::MAX
+                };
+            }
+        } else {
+            output.fill(0);
+        }
+        for &public_position in &self.positions {
+            let qubit = self.nqubits - public_position - 1;
+            let destination_word = qubit / 64;
+            let destination_bit = 1_u64 << (qubit % 64);
+            if self.complement {
+                output[destination_word] &= !destination_bit;
+            } else {
+                output[destination_word] |= destination_bit;
+            }
+        }
+    }
+
+    fn advance(&mut self) {
+        if self.finished || self.positions.is_empty() {
+            self.finished = true;
+            return;
+        }
+        if self.complement {
+            if !previous_colex(&mut self.positions) {
+                self.finished = true;
+            }
+        } else if !next_colex(&mut self.positions, self.nqubits) {
+            self.finished = true;
+        }
+    }
+}
+
+fn next_colex(positions: &mut [usize], nqubits: usize) -> bool {
+    if positions.is_empty() {
+        return false;
+    }
+    let last = positions.len() - 1;
+    let limit = positions[last];
+    if next_colex_prefix(&mut positions[..last], limit) {
+        return true;
+    }
+    if positions[last] + 1 >= nqubits {
+        return false;
+    }
+    positions[last] += 1;
+    for (index, position) in positions[..last].iter_mut().enumerate() {
+        *position = index;
+    }
+    true
+}
+
+fn next_colex_prefix(positions: &mut [usize], limit: usize) -> bool {
+    if positions.is_empty() {
+        return false;
+    }
+    let last = positions.len() - 1;
+    if last == 0 {
+        if positions[0] + 1 < limit {
+            positions[0] += 1;
+            return true;
+        }
+        return false;
+    }
+    let limit_for_prefix = positions[last];
+    if next_colex_prefix(&mut positions[..last], limit_for_prefix) {
+        return true;
+    }
+    if positions[last] + 1 >= limit {
+        return false;
+    }
+    positions[last] += 1;
+    for (index, position) in positions[..last].iter_mut().enumerate() {
+        *position = index;
+    }
+    true
+}
+
+fn previous_colex(positions: &mut [usize]) -> bool {
+    if positions.is_empty() {
+        return false;
+    }
+    let last = positions.len() - 1;
+    if previous_colex_prefix(&mut positions[..last]) {
+        return true;
+    }
+    if positions[last] == last {
+        return false;
+    }
+    positions[last] -= 1;
+    let first = positions[last] - last;
+    for (index, position) in positions[..last].iter_mut().enumerate() {
+        *position = first + index;
+    }
+    true
+}
+
+fn previous_colex_prefix(positions: &mut [usize]) -> bool {
+    if positions.is_empty() {
+        return false;
+    }
+    let last = positions.len() - 1;
+    if last == 0 {
+        if positions[0] == 0 {
+            return false;
+        }
+        positions[0] -= 1;
+        return true;
+    }
+    if previous_colex_prefix(&mut positions[..last]) {
+        return true;
+    }
+    if positions[last] == last {
+        return false;
+    }
+    positions[last] -= 1;
+    let first = positions[last] - last;
+    for (index, position) in positions[..last].iter_mut().enumerate() {
+        *position = first + index;
+    }
+    true
 }
 
 fn compile_terms(operator: &PauliOperator) -> Result<CompiledU1Terms, PauliError> {
     let word_count = packed_word_count(operator.nqubits());
-    let mut terms = Vec::with_capacity(operator.terms().len());
-    for (index, term) in operator.terms().iter().enumerate() {
-        let coefficient = weighted_coefficient(term, index)?;
-        terms.push(PrecompiledU1Term {
-            x_words: term.word.x_words().to_vec(),
-            z_words: term.word.z_words().to_vec(),
-            coefficient,
-        });
-    }
-
     // The hash map is used only for lookup. Group order and term order are
     // established by the already-canonical input stream, so hashing cannot
     // affect floating-point addition order or serialized outputs.
-    let mut group_lookup =
-        FxHashMap::<Vec<u64>, usize>::with_capacity_and_hasher(terms.len(), Default::default());
-    let mut builders = Vec::<(Vec<u64>, Vec<usize>)>::new();
-    for (term_index, term) in terms.iter().enumerate() {
-        let group_index = if let Some(&group_index) = group_lookup.get(&term.x_words) {
+    let mut group_lookup = FxHashMap::<Vec<u64>, usize>::with_capacity_and_hasher(
+        operator.terms().len(),
+        Default::default(),
+    );
+    let mut x_words = Vec::with_capacity(operator.terms().len().checked_mul(word_count).ok_or(
+        PauliError::Overflow {
+            context: "sizing compiled U1 X masks",
+        },
+    )?);
+    let mut groups = Vec::new();
+    let mut group_counts = Vec::new();
+    let mut term_group_indices = Vec::with_capacity(operator.terms().len());
+    for term in operator.terms() {
+        let x_mask = term.word.x_words();
+        let group_index = if let Some(&group_index) = group_lookup.get(x_mask) {
             group_index
         } else {
-            let group_index = builders.len();
-            group_lookup.insert(term.x_words.clone(), group_index);
-            builders.push((term.x_words.clone(), Vec::new()));
+            let group_index = groups.len();
+            group_lookup.insert(x_mask.to_vec(), group_index);
+            let x_offset = x_words.len();
+            x_words.extend_from_slice(x_mask);
+            groups.push(U1XGroup {
+                x_offset,
+                term_start: 0,
+                term_end: 0,
+            });
+            group_counts.push(0_usize);
             group_index
         };
-        builders[group_index].1.push(term_index);
+        term_group_indices.push(group_index);
+        group_counts[group_index] =
+            group_counts[group_index]
+                .checked_add(1)
+                .ok_or(PauliError::Overflow {
+                    context: "counting compiled U1 terms",
+                })?;
     }
 
-    let mut x_words = Vec::with_capacity(builders.len() * word_count);
-    let mut z_words = Vec::with_capacity(terms.len() * word_count);
-    let mut weighted_coefficients = Vec::with_capacity(terms.len());
-    let mut groups = Vec::with_capacity(builders.len());
-    for (x_mask, term_indices) in builders {
-        let x_offset = x_words.len();
-        x_words.extend_from_slice(&x_mask);
-        let term_start = weighted_coefficients.len();
-        for term_index in term_indices {
-            z_words.extend_from_slice(&terms[term_index].z_words);
-            weighted_coefficients.push(terms[term_index].coefficient);
-        }
-        groups.push(U1XGroup {
-            x_offset,
-            term_start,
-            term_end: weighted_coefficients.len(),
-        });
+    let mut offset = 0_usize;
+    let mut next = Vec::with_capacity(groups.len());
+    for (group, &count) in groups.iter_mut().zip(&group_counts) {
+        group.term_start = offset;
+        offset = offset.checked_add(count).ok_or(PauliError::Overflow {
+            context: "sizing compiled U1 terms",
+        })?;
+        group.term_end = offset;
+        next.push(group.term_start);
+    }
+    let term_count = operator.terms().len();
+    let flat_term_words = term_count
+        .checked_mul(word_count)
+        .ok_or(PauliError::Overflow {
+            context: "sizing compiled U1 Z masks",
+        })?;
+    let mut z_words = vec![0_u64; flat_term_words];
+    let mut weighted_coefficients = vec![Complex64::default(); term_count];
+    for (term, &group_index) in operator.terms().iter().zip(&term_group_indices) {
+        let term_index = next[group_index];
+        let z_start = term_index * word_count;
+        z_words[z_start..z_start + word_count].copy_from_slice(term.word.z_words());
+        weighted_coefficients[term_index] = weighted_coefficient(term, term_index)?;
+        next[group_index] += 1;
     }
     Ok(CompiledU1Terms {
         word_count,
@@ -743,10 +927,12 @@ fn aggregate_source(
     aggregate.clear();
     for group in &terms.groups {
         let x_mask = &terms.x_words[group.x_offset..group.x_offset + terms.word_count];
+        let mut weight = 0_usize;
         for ((destination_word, source_word), x_word) in
             destination.iter_mut().zip(source).zip(x_mask)
         {
             *destination_word = source_word ^ x_word;
+            weight += destination_word.count_ones() as usize;
         }
         let mut value = Complex64::default();
         for term_index in group.term_start..group.term_end {
@@ -772,10 +958,6 @@ fn aggregate_source(
         if is_exact_zero(value) {
             continue;
         }
-        let weight = destination
-            .iter()
-            .map(|word| word.count_ones() as usize)
-            .sum::<usize>();
         if weight != sector.particle_number {
             return Err(PauliError::SectorLeakage {
                 source_index,
@@ -783,7 +965,7 @@ fn aggregate_source(
                 actual: weight,
             });
         }
-        let restricted_destination = sector.rank_words(destination)?;
+        let restricted_destination = sector.rank_words_known_weight(destination, weight)?;
         let restricted_destination =
             usize::try_from(restricted_destination).map_err(|_| PauliError::Overflow {
                 context: "converting U1 destination rank to a native index",
@@ -977,4 +1159,30 @@ fn check_allocation(requested: u128, limit: u128) -> Result<(), PauliError> {
         return Err(PauliError::MemoryLimit { requested, limit });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{U1BasisIterator, U1Sector};
+
+    #[test]
+    fn incremental_basis_iterator_matches_checked_unrank() {
+        for nqubits in 0..=8 {
+            for particle_number in 0..=nqubits {
+                let sector = U1Sector::new(nqubits, particle_number).unwrap();
+                let mut iterator = U1BasisIterator::new(&sector);
+                let mut actual = vec![0_u64; sector.word_count()];
+                let mut expected = vec![0_u64; sector.word_count()];
+                for index in 0..sector.dimension().unwrap() {
+                    iterator.write_to(&mut actual);
+                    sector.unrank_into(index as u64, &mut expected).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "n={nqubits}, k={particle_number}, index={index}"
+                    );
+                    iterator.advance();
+                }
+            }
+        }
+    }
 }
