@@ -13,7 +13,6 @@ from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     COOMatrix,
     CSRMatrix,
-    _check_allocation,
     _effective_max_bytes,
     _validate_max_bytes,
 )
@@ -114,6 +113,8 @@ class U1Sector:
         ):
             raise ValueError("particle_number must be between 0 and nqubits")
         dimension = math.comb(self.nqubits, self.particle_number)
+        if dimension > np.iinfo(np.uint64).max:
+            raise OverflowError("U1 sector dimension exceeds uint64 restricted indices")
         if dimension > np.iinfo(np.intp).max:
             raise OverflowError("U1 sector dimension exceeds platform indices")
 
@@ -165,40 +166,24 @@ class U1Sector:
     ) -> np.ndarray[Any, Any]:
         """Return a read-only packed basis in ascending computational order."""
         _validate_max_bytes(max_bytes)
-        if self.nqubits < 64:
-            _, values = _native.u1_basis_words(
-                self.nqubits, self.particle_number, _effective_max_bytes(max_bytes)
-            )
-            result = np.asarray(values, dtype=np.uint64)
-        elif self.nqubits == 64:
-            _check_allocation(self.dimension * 8, max_bytes, "U1 basis")
-            result = np.asarray(
-                [int(cast(int, self.unrank(index))) for index in range(self.dimension)],
-                dtype=np.uint64,
-            )
+        dimension, word_count, values = _native.u1_basis_words(
+            self.nqubits, self.particle_number, _effective_max_bytes(max_bytes)
+        )
+        packed = np.asarray(values, dtype=np.uint64)
+        if self.nqubits <= 64:
+            if self.nqubits == 0:
+                result = np.zeros(dimension, dtype=np.uint64)
+            else:
+                result = packed.reshape((dimension,))
         else:
-            word_count = (self.nqubits + 63) // 64
-            _check_allocation(
-                self.dimension * word_count * 8, max_bytes, "U1 packed basis"
-            )
-            result = np.zeros((self.dimension, word_count), dtype=np.uint64)
-            for index in range(self.dimension):
-                bits = cast(Tuple[int, ...], self.unrank(index))
-                for qubit, bit in enumerate(bits):
-                    if bit:
-                        result[index, qubit // 64] |= np.uint64(1 << (qubit % 64))
+            result = packed.reshape((dimension, word_count))
         result.flags.writeable = False
         return cast(np.ndarray[Any, Any], result)
 
 
 @dataclass(frozen=True, init=False)
 class U1RestrictedOperator:
-    """A validated Pauli operator restricted to one U(1) sector.
-
-    The native restricted path currently requires ``sector.nqubits`` to be
-    smaller than the platform ``usize`` bit width; wider Python basis helpers
-    do not imply wider native Hamiltonian support.
-    """
+    """A validated Pauli operator restricted to one U(1) sector."""
 
     sector: U1Sector
     dimension: int

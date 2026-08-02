@@ -411,6 +411,38 @@ fn u1_basis_and_restricted_hopping_use_aggregated_transitions() {
 }
 
 #[test]
+fn u1_packed_rank_and_unrank_are_inverse_for_particle_and_hole_paths() {
+    for nqubits in 0..=8 {
+        for particle_number in 0..=nqubits {
+            let sector = U1Sector::new(nqubits, particle_number).unwrap();
+            let mut words = vec![0_u64; sector.word_count()];
+            for index in 0..sector.dimension().unwrap() {
+                sector.unrank_into(index as u64, &mut words).unwrap();
+                assert_eq!(
+                    words
+                        .iter()
+                        .map(|word| word.count_ones() as usize)
+                        .sum::<usize>(),
+                    particle_number
+                );
+                assert_eq!(sector.rank_words(&words).unwrap(), index as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn u1_packed_rank_crosses_three_limb_boundaries() {
+    let sector = U1Sector::new(129, 2).unwrap();
+    let mut words = vec![0_u64; sector.word_count()];
+    for index in [0_u64, 1, 63, 64, 127, 128, 8255] {
+        sector.unrank_into(index, &mut words).unwrap();
+        assert_eq!(sector.rank_words(&words).unwrap(), index);
+        assert_eq!(words[2] & !1_u64, 0);
+    }
+}
+
+#[test]
 fn u1_apply_into_reports_the_failing_buffer_length() {
     let sector = U1Sector::new(3, 1).unwrap();
     let operator = PauliOperator::from_terms(

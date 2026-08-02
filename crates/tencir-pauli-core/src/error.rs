@@ -21,8 +21,12 @@ pub enum PauliError {
     MemoryLimit { requested: u128, limit: u128 },
     /// A requested sector value is invalid.
     InvalidSector { context: &'static str },
-    /// A Pauli operator does not preserve the requested sector.
-    SectorLeakage { input: usize, output: usize },
+    /// A Pauli operator does not preserve the requested sector after aggregation.
+    SectorLeakage {
+        source_index: u64,
+        expected: usize,
+        actual: usize,
+    },
     /// An observable is incompatible with the selected symmetry sector.
     IncompatibleSymmetry,
     /// A requested index or bitstring is outside the sector domain.
@@ -93,9 +97,13 @@ impl fmt::Display for PauliError {
                 )
             }
             Self::InvalidSector { context } => write!(formatter, "invalid sector: {context}"),
-            Self::SectorLeakage { input, output } => write!(
+            Self::SectorLeakage {
+                source_index,
+                expected,
+                actual,
+            } => write!(
                 formatter,
-                "U(1) sector leakage from basis state {input} to {output}"
+                "U(1) sector leakage from restricted source index {source_index}: expected particle number {expected}, got destination weight {actual}"
             ),
             Self::IncompatibleSymmetry => {
                 write!(

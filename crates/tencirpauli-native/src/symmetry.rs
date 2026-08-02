@@ -274,17 +274,30 @@ pub(crate) fn u1_basis_words<'py>(
     nqubits: usize,
     particle_number: usize,
     max_bytes: usize,
-) -> PyResult<(usize, Bound<'py, PyArray1<u64>>)> {
-    let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
-    let words = py
-        .allow_threads(|| sector.basis_words(max_bytes as u128))
-        .map_err(map_error)?;
-    let dimension = words.len();
-    let values = words
-        .into_iter()
-        .map(|word| {
-            u64::try_from(word).map_err(|_| PyValueError::new_err("basis word exceeds uint64"))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok((dimension, PyArray1::from_vec(py, values)))
+) -> PyResult<(usize, usize, Bound<'py, PyArray1<u64>>)> {
+    let (dimension, word_count, words) = py.allow_threads(|| {
+        let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
+        if nqubits <= 64 {
+            let basis = sector.basis_words(max_bytes as u128).map_err(map_error)?;
+            let words = basis
+                .into_iter()
+                .map(|word| {
+                    u64::try_from(word)
+                        .map_err(|_| PyValueError::new_err("basis word exceeds uint64"))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok::<_, PyErr>((words.len(), 1, words))
+        } else {
+            let basis = sector
+                .basis_words_packed(max_bytes as u128)
+                .map_err(map_error)?;
+            Ok::<_, PyErr>((
+                usize::try_from(basis.dimension)
+                    .map_err(|_| PyValueError::new_err("U1 dimension exceeds platform indices"))?,
+                basis.word_count,
+                basis.words,
+            ))
+        }
+    })?;
+    Ok((dimension, word_count, PyArray1::from_vec(py, words)))
 }

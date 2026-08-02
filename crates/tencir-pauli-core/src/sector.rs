@@ -3,18 +3,33 @@
 use std::{mem::size_of, sync::Arc};
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 use crate::error::PauliError;
 use crate::operator::{PauliOperator, PauliTerm};
 use crate::scalar::{is_exact_zero, Complex64};
+use crate::word::packed_word_count;
 
 const U1_PARALLEL_TRANSITION_THRESHOLD: usize = 1 << 14;
 
 /// A fixed-particle-number computational-basis sector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct U1Sector {
     nqubits: usize,
     particle_number: usize,
+    dimension: u64,
+    active_number: usize,
+    complement: bool,
+    /// Row-major `C(row, active_number)` values for `0 <= row <= nqubits`.
+    choose: Arc<[u64]>,
+}
+
+/// A packed, row-major materialization of a U(1) basis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackedU1Basis {
+    pub dimension: u64,
+    pub word_count: usize,
+    pub words: Vec<u64>,
 }
 
 /// A matrix-free plan over a fixed-Hamming-weight basis.
@@ -57,10 +72,19 @@ impl U1Sector {
                 context: "particle_number must be between 0 and nqubits",
             });
         }
-        choose(nqubits, particle_number)?;
+        let dimension = choose_u64(nqubits, particle_number)?;
+        usize::try_from(dimension).map_err(|_| PauliError::Overflow {
+            context: "converting U1 sector dimension to a native index",
+        })?;
+        let active_number = particle_number.min(nqubits - particle_number);
+        let choose = build_choose_table(nqubits, active_number)?;
         Ok(Self {
             nqubits,
             particle_number,
+            dimension,
+            active_number,
+            complement: particle_number > nqubits - particle_number,
+            choose,
         })
     }
 
@@ -72,77 +96,160 @@ impl U1Sector {
         self.particle_number
     }
 
+    /// Return the restricted dimension as a checked native index.
     pub fn dimension(&self) -> Result<usize, PauliError> {
-        choose(self.nqubits, self.particle_number)
+        usize::try_from(self.dimension).map_err(|_| PauliError::Overflow {
+            context: "converting U1 sector dimension to a native index",
+        })
+    }
+
+    /// Return the restricted dimension before converting it to `usize`.
+    pub fn dimension_u64(&self) -> u64 {
+        self.dimension
+    }
+
+    /// Return the number of packed little-endian-by-qubit limbs.
+    pub fn word_count(&self) -> usize {
+        packed_word_count(self.nqubits)
     }
 
     /// Rank a TensorCircuit-order computational basis integer.
     pub fn rank(&self, bitstring: usize) -> Result<usize, PauliError> {
         ensure_integer_width(self.nqubits)?;
-        self.rank_native(bitstring)
-    }
-
-    fn rank_native(&self, bitstring: usize) -> Result<usize, PauliError> {
-        if self.nqubits < usize::BITS as usize && bitstring >= (1_usize << self.nqubits) {
-            return Err(PauliError::InvalidIndex {
-                context: "bitstring is outside the computational basis",
-            });
-        }
-        if bitstring.count_ones() as usize != self.particle_number {
-            return Err(PauliError::InvalidIndex {
-                context: "bitstring has the wrong Hamming weight",
-            });
-        }
-        let mut rank = 0_usize;
-        let mut ones = 0_usize;
+        let mut words = vec![0_u64; self.word_count()];
         for position in 0..self.nqubits {
-            let bit = (bitstring >> (self.nqubits - 1 - position)) & 1;
-            if bit == 1 {
-                let remaining = self.nqubits - position - 1;
-                let needed = self.particle_number - ones;
-                rank =
-                    rank.checked_add(choose(remaining, needed)?)
-                        .ok_or(PauliError::Overflow {
-                            context: "ranking U1 basis state",
-                        })?;
-                ones += 1;
+            if (bitstring >> (self.nqubits - position - 1)) & 1 != 0 {
+                words[position / 64] |= 1_u64 << (position % 64);
             }
         }
-        Ok(rank)
+        usize::try_from(self.rank_words(&words)?).map_err(|_| PauliError::Overflow {
+            context: "converting U1 basis rank to a native index",
+        })
+    }
+
+    /// Rank a packed occupation word using qubit `q` at limb `q / 64`, bit `q % 64`.
+    pub fn rank_words(&self, words: &[u64]) -> Result<u64, PauliError> {
+        self.validate_words(words)?;
+        let weight = words
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum::<usize>();
+        if weight != self.particle_number {
+            return Err(PauliError::InvalidIndex {
+                context: "packed basis word has the wrong Hamming weight",
+            });
+        }
+        let active_rank = self.rank_active_words(words)?;
+        if self.complement {
+            self.dimension
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(active_rank))
+                .ok_or(PauliError::Overflow {
+                    context: "ranking complemented U1 basis state",
+                })
+        } else {
+            Ok(active_rank)
+        }
     }
 
     /// Unrank in ascending TensorCircuit computational-basis integer order.
     pub fn unrank(&self, index: usize) -> Result<usize, PauliError> {
         ensure_integer_width(self.nqubits)?;
-        self.unrank_native(index)
-    }
-
-    fn unrank_native(&self, mut index: usize) -> Result<usize, PauliError> {
-        let dimension = self.dimension()?;
-        if index >= dimension {
-            return Err(PauliError::InvalidIndex {
-                context: "restricted basis index is out of range",
-            });
-        }
+        let mut words = vec![0_u64; self.word_count()];
+        self.unrank_into(index as u64, &mut words)?;
         let mut value = 0_usize;
-        let mut remaining_ones = self.particle_number;
         for position in 0..self.nqubits {
-            let remaining_sites = self.nqubits - position - 1;
-            let zero_count = choose(remaining_sites, remaining_ones)?;
-            if index >= zero_count {
-                index -= zero_count;
-                if remaining_ones == 0 {
-                    return Err(PauliError::InvalidIndex {
-                        context: "invalid combinatorial sector index",
-                    });
-                }
-                value |= 1_usize << (self.nqubits - 1 - position);
-                remaining_ones -= 1;
+            if words[position / 64] & (1_u64 << (position % 64)) != 0 {
+                value |= 1_usize << (self.nqubits - position - 1);
             }
         }
         Ok(value)
     }
 
+    /// Unrank into caller-owned packed little-endian-by-qubit storage.
+    pub fn unrank_into(&self, index: u64, output: &mut [u64]) -> Result<(), PauliError> {
+        let dimension = self.dimension;
+        if index >= dimension {
+            return Err(PauliError::InvalidIndex {
+                context: "restricted basis index is out of range",
+            });
+        }
+        if output.len() != self.word_count() {
+            return Err(PauliError::InvalidWordLength {
+                expected: self.word_count(),
+                actual: output.len(),
+            });
+        }
+        output.fill(0);
+        let mut active_index = if self.complement {
+            dimension
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(index))
+                .ok_or(PauliError::Overflow {
+                    context: "unranking complemented U1 basis state",
+                })?
+        } else {
+            index
+        };
+        let mut remaining = self.active_number;
+        for position in 0..self.nqubits {
+            let remaining_sites = self.nqubits - position - 1;
+            let zero_count = self.choose_value(remaining_sites, remaining)?;
+            if active_index >= zero_count {
+                active_index -= zero_count;
+                if remaining == 0 {
+                    return Err(PauliError::InvalidIndex {
+                        context: "invalid combinatorial sector index",
+                    });
+                }
+                output[position / 64] |= 1_u64 << (position % 64);
+                remaining -= 1;
+            }
+        }
+        if remaining != 0 || active_index != 0 {
+            return Err(PauliError::InvalidIndex {
+                context: "invalid combinatorial sector index",
+            });
+        }
+        if self.complement {
+            let output_len = output.len();
+            for (index, word) in output.iter_mut().enumerate() {
+                *word = !*word;
+                if index + 1 == output_len {
+                    *word &= tail_mask(self.nqubits);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Materialize the packed basis without constructing a full `2**n` basis.
+    pub fn basis_words_packed(&self, max_bytes: u128) -> Result<PackedU1Basis, PauliError> {
+        let dimension = self.dimension()?;
+        let word_count = self.word_count();
+        let count = dimension
+            .checked_mul(word_count)
+            .ok_or(PauliError::Overflow {
+                context: "sizing packed U1 basis output",
+            })?;
+        let bytes = (count as u128)
+            .checked_mul(size_of::<u64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating packed U1 basis memory",
+            })?;
+        check_allocation(bytes, max_bytes)?;
+        let mut words = vec![0_u64; count];
+        for index in 0..dimension {
+            self.unrank_into(index as u64, &mut words[index * word_count..][..word_count])?;
+        }
+        Ok(PackedU1Basis {
+            dimension: self.dimension,
+            word_count,
+            words,
+        })
+    }
+
+    /// Preserve the original narrow convenience API.
     pub fn basis_words(&self, max_bytes: u128) -> Result<Vec<usize>, PauliError> {
         ensure_integer_width(self.nqubits)?;
         let dimension = self.dimension()?;
@@ -153,6 +260,70 @@ impl U1Sector {
             })?;
         check_allocation(bytes, max_bytes)?;
         (0..dimension).map(|index| self.unrank(index)).collect()
+    }
+
+    fn validate_words(&self, words: &[u64]) -> Result<(), PauliError> {
+        if words.len() != self.word_count() {
+            return Err(PauliError::InvalidWordLength {
+                expected: self.word_count(),
+                actual: words.len(),
+            });
+        }
+        if let Some(last) = words.last() {
+            let mask = tail_mask(self.nqubits);
+            if last & !mask != 0 {
+                return Err(PauliError::InvalidIndex {
+                    context: "packed basis word has nonzero padding bits",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn choose_value(&self, n: usize, k: usize) -> Result<u64, PauliError> {
+        if k > n {
+            return Ok(0);
+        }
+        let normalized = k.min(n - k);
+        if normalized > self.active_number || n > self.nqubits {
+            return Err(PauliError::Overflow {
+                context: "looking up a U1 combinatorial coefficient",
+            });
+        }
+        Ok(self.choose[n * (self.active_number + 1) + normalized])
+    }
+
+    fn rank_active_words(&self, words: &[u64]) -> Result<u64, PauliError> {
+        let select_zero = self.complement;
+        let mut rank = 0_u64;
+        let mut selected = 0_usize;
+        for (word_index, &word) in words.iter().enumerate() {
+            let tail = if word_index + 1 == words.len() {
+                tail_mask(self.nqubits)
+            } else {
+                u64::MAX
+            };
+            let mut active_bits = if select_zero { !word } else { word } & tail;
+            while active_bits != 0 {
+                let bit = active_bits.trailing_zeros() as usize;
+                let position = word_index * 64 + bit;
+                let remaining = self.nqubits - position - 1;
+                let needed = self.active_number - selected;
+                rank = rank
+                    .checked_add(self.choose_value(remaining, needed)?)
+                    .ok_or(PauliError::Overflow {
+                        context: "ranking U1 basis state",
+                    })?;
+                selected += 1;
+                active_bits &= active_bits - 1;
+            }
+        }
+        if selected != self.active_number {
+            return Err(PauliError::InvalidIndex {
+                context: "packed basis word has the wrong active weight",
+            });
+        }
+        Ok(rank)
     }
 }
 
@@ -168,45 +339,26 @@ impl U1RestrictedOperator {
                 right: sector.nqubits,
             });
         }
-        ensure_native_width(sector.nqubits)?;
         let dimension = sector.dimension()?;
-        let upper_bound =
-            dimension
-                .checked_mul(operator.terms().len())
-                .ok_or(PauliError::Overflow {
-                    context: "estimating U1 restricted transitions",
-                })?;
-        let estimated = operator
-            .terms()
-            .len()
-            .checked_mul(size_of::<U1Term>())
-            .and_then(|bytes| {
-                dimension
-                    .checked_add(1)
-                    .and_then(|pointers| pointers.checked_mul(size_of::<usize>()))
-                    .and_then(|pointers| bytes.checked_add(pointers))
-            })
-            .and_then(|bytes| {
-                upper_bound
-                    .checked_mul(size_of::<(usize, Complex64)>())
-                    .and_then(|entries| bytes.checked_add(entries))
-            })
-            .ok_or(PauliError::Overflow {
-                context: "estimating U1 restricted plan memory",
-            })?;
-        check_allocation(estimated as u128, max_bytes)?;
+        let terms = compile_terms(operator)?;
+        let upper_bound = transition_upper_bound(&sector, &terms)?;
+        let estimated = estimate_plan_bytes(&sector, &terms, dimension, upper_bound)?;
+        check_allocation(estimated, max_bytes)?;
 
-        let terms = operator
-            .terms()
-            .iter()
-            .map(precompute_term)
-            .collect::<Vec<_>>();
         let mut row_counts = vec![0_usize; dimension];
-        let mut raw = Vec::with_capacity(terms.len());
-        let mut aggregate = Vec::with_capacity(terms.len());
+        let mut source = vec![0_u64; sector.word_count()];
+        let mut destination = vec![0_u64; sector.word_count()];
+        let mut aggregate = Vec::with_capacity(terms.groups.len());
         for source_index in 0..dimension {
-            let source = sector.unrank_native(source_index)?;
-            aggregate_source(source, &terms, sector, &mut raw, &mut aggregate)?;
+            sector.unrank_into(source_index as u64, &mut source)?;
+            aggregate_source(
+                source_index as u64,
+                &source,
+                &mut destination,
+                &terms,
+                &sector,
+                &mut aggregate,
+            )?;
             for &(destination, _) in &aggregate {
                 row_counts[destination] =
                     row_counts[destination]
@@ -231,8 +383,15 @@ impl U1RestrictedOperator {
         let mut values = vec![Complex64::default(); entry_count];
         let mut next = indptr[..dimension].to_vec();
         for source_index in 0..dimension {
-            let source = sector.unrank_native(source_index)?;
-            aggregate_source(source, &terms, sector, &mut raw, &mut aggregate)?;
+            sector.unrank_into(source_index as u64, &mut source)?;
+            aggregate_source(
+                source_index as u64,
+                &source,
+                &mut destination,
+                &terms,
+                &sector,
+                &mut aggregate,
+            )?;
             for &(destination, value) in &aggregate {
                 let position = next[destination];
                 columns[position] = source_index;
@@ -252,7 +411,7 @@ impl U1RestrictedOperator {
     }
 
     pub fn sector(&self) -> U1Sector {
-        self.plan.sector
+        self.plan.sector.clone()
     }
 
     pub fn dimension(&self) -> usize {
@@ -304,16 +463,24 @@ impl U1RestrictedOperator {
             .ok_or(PauliError::Overflow {
                 context: "estimating U1 COO output memory",
             })?;
+        check_allocation(output_bytes, max_bytes)?;
         let mut rows = Vec::with_capacity(entry_count);
         let mut columns = Vec::with_capacity(entry_count);
         let mut values = Vec::with_capacity(entry_count);
-        check_allocation(output_bytes, max_bytes)?;
         for destination in 0..dimension {
             let start = self.plan.indptr[destination];
             let stop = self.plan.indptr[destination + 1];
             for index in start..stop {
-                rows.push(destination as u64);
-                columns.push(self.plan.columns[index] as u64);
+                rows.push(
+                    u64::try_from(destination).map_err(|_| PauliError::Overflow {
+                        context: "converting U1 COO row index",
+                    })?,
+                );
+                columns.push(u64::try_from(self.plan.columns[index]).map_err(|_| {
+                    PauliError::Overflow {
+                        context: "converting U1 COO column index",
+                    }
+                })?);
                 values.push(self.plan.values[index]);
             }
         }
@@ -332,7 +499,7 @@ impl U1RestrictedOperator {
 
 impl U1MvpPlan {
     pub fn sector(&self) -> U1Sector {
-        self.sector
+        self.sector.clone()
     }
 
     pub fn dimension(&self) -> usize {
@@ -437,99 +604,336 @@ impl U1MvpPlan {
                 context: "estimating U1 CSR memory",
             })?;
         check_allocation(bytes, max_bytes)?;
+        let indptr = self
+            .indptr
+            .iter()
+            .map(|value| {
+                u64::try_from(*value).map_err(|_| PauliError::Overflow {
+                    context: "converting U1 CSR offset",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let columns = self
+            .columns
+            .iter()
+            .map(|value| {
+                u64::try_from(*value).map_err(|_| PauliError::Overflow {
+                    context: "converting U1 CSR column index",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(U1CsrMatrix {
             dimension,
-            indptr: self.indptr.iter().map(|value| *value as u64).collect(),
-            columns: self.columns.iter().map(|value| *value as u64).collect(),
+            indptr,
+            columns,
             values: self.values.to_vec(),
         })
     }
 }
 
-#[derive(Clone, Copy)]
-struct U1Term {
-    x_mask: usize,
-    z_mask: usize,
+#[derive(Clone, Debug)]
+struct U1XGroup {
+    x_offset: usize,
+    term_start: usize,
+    term_end: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CompiledU1Terms {
+    word_count: usize,
+    x_words: Vec<u64>,
+    z_words: Vec<u64>,
+    weighted_coefficients: Vec<Complex64>,
+    groups: Vec<U1XGroup>,
+}
+
+#[derive(Clone)]
+struct PrecompiledU1Term {
+    x_words: Vec<u64>,
+    z_words: Vec<u64>,
     coefficient: Complex64,
 }
 
-fn precompute_term(term: &PauliTerm) -> U1Term {
-    let word = &term.word;
-    let nqubits = word.nqubits();
-    let mut x_mask = 0_usize;
-    let mut z_mask = 0_usize;
-    let mut y_count = 0_u32;
-    for qubit in 0..nqubits {
-        let mask = 1_u64 << (qubit % 64);
-        let x = word.x_words()[qubit / 64] & mask != 0;
-        let z = word.z_words()[qubit / 64] & mask != 0;
-        let mask = 1_usize << (nqubits - 1 - qubit);
-        if x {
-            x_mask |= mask;
-        }
-        if z {
-            z_mask |= mask;
-        }
-        if x && z {
-            y_count += 1;
-        }
+fn compile_terms(operator: &PauliOperator) -> Result<CompiledU1Terms, PauliError> {
+    let word_count = packed_word_count(operator.nqubits());
+    let mut terms = Vec::with_capacity(operator.terms().len());
+    for (index, term) in operator.terms().iter().enumerate() {
+        let coefficient = weighted_coefficient(term, index)?;
+        terms.push(PrecompiledU1Term {
+            x_words: term.word.x_words().to_vec(),
+            z_words: term.word.z_words().to_vec(),
+            coefficient,
+        });
     }
+
+    // The hash map is used only for lookup. Group order and term order are
+    // established by the already-canonical input stream, so hashing cannot
+    // affect floating-point addition order or serialized outputs.
+    let mut group_lookup =
+        FxHashMap::<Vec<u64>, usize>::with_capacity_and_hasher(terms.len(), Default::default());
+    let mut builders = Vec::<(Vec<u64>, Vec<usize>)>::new();
+    for (term_index, term) in terms.iter().enumerate() {
+        let group_index = if let Some(&group_index) = group_lookup.get(&term.x_words) {
+            group_index
+        } else {
+            let group_index = builders.len();
+            group_lookup.insert(term.x_words.clone(), group_index);
+            builders.push((term.x_words.clone(), Vec::new()));
+            group_index
+        };
+        builders[group_index].1.push(term_index);
+    }
+
+    let mut x_words = Vec::with_capacity(builders.len() * word_count);
+    let mut z_words = Vec::with_capacity(terms.len() * word_count);
+    let mut weighted_coefficients = Vec::with_capacity(terms.len());
+    let mut groups = Vec::with_capacity(builders.len());
+    for (x_mask, term_indices) in builders {
+        let x_offset = x_words.len();
+        x_words.extend_from_slice(&x_mask);
+        let term_start = weighted_coefficients.len();
+        for term_index in term_indices {
+            z_words.extend_from_slice(&terms[term_index].z_words);
+            weighted_coefficients.push(terms[term_index].coefficient);
+        }
+        groups.push(U1XGroup {
+            x_offset,
+            term_start,
+            term_end: weighted_coefficients.len(),
+        });
+    }
+    Ok(CompiledU1Terms {
+        word_count,
+        x_words,
+        z_words,
+        weighted_coefficients,
+        groups,
+    })
+}
+
+fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, PauliError> {
+    let y_count = term
+        .word
+        .x_words()
+        .iter()
+        .zip(term.word.z_words())
+        .map(|(x, z)| (x & z).count_ones() as usize)
+        .sum::<usize>();
     let y_phase = match y_count % 4 {
         0 => Complex64::new(1.0, 0.0),
         1 => Complex64::new(0.0, 1.0),
         2 => Complex64::new(-1.0, 0.0),
         _ => Complex64::new(0.0, -1.0),
     };
-    U1Term {
-        x_mask,
-        z_mask,
-        coefficient: term.coefficient * y_phase,
+    let coefficient = term.coefficient * y_phase;
+    if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+        return Err(PauliError::NonFiniteCoefficient { index });
     }
+    Ok(coefficient)
 }
 
 fn aggregate_source(
-    source: usize,
-    terms: &[U1Term],
-    sector: U1Sector,
-    raw: &mut Vec<(usize, Complex64)>,
+    source_index: u64,
+    source: &[u64],
+    destination: &mut [u64],
+    terms: &CompiledU1Terms,
+    sector: &U1Sector,
     aggregate: &mut Vec<(usize, Complex64)>,
 ) -> Result<(), PauliError> {
-    raw.clear();
     aggregate.clear();
-    raw.extend(terms.iter().map(|term| {
-        let destination = source ^ term.x_mask;
-        let sign = if (term.z_mask & source).count_ones() & 1 == 0 {
-            1.0
-        } else {
-            -1.0
-        };
-        (destination, term.coefficient * sign)
-    }));
-    raw.sort_unstable_by_key(|(destination, _)| *destination);
-    let mut index = 0;
-    while index < raw.len() {
-        let destination = raw[index].0;
-        let mut value = raw[index].1;
-        index += 1;
-        while index < raw.len() && raw[index].0 == destination {
-            value += raw[index].1;
-            index += 1;
+    for group in &terms.groups {
+        let x_mask = &terms.x_words[group.x_offset..group.x_offset + terms.word_count];
+        for ((destination_word, source_word), x_word) in
+            destination.iter_mut().zip(source).zip(x_mask)
+        {
+            *destination_word = source_word ^ x_word;
+        }
+        let mut value = Complex64::default();
+        for term_index in group.term_start..group.term_end {
+            let z_start = term_index * terms.word_count;
+            let parity = source
+                .iter()
+                .zip(&terms.z_words[z_start..z_start + terms.word_count])
+                .fold(0_u32, |parity, (source_word, z_word)| {
+                    parity ^ ((source_word & z_word).count_ones() & 1)
+                });
+            let contribution = terms.weighted_coefficients[term_index];
+            if parity & 1 == 0 {
+                value += contribution;
+            } else {
+                value -= contribution;
+            }
+        }
+        if !value.re.is_finite() || !value.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient {
+                index: group.term_start,
+            });
         }
         if is_exact_zero(value) {
             continue;
         }
-        if destination.count_ones() as usize != sector.particle_number {
+        let weight = destination
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum::<usize>();
+        if weight != sector.particle_number {
             return Err(PauliError::SectorLeakage {
-                input: source,
-                output: destination,
+                source_index,
+                expected: sector.particle_number,
+                actual: weight,
             });
         }
-        aggregate.push((sector.rank_native(destination)?, value));
+        let restricted_destination = sector.rank_words(destination)?;
+        let restricted_destination =
+            usize::try_from(restricted_destination).map_err(|_| PauliError::Overflow {
+                context: "converting U1 destination rank to a native index",
+            })?;
+        aggregate.push((restricted_destination, value));
     }
     Ok(())
 }
 
-fn choose(n: usize, k: usize) -> Result<usize, PauliError> {
+fn transition_upper_bound(sector: &U1Sector, terms: &CompiledU1Terms) -> Result<usize, PauliError> {
+    let mut total = 0_u128;
+    for group in &terms.groups {
+        let x_mask = &terms.x_words[group.x_offset..group.x_offset + terms.word_count];
+        let x_weight = x_mask
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum::<usize>();
+        if x_weight % 2 != 0 {
+            continue;
+        }
+        let half = x_weight / 2;
+        if half > sector.particle_number || half > sector.nqubits - sector.particle_number {
+            continue;
+        }
+        let left = sector.combination(x_weight, half)?;
+        let remaining_particles = sector.particle_number - half;
+        let right = sector.combination(sector.nqubits - x_weight, remaining_particles)?;
+        let candidate = (left as u128)
+            .checked_mul(right as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating U1 transition candidates",
+            })?;
+        total = total.checked_add(candidate).ok_or(PauliError::Overflow {
+            context: "summing U1 transition candidates",
+        })?;
+    }
+    usize::try_from(total).map_err(|_| PauliError::Overflow {
+        context: "converting U1 transition candidate count",
+    })
+}
+
+fn estimate_plan_bytes(
+    sector: &U1Sector,
+    terms: &CompiledU1Terms,
+    dimension: usize,
+    upper_bound: usize,
+) -> Result<u128, PauliError> {
+    let compiled = (terms.x_words.len() as u128)
+        .checked_mul(size_of::<u64>() as u128)
+        .and_then(|bytes| {
+            (terms.z_words.len() as u128)
+                .checked_mul(size_of::<u64>() as u128)
+                .and_then(|z| bytes.checked_add(z))
+        })
+        .and_then(|bytes| {
+            (terms.weighted_coefficients.len() as u128)
+                .checked_mul(size_of::<Complex64>() as u128)
+                .and_then(|coefficients| bytes.checked_add(coefficients))
+        })
+        .and_then(|bytes| {
+            (terms.groups.len() as u128)
+                .checked_mul(size_of::<U1XGroup>() as u128)
+                .and_then(|groups| bytes.checked_add(groups))
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating compiled U1 term memory",
+        })?;
+    let choose_bytes = (sector.choose.len() as u128)
+        .checked_mul(size_of::<u64>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 combinatorial table memory",
+        })?;
+    let row_bytes = (dimension as u128)
+        .checked_mul(size_of::<usize>() as u128)
+        .and_then(|bytes| {
+            (dimension as u128 + 1)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|indptr| bytes.checked_add(indptr))
+        })
+        .and_then(|bytes| {
+            (dimension as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|next| bytes.checked_add(next))
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 row workspace memory",
+        })?;
+    let transition_bytes = (upper_bound as u128)
+        .checked_mul(size_of::<usize>() as u128 + size_of::<Complex64>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 transition memory",
+        })?;
+    compiled
+        .checked_add(choose_bytes)
+        .and_then(|bytes| bytes.checked_add(row_bytes))
+        .and_then(|bytes| bytes.checked_add(transition_bytes))
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 restricted plan memory",
+        })
+}
+
+impl U1Sector {
+    fn combination(&self, n: usize, k: usize) -> Result<u64, PauliError> {
+        if k > n {
+            return Ok(0);
+        }
+        let normalized = k.min(n - k);
+        if normalized <= self.active_number && n <= self.nqubits {
+            return Ok(self.choose[n * (self.active_number + 1) + normalized]);
+        }
+        choose_u64(n, normalized)
+    }
+}
+
+fn build_choose_table(nqubits: usize, active_number: usize) -> Result<Arc<[u64]>, PauliError> {
+    let width = active_number.checked_add(1).ok_or(PauliError::Overflow {
+        context: "sizing U1 combinatorial table",
+    })?;
+    let entries = nqubits
+        .checked_add(1)
+        .and_then(|rows| rows.checked_mul(width))
+        .ok_or(PauliError::Overflow {
+            context: "sizing U1 combinatorial table",
+        })?;
+    let mut table = Vec::new();
+    table
+        .try_reserve_exact(entries)
+        .map_err(|_| PauliError::Overflow {
+            context: "allocating U1 combinatorial table",
+        })?;
+    table.resize(entries, 0_u64);
+    for row in 0..=nqubits {
+        table[row * width] = 1;
+        let limit = active_number.min(row);
+        for column in 1..=limit {
+            table[row * width + column] = if column == row {
+                1
+            } else {
+                table[(row - 1) * width + column - 1]
+                    .checked_add(table[(row - 1) * width + column])
+                    .ok_or(PauliError::Overflow {
+                        context: "computing U1 combinatorial table",
+                    })?
+            };
+        }
+    }
+    Ok(Arc::from(table.into_boxed_slice()))
+}
+
+fn choose_u64(n: usize, k: usize) -> Result<u64, PauliError> {
     if k > n {
         return Ok(0);
     }
@@ -542,14 +946,17 @@ fn choose(n: usize, k: usize) -> Result<usize, PauliError> {
             .ok_or(PauliError::Overflow {
                 context: "computing U1 sector dimension",
             })?;
+        if value > u64::MAX as u128 {
+            return Err(PauliError::Overflow {
+                context: "representing U1 sector dimension as u64",
+            });
+        }
     }
-    usize::try_from(value).map_err(|_| PauliError::Overflow {
-        context: "converting U1 sector dimension",
-    })
+    Ok(value as u64)
 }
 
 fn ensure_integer_width(nqubits: usize) -> Result<(), PauliError> {
-    if nqubits >= usize::BITS as usize {
+    if nqubits > usize::BITS as usize {
         return Err(PauliError::Overflow {
             context: "representing a computational basis integer",
         });
@@ -557,13 +964,12 @@ fn ensure_integer_width(nqubits: usize) -> Result<(), PauliError> {
     Ok(())
 }
 
-fn ensure_native_width(nqubits: usize) -> Result<(), PauliError> {
-    if nqubits >= usize::BITS as usize {
-        return Err(PauliError::Overflow {
-            context: "using native U1 restriction with a single usize basis index",
-        });
+fn tail_mask(nqubits: usize) -> u64 {
+    match nqubits % 64 {
+        0 if nqubits == 0 => 0,
+        0 => u64::MAX,
+        remainder => (1_u64 << remainder) - 1,
     }
-    Ok(())
 }
 
 fn check_allocation(requested: u128, limit: u128) -> Result<(), PauliError> {

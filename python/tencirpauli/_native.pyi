@@ -332,7 +332,7 @@ def u1_basis_words(
     nqubits: int,
     particle_number: int,
     max_bytes: int,
-) -> tuple[int, object]: ...
+) -> tuple[int, int, object]: ...
 def pauli_propagation_engine(
     nqubits: int,
     operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],

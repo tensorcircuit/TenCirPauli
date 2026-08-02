@@ -243,11 +243,11 @@ def test_u1_complex_y_properties_match_independent_dense_projection() -> None:
             np.testing.assert_allclose(restricted.apply(state), expected @ state)
 
 
-def test_u1_native_restriction_rejects_single_word_width_boundary() -> None:
+def test_u1_native_restriction_supports_single_word_width_boundary() -> None:
     nqubits = np.dtype(np.uintp).itemsize * 8
     operator = tcp.PauliOperator.from_terms(nqubits, (("I" * nqubits, 1.0),))
-    with pytest.raises(OverflowError, match="native U1 restriction"):
-        operator.restrict_u1(tcp.U1Sector(nqubits, 0))
+    restricted = operator.restrict_u1(tcp.U1Sector(nqubits, 0))
+    np.testing.assert_allclose(restricted.apply(np.asarray([2.0 + 3.0j])), [2.0 + 3.0j])
 
 
 def test_phase2_invalid_inputs_fail_explicitly() -> None:
