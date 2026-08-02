@@ -16,7 +16,12 @@ from .circuit import (
     _gate,
     _LogicalGate,
 )
-from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    _check_allocation,
+    _effective_max_bytes,
+    _validate_max_bytes,
+)
 from .pauli import PauliOperator, PauliWord
 from .symmetry import U1Sector
 
@@ -318,6 +323,11 @@ class U1Circuit:
         self.max_bytes = max_bytes
         self.sector = U1Sector(nqubits, k)
         dimension = self.sector.dimension
+        _check_allocation(
+            dimension * np.dtype(np.complex128).itemsize,
+            max_bytes,
+            "U1 circuit initial state",
+        )
         if inputs is None:
             basis_value = sum(1 << (nqubits - 1 - index) for index in normalized_filled)
             initial_index = self.sector.rank(basis_value)
@@ -329,6 +339,7 @@ class U1Circuit:
         self._initial_state = initial
         self._program = _CircuitProgram(nqubits)
         self._native_plan: Optional[U1CircuitPlan] = None
+        self._state_cache: Optional[tuple[int, bytes, np.ndarray[Any, Any]]] = None
         self._generation = 0
 
     @classmethod
@@ -346,6 +357,7 @@ class U1Circuit:
         result._initial_state.flags.writeable = False
         result._program = program
         result._native_plan = None
+        result._state_cache = None
         result._generation = 0
         return result
 
@@ -362,6 +374,7 @@ class U1Circuit:
             (*self._program.operations, operation)
         )
         self._native_plan = None
+        self._state_cache = None
         self._generation += 1
 
     def rz(self, i: int, theta: Angle = 0.0) -> None:
@@ -407,18 +420,20 @@ class U1Circuit:
     def state(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        return self.compile().run(
-            self._initial_state, _parameter_array(parameters, self.nparameters)
-        )
+        values = _parameter_array(parameters, self.nparameters)
+        key = (self._generation, values.tobytes())
+        if self._state_cache is not None and self._state_cache[:2] == key:
+            return self._state_cache[2]
+        state = self.compile().run(self._initial_state, values)
+        self._state_cache = (self._generation, values.tobytes(), state)
+        return state
 
     wavefunction = state
 
     def probability(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        return self.compile().probability(
-            self._initial_state, _parameter_array(parameters, self.nparameters)
-        )
+        return _readonly(np.abs(self.state(parameters)) ** 2)
 
     def to_dense(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None

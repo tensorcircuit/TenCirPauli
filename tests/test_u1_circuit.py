@@ -173,3 +173,22 @@ def test_wide_low_particle_circuit_does_not_use_single_word_state() -> None:
     state = circuit.state()
     assert state.shape == (129,)
     assert np.isclose(np.linalg.norm(state), 1.0)
+
+
+def test_qir_round_trip_preserves_gate_order_and_slots() -> None:
+    parameter = tcp.Parameter(0)
+    circuit = tcp.U1Circuit(2, k=1, filled=[0])
+    circuit.rz(0, theta=parameter)
+    circuit.iswap(0, 1, theta=1.0)
+    restored = tcp.U1Circuit.from_qir(
+        circuit.to_qir(), {"nqubits": 2, "k": 1, "filled": [0]}
+    )
+    np.testing.assert_array_equal(restored.state([0.37]), circuit.state([0.37]))
+
+
+def test_qir_rejects_non_u1_gate() -> None:
+    with pytest.raises(ValueError, match="unsupported U1Circuit QIR gate"):
+        tcp.U1Circuit.from_qir(
+            [{"name": "rx", "index": (0,), "parameters": {"theta": 0.2}}],
+            {"nqubits": 1, "k": 0},
+        )

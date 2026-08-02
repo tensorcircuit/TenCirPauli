@@ -18,7 +18,7 @@ struct PairIndex {
 }
 
 #[derive(Clone, Debug)]
-enum CompiledU1Gate {
+enum DiagonalOp {
     Rz {
         wire: usize,
         angle: usize,
@@ -37,6 +37,14 @@ enum CompiledU1Gate {
         wire1: usize,
         angle: usize,
     },
+    Static {
+        wires: Arc<[usize]>,
+        payload: Arc<[Complex64]>,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum CompiledU1Gate {
     Swap {
         pairs: Arc<[PairIndex]>,
     },
@@ -44,9 +52,8 @@ enum CompiledU1Gate {
         angle: usize,
         pairs: Arc<[PairIndex]>,
     },
-    Diagonal {
-        wires: Arc<[usize]>,
-        payload: Arc<[Complex64]>,
+    DiagonalBlock {
+        operations: Arc<[DiagonalOp]>,
     },
 }
 
@@ -97,51 +104,31 @@ impl U1CircuitPlan {
 
         let mut pair_maps = HashMap::<(usize, usize), Arc<[PairIndex]>>::new();
         let mut gates = Vec::with_capacity(program.operations().len());
-        for gate in program.operations() {
-            let compiled = match gate {
-                CircuitGate::Rz { wire, angle } => CompiledU1Gate::Rz {
-                    wire: *wire,
-                    angle: *angle,
-                },
-                CircuitGate::Rzz {
-                    wire0,
-                    wire1,
-                    angle,
-                } => CompiledU1Gate::Rzz {
-                    wire0: *wire0,
-                    wire1: *wire1,
-                    angle: *angle,
-                },
-                CircuitGate::Cz { wire0, wire1 } => CompiledU1Gate::Cz {
-                    wire0: *wire0,
-                    wire1: *wire1,
-                },
-                CircuitGate::Cphase {
-                    wire0,
-                    wire1,
-                    angle,
-                } => CompiledU1Gate::Cphase {
-                    wire0: *wire0,
-                    wire1: *wire1,
-                    angle: *angle,
-                },
-                CircuitGate::Swap { wire0, wire1 } => CompiledU1Gate::Swap {
-                    pairs: pair_map(&sector, *wire0, *wire1, &mut pair_maps, max_bytes)?,
-                },
-                CircuitGate::Iswap {
-                    wire0,
-                    wire1,
-                    angle,
-                } => CompiledU1Gate::Iswap {
-                    angle: *angle,
-                    pairs: pair_map(&sector, *wire0, *wire1, &mut pair_maps, max_bytes)?,
-                },
-                CircuitGate::Diagonal { wires, payload } => CompiledU1Gate::Diagonal {
-                    wires: Arc::from(wires.clone().into_boxed_slice()),
-                    payload: Arc::from(payload.clone().into_boxed_slice()),
-                },
-            };
-            gates.push(compiled);
+        let mut operation_index = 0;
+        while operation_index < program.operations().len() {
+            if let Some(first) = diagonal_op(&program.operations()[operation_index]) {
+                let mut operations = vec![first];
+                operation_index += 1;
+                while operation_index < program.operations().len() {
+                    if let Some(operation) = diagonal_op(&program.operations()[operation_index]) {
+                        operations.push(operation);
+                        operation_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+                gates.push(CompiledU1Gate::DiagonalBlock {
+                    operations: Arc::from(operations.into_boxed_slice()),
+                });
+            } else {
+                gates.push(compile_non_diagonal_gate(
+                    &program.operations()[operation_index],
+                    &sector,
+                    &mut pair_maps,
+                    max_bytes,
+                )?);
+                operation_index += 1;
+            }
         }
         let pair_bytes = pair_maps.values().try_fold(0_u128, |sum, pairs| {
             let bytes = (pairs.len() as u128)
@@ -365,57 +352,13 @@ impl U1CircuitPlan {
         inverse: bool,
     ) -> Result<(), PauliError> {
         match gate {
-            CompiledU1Gate::Rz { wire, angle } => {
-                let sign = if inverse { 1.0 } else { -1.0 };
-                let theta = values[*angle] * sign * 0.5;
+            CompiledU1Gate::DiagonalBlock { operations } => {
                 for (index, value) in state.iter_mut().enumerate() {
-                    let z = if self.bit(index, *wire) == 0 {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    *value *= Complex64::from_polar(1.0, theta * z);
-                }
-            }
-            CompiledU1Gate::Rzz {
-                wire0,
-                wire1,
-                angle,
-            } => {
-                let sign = if inverse { 1.0 } else { -1.0 };
-                let theta = values[*angle] * sign * 0.5;
-                for (index, value) in state.iter_mut().enumerate() {
-                    let z0 = if self.bit(index, *wire0) == 0 {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    let z1 = if self.bit(index, *wire1) == 0 {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    *value *= Complex64::from_polar(1.0, theta * z0 * z1);
-                }
-            }
-            CompiledU1Gate::Cz { wire0, wire1 } => {
-                for (index, value) in state.iter_mut().enumerate() {
-                    if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
-                        *value = -*value;
+                    let mut phase = Complex64::new(1.0, 0.0);
+                    for operation in operations.iter() {
+                        phase *= self.diagonal_phase(index, operation, values);
                     }
-                }
-            }
-            CompiledU1Gate::Cphase {
-                wire0,
-                wire1,
-                angle,
-            } => {
-                let theta = values[*angle] * if inverse { -1.0 } else { 1.0 };
-                let phase = Complex64::from_polar(1.0, theta);
-                for (index, value) in state.iter_mut().enumerate() {
-                    if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
-                        *value *= phase;
-                    }
+                    *value *= if inverse { phase.conj() } else { phase };
                 }
             }
             CompiledU1Gate::Swap { pairs } => {
@@ -434,22 +377,63 @@ impl U1CircuitPlan {
                     state[pair.one_zero] = cosine * right + sine * left;
                 }
             }
-            CompiledU1Gate::Diagonal { wires, payload } => {
-                for (index, value) in state.iter_mut().enumerate() {
-                    let mut local = 0usize;
-                    for (position, wire) in wires.iter().copied().enumerate() {
-                        local = (local << 1) | self.bit(index, wire) as usize;
-                        debug_assert!(position < wires.len());
-                    }
-                    *value *= if inverse {
-                        payload[local].conj()
-                    } else {
-                        payload[local]
-                    };
-                }
-            }
         }
         Ok(())
+    }
+
+    fn diagonal_phase(&self, index: usize, operation: &DiagonalOp, values: &[f64]) -> Complex64 {
+        match operation {
+            DiagonalOp::Rz { wire, angle } => {
+                let z = if self.bit(index, *wire) == 0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                Complex64::from_polar(1.0, -0.5 * values[*angle] * z)
+            }
+            DiagonalOp::Rzz {
+                wire0,
+                wire1,
+                angle,
+            } => {
+                let z0 = if self.bit(index, *wire0) == 0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let z1 = if self.bit(index, *wire1) == 0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                Complex64::from_polar(1.0, -0.5 * values[*angle] * z0 * z1)
+            }
+            DiagonalOp::Cz { wire0, wire1 } => {
+                if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
+                    Complex64::new(-1.0, 0.0)
+                } else {
+                    Complex64::new(1.0, 0.0)
+                }
+            }
+            DiagonalOp::Cphase {
+                wire0,
+                wire1,
+                angle,
+            } => {
+                if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
+                    Complex64::from_polar(1.0, values[*angle])
+                } else {
+                    Complex64::new(1.0, 0.0)
+                }
+            }
+            DiagonalOp::Static { wires, payload } => {
+                let mut local = 0usize;
+                for wire in wires.iter().copied() {
+                    local = (local << 1) | self.bit(index, wire) as usize;
+                }
+                payload[local]
+            }
+        }
     }
 
     fn apply_inverse_gate(
@@ -517,56 +501,67 @@ fn accumulate_gate_derivative(
     basis_words: &[u64],
 ) -> Result<(), PauliError> {
     let contribution = match gate {
-        CompiledU1Gate::Rz { wire, angle } => {
-            let mut result = 0.0;
-            for index in 0..after.len() {
-                let z = if bit_from_basis(basis_words, word_count, index, *wire) == 0 {
-                    1.0
-                } else {
-                    -1.0
+        CompiledU1Gate::DiagonalBlock { operations } => {
+            for operation in operations.iter() {
+                let (angle, result) = match operation {
+                    DiagonalOp::Rz { wire, angle } => {
+                        let mut result = 0.0;
+                        for index in 0..after.len() {
+                            let z = if bit_from_basis(basis_words, word_count, index, *wire) == 0 {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            let derivative = Complex64::new(0.0, -0.5 * z) * after[index];
+                            result += 2.0 * (lambda[index].conj() * derivative).re;
+                        }
+                        (*angle, result)
+                    }
+                    DiagonalOp::Rzz {
+                        wire0,
+                        wire1,
+                        angle,
+                    } => {
+                        let mut result = 0.0;
+                        for index in 0..after.len() {
+                            let z0 = if bit_from_basis(basis_words, word_count, index, *wire0) == 0
+                            {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            let z1 = if bit_from_basis(basis_words, word_count, index, *wire1) == 0
+                            {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            let derivative = Complex64::new(0.0, -0.5 * z0 * z1) * after[index];
+                            result += 2.0 * (lambda[index].conj() * derivative).re;
+                        }
+                        (*angle, result)
+                    }
+                    DiagonalOp::Cphase {
+                        wire0,
+                        wire1,
+                        angle,
+                    } => {
+                        let mut result = 0.0;
+                        for index in 0..after.len() {
+                            if bit_from_basis(basis_words, word_count, index, *wire0) != 0
+                                && bit_from_basis(basis_words, word_count, index, *wire1) != 0
+                            {
+                                let derivative = Complex64::new(0.0, 1.0) * after[index];
+                                result += 2.0 * (lambda[index].conj() * derivative).re;
+                            }
+                        }
+                        (*angle, result)
+                    }
+                    DiagonalOp::Cz { .. } | DiagonalOp::Static { .. } => continue,
                 };
-                let derivative = Complex64::new(0.0, -0.5 * z) * after[index];
-                result += 2.0 * (lambda[index].conj() * derivative).re;
+                node_adjoint[angle] += result;
             }
-            Some((*angle, result))
-        }
-        CompiledU1Gate::Rzz {
-            wire0,
-            wire1,
-            angle,
-        } => {
-            let mut result = 0.0;
-            for index in 0..after.len() {
-                let z0 = if bit_from_basis(basis_words, word_count, index, *wire0) == 0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let z1 = if bit_from_basis(basis_words, word_count, index, *wire1) == 0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let derivative = Complex64::new(0.0, -0.5 * z0 * z1) * after[index];
-                result += 2.0 * (lambda[index].conj() * derivative).re;
-            }
-            Some((*angle, result))
-        }
-        CompiledU1Gate::Cphase {
-            wire0,
-            wire1,
-            angle,
-        } => {
-            let mut result = 0.0;
-            for index in 0..after.len() {
-                if bit_from_basis(basis_words, word_count, index, *wire0) != 0
-                    && bit_from_basis(basis_words, word_count, index, *wire1) != 0
-                {
-                    let derivative = Complex64::new(0.0, 1.0) * after[index];
-                    result += 2.0 * (lambda[index].conj() * derivative).re;
-                }
-            }
-            Some((*angle, result))
+            None
         }
         CompiledU1Gate::Iswap { angle, pairs } => {
             let theta = values[*angle] * PI / 2.0;
@@ -586,9 +581,7 @@ fn accumulate_gate_derivative(
             }
             Some((*angle, result))
         }
-        CompiledU1Gate::Cz { .. }
-        | CompiledU1Gate::Swap { .. }
-        | CompiledU1Gate::Diagonal { .. } => None,
+        CompiledU1Gate::Swap { .. } => None,
     };
     if let Some((angle, value)) = contribution {
         node_adjoint[angle] += value;
@@ -604,6 +597,70 @@ fn inner_product(left: &[Complex64], right: &[Complex64]) -> Complex64 {
     left.iter()
         .zip(right)
         .fold(Complex64::default(), |sum, (a, b)| sum + a.conj() * b)
+}
+
+fn diagonal_op(gate: &CircuitGate) -> Option<DiagonalOp> {
+    match gate {
+        CircuitGate::Rz { wire, angle } => Some(DiagonalOp::Rz {
+            wire: *wire,
+            angle: *angle,
+        }),
+        CircuitGate::Rzz {
+            wire0,
+            wire1,
+            angle,
+        } => Some(DiagonalOp::Rzz {
+            wire0: *wire0,
+            wire1: *wire1,
+            angle: *angle,
+        }),
+        CircuitGate::Cz { wire0, wire1 } => Some(DiagonalOp::Cz {
+            wire0: *wire0,
+            wire1: *wire1,
+        }),
+        CircuitGate::Cphase {
+            wire0,
+            wire1,
+            angle,
+        } => Some(DiagonalOp::Cphase {
+            wire0: *wire0,
+            wire1: *wire1,
+            angle: *angle,
+        }),
+        CircuitGate::Diagonal { wires, payload } => Some(DiagonalOp::Static {
+            wires: Arc::from(wires.clone().into_boxed_slice()),
+            payload: Arc::from(payload.clone().into_boxed_slice()),
+        }),
+        CircuitGate::Swap { .. } | CircuitGate::Iswap { .. } => None,
+    }
+}
+
+fn compile_non_diagonal_gate(
+    gate: &CircuitGate,
+    sector: &U1Sector,
+    pair_maps: &mut HashMap<(usize, usize), Arc<[PairIndex]>>,
+    max_bytes: Option<u128>,
+) -> Result<CompiledU1Gate, PauliError> {
+    match gate {
+        CircuitGate::Swap { wire0, wire1 } => Ok(CompiledU1Gate::Swap {
+            pairs: pair_map(sector, *wire0, *wire1, pair_maps, max_bytes)?,
+        }),
+        CircuitGate::Iswap {
+            wire0,
+            wire1,
+            angle,
+        } => Ok(CompiledU1Gate::Iswap {
+            angle: *angle,
+            pairs: pair_map(sector, *wire0, *wire1, pair_maps, max_bytes)?,
+        }),
+        CircuitGate::Rz { .. }
+        | CircuitGate::Rzz { .. }
+        | CircuitGate::Cz { .. }
+        | CircuitGate::Cphase { .. }
+        | CircuitGate::Diagonal { .. } => Err(PauliError::InvalidCircuit {
+            context: "diagonal gate was not compiled into a diagonal block",
+        }),
+    }
 }
 
 fn pair_map(

@@ -12,6 +12,7 @@ from tencirpauli.integrations.tensorcircuit import (
     backend_mvp,
     gate_tape_from_circuit,
     require_tensorcircuit,
+    u1_circuit_from_tensorcircuit,
 )
 
 
@@ -70,3 +71,19 @@ def test_symbol_qir_tape_conversion_and_order() -> None:
     converted = gate_tape_from_circuit(circuit, parameter_order=(phi, theta))
     assert converted.parameters == (phi, theta)
     assert converted.tape.nparameters == 2
+
+
+def test_u1_qir_conversion_matches_native_state() -> None:
+    tc = pytest.importorskip("tensorcircuit")
+    tc.set_dtype("complex128")
+    tc.set_backend("numpy")
+    circuit = tc.U1Circuit(3, k=1, filled=[0])
+    circuit.rz(0, theta=0.31)
+    circuit.iswap(0, 1, theta=0.63)
+    converted = u1_circuit_from_tensorcircuit(circuit)
+    np.testing.assert_allclose(
+        converted.circuit.state(),
+        np.asarray(circuit.state()),
+        atol=1e-11,
+        rtol=1e-10,
+    )

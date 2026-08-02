@@ -20,6 +20,7 @@ from ..hamiltonian import (
     _dimension,
 )
 from ..propagation import GateTape
+from ..u1_circuit import U1Circuit
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,14 @@ class TensorCircuitTapeConversion:
     """A supported TensorCircuit QIR converted to a native ``GateTape``."""
 
     tape: GateTape
+    parameters: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class TensorCircuitU1Conversion:
+    """A supported TensorCircuit U(1) QIR converted to ``U1Circuit``."""
+
+    circuit: U1Circuit
     parameters: tuple[Any, ...]
 
 
@@ -136,6 +145,87 @@ def gate_tape_from_circuit(
         else:
             append(*wire_args, angle=angle)
     return TensorCircuitTapeConversion(tape=tape, parameters=ordered_symbols)
+
+
+def u1_circuit_from_tensorcircuit(
+    circuit: Any,
+    *,
+    parameter_order: Optional[Sequence[Any]] = None,
+    max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+) -> TensorCircuitU1Conversion:
+    """Convert TensorCircuit U1Circuit QIR without importing it at module load."""
+    require_tensorcircuit()
+    if not hasattr(circuit, "to_qir"):
+        raise TypeError("circuit must provide TensorCircuit to_qir()")
+    nqubits = getattr(circuit, "_nqubits", getattr(circuit, "nqubits", None))
+    if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
+        raise ValueError("could not determine circuit qubit count")
+    circuit_params = getattr(circuit, "circuit_param", {})
+    if not isinstance(circuit_params, dict):
+        raise ValueError("TensorCircuit U1 circuit parameters are unavailable")
+    if "k" not in circuit_params and "filled" not in circuit_params:
+        raise ValueError("TensorCircuit U1 circuit must expose k or filled")
+
+    try:
+        sympy_module: Any = importlib.import_module("sympy")
+    except ImportError:
+        sympy_module = None
+
+    def is_symbol(value: Any) -> bool:
+        return sympy_module is not None and isinstance(value, sympy_module.Symbol)
+
+    qir: list[dict[str, object]] = []
+    symbols: list[Any] = []
+    supported = {"rz", "rzz", "cz", "cphase", "swap", "iswap", "diagonal"}
+    for instruction in circuit.to_qir():
+        if not isinstance(instruction, dict):
+            raise ValueError("TensorCircuit QIR entries must be dictionaries")
+        name = str(instruction.get("name", "")).lower()
+        if name not in supported:
+            raise ValueError(f"unsupported U1Circuit gate {name!r}")
+        wires = tuple(instruction.get("index", ()))
+        parameters = instruction.get("parameters", {})
+        item: dict[str, object] = {"name": name, "index": wires}
+        if name in {"rz", "rzz", "cphase", "iswap"}:
+            if not isinstance(parameters, dict) or set(parameters) != {"theta"}:
+                raise ValueError(f"{name} requires one theta parameter")
+            theta = parameters["theta"]
+            if is_symbol(theta):
+                if theta not in symbols:
+                    symbols.append(theta)
+            else:
+                try:
+                    numeric = float(theta)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        "U1Circuit angles must be numeric or direct symbols"
+                    ) from error
+                if not math.isfinite(numeric):
+                    raise ValueError("U1Circuit angles must be finite")
+                theta = numeric
+            item["parameters"] = {"theta": theta}
+        if name == "diagonal":
+            gate = instruction.get("gate")
+            payload = getattr(gate, "tensor", gate)
+            values = np.asarray(payload, dtype=np.complex128).reshape(-1)
+            item["diag"] = values
+        qir.append(item)
+
+    if parameter_order is None:
+        ordered_symbols = tuple(symbols)
+    else:
+        ordered_symbols = tuple(parameter_order)
+        if len(set(ordered_symbols)) != len(ordered_symbols):
+            raise ValueError("parameter_order must not contain duplicates")
+        if set(ordered_symbols) != set(symbols) or any(
+            not is_symbol(symbol) for symbol in ordered_symbols
+        ):
+            raise ValueError("parameter_order must exactly cover direct QIR symbols")
+    params = dict(circuit_params)
+    params["nqubits"] = nqubits
+    params["parameter_order"] = ordered_symbols
+    converted = U1Circuit.from_qir(qir, params, max_bytes=max_bytes)
+    return TensorCircuitU1Conversion(converted, ordered_symbols)
 
 
 def backend_mvp(
