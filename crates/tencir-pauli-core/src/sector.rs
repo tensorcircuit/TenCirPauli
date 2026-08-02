@@ -329,6 +329,28 @@ impl U1Sector {
         }
         Ok(rank)
     }
+
+    fn rank_active_positions(&self, positions: &[usize]) -> Result<u64, PauliError> {
+        if positions.len() != self.active_number
+            || positions.windows(2).any(|window| window[0] >= window[1])
+            || positions.iter().any(|&position| position >= self.nqubits)
+        {
+            return Err(PauliError::InvalidIndex {
+                context: "ranking invalid active U1 positions",
+            });
+        }
+        let mut rank = 0_u64;
+        for (selected, &position) in positions.iter().enumerate() {
+            let remaining = self.nqubits - position - 1;
+            let needed = self.active_number - selected;
+            rank = rank
+                .checked_add(self.choose_value(remaining, needed)?)
+                .ok_or(PauliError::Overflow {
+                    context: "ranking U1 basis state",
+                })?;
+        }
+        Ok(rank)
+    }
 }
 
 impl U1RestrictedOperator {
@@ -350,16 +372,16 @@ impl U1RestrictedOperator {
         check_allocation(estimated, max_bytes)?;
 
         let mut row_counts = vec![0_usize; dimension];
-        let mut source = vec![0_u64; sector.word_count()];
-        let mut destination = vec![0_u64; sector.word_count()];
         let mut aggregate = Vec::with_capacity(terms.groups.len());
+        let mut source_active = Vec::with_capacity(sector.active_number);
+        let mut destination_active = Vec::with_capacity(sector.active_number);
         let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
-            source_iterator.write_to(&mut source);
+            source_iterator.active_qubits_to(&mut source_active);
             aggregate_source(
                 source_index as u64,
-                &source,
-                &mut destination,
+                &source_active,
+                &mut destination_active,
                 &terms,
                 &sector,
                 &mut aggregate,
@@ -390,11 +412,11 @@ impl U1RestrictedOperator {
         let mut next = indptr[..dimension].to_vec();
         let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
-            source_iterator.write_to(&mut source);
+            source_iterator.active_qubits_to(&mut source_active);
             aggregate_source(
                 source_index as u64,
-                &source,
-                &mut destination,
+                &source_active,
+                &mut destination_active,
                 &terms,
                 &sector,
                 &mut aggregate,
@@ -642,6 +664,8 @@ impl U1MvpPlan {
 #[derive(Clone, Debug)]
 struct U1XGroup {
     x_offset: usize,
+    x_support_start: usize,
+    x_support_end: usize,
     term_start: usize,
     term_end: usize,
 }
@@ -650,7 +674,10 @@ struct U1XGroup {
 struct CompiledU1Terms {
     word_count: usize,
     x_words: Vec<u64>,
+    x_support: Vec<usize>,
     z_words: Vec<u64>,
+    z_support_offsets: Vec<usize>,
+    z_support: Vec<usize>,
     weighted_coefficients: Vec<Complex64>,
     groups: Vec<U1XGroup>,
 }
@@ -664,6 +691,7 @@ struct CompiledU1Terms {
 /// while retaining the exact `unrank` ordering contract.
 struct U1BasisIterator {
     nqubits: usize,
+    #[cfg(test)]
     word_count: usize,
     complement: bool,
     positions: Vec<usize>,
@@ -672,6 +700,7 @@ struct U1BasisIterator {
 
 impl U1BasisIterator {
     fn new(sector: &U1Sector) -> Self {
+        #[cfg(test)]
         let word_count = sector.word_count();
         let active_number = sector.active_number;
         let first_position = if sector.complement {
@@ -681,6 +710,7 @@ impl U1BasisIterator {
         };
         Self {
             nqubits: sector.nqubits,
+            #[cfg(test)]
             word_count,
             complement: sector.complement,
             positions: (first_position..first_position + active_number).collect(),
@@ -688,6 +718,7 @@ impl U1BasisIterator {
         }
     }
 
+    #[cfg(test)]
     fn write_to(&self, output: &mut [u64]) {
         debug_assert_eq!(output.len(), self.word_count);
         if self.complement {
@@ -711,6 +742,16 @@ impl U1BasisIterator {
                 output[destination_word] |= destination_bit;
             }
         }
+    }
+
+    fn active_qubits_to(&self, output: &mut Vec<usize>) {
+        output.clear();
+        output.extend(
+            self.positions
+                .iter()
+                .rev()
+                .map(|&public_position| self.nqubits - public_position - 1),
+        );
     }
 
     fn advance(&mut self) {
@@ -846,6 +887,8 @@ fn compile_terms(operator: &PauliOperator) -> Result<CompiledU1Terms, PauliError
             x_words.extend_from_slice(x_mask);
             groups.push(U1XGroup {
                 x_offset,
+                x_support_start: 0,
+                x_support_end: 0,
                 term_start: 0,
                 term_end: 0,
             });
@@ -886,13 +929,42 @@ fn compile_terms(operator: &PauliOperator) -> Result<CompiledU1Terms, PauliError
         weighted_coefficients[term_index] = weighted_coefficient(term, term_index)?;
         next[group_index] += 1;
     }
+    let mut x_support = Vec::new();
+    for group in &mut groups {
+        let x_mask = &x_words[group.x_offset..group.x_offset + word_count];
+        group.x_support_start = x_support.len();
+        append_set_bit_positions(x_mask, &mut x_support);
+        group.x_support_end = x_support.len();
+    }
+    let mut z_support_offsets = Vec::with_capacity(term_count + 1);
+    let mut z_support = Vec::new();
+    z_support_offsets.push(0);
+    for term_index in 0..term_count {
+        let start = term_index * word_count;
+        append_set_bit_positions(&z_words[start..start + word_count], &mut z_support);
+        z_support_offsets.push(z_support.len());
+    }
     Ok(CompiledU1Terms {
         word_count,
         x_words,
+        x_support,
         z_words,
+        z_support_offsets,
+        z_support,
         weighted_coefficients,
         groups,
     })
+}
+
+fn append_set_bit_positions(words: &[u64], output: &mut Vec<usize>) {
+    for (word_index, &word) in words.iter().enumerate() {
+        let mut remaining = word;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros() as usize;
+            output.push(word_index * 64 + bit);
+            remaining &= remaining - 1;
+        }
+    }
 }
 
 fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, PauliError> {
@@ -918,31 +990,41 @@ fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, Pau
 
 fn aggregate_source(
     source_index: u64,
-    source: &[u64],
-    destination: &mut [u64],
+    source_active: &[usize],
+    destination_active: &mut Vec<usize>,
     terms: &CompiledU1Terms,
     sector: &U1Sector,
     aggregate: &mut Vec<(usize, Complex64)>,
 ) -> Result<(), PauliError> {
     aggregate.clear();
     for group in &terms.groups {
-        let x_mask = &terms.x_words[group.x_offset..group.x_offset + terms.word_count];
-        let mut weight = 0_usize;
-        for ((destination_word, source_word), x_word) in
-            destination.iter_mut().zip(source).zip(x_mask)
-        {
-            *destination_word = source_word ^ x_word;
-            weight += destination_word.count_ones() as usize;
-        }
+        let x_support = &terms.x_support[group.x_support_start..group.x_support_end];
+        let intersection = symmetric_intersection_count(
+            source_active,
+            x_support,
+            &terms.x_words[group.x_offset..group.x_offset + terms.word_count],
+        );
+        let active_weight = source_active.len();
+        let toggled_intersection = intersection.checked_mul(2).ok_or(PauliError::Overflow {
+            context: "computing U1 destination active weight",
+        })?;
+        let destination_active_weight = active_weight
+            .checked_add(x_support.len())
+            .and_then(|value| value.checked_sub(toggled_intersection))
+            .ok_or(PauliError::Overflow {
+                context: "computing U1 destination active weight",
+            })?;
         let mut value = Complex64::default();
         for term_index in group.term_start..group.term_end {
-            let z_start = term_index * terms.word_count;
-            let parity = source
-                .iter()
-                .zip(&terms.z_words[z_start..z_start + terms.word_count])
-                .fold(0_u32, |parity, (source_word, z_word)| {
-                    parity ^ ((source_word & z_word).count_ones() & 1)
-                });
+            let z_start = terms.z_support_offsets[term_index];
+            let z_end = terms.z_support_offsets[term_index + 1];
+            let z_support = &terms.z_support[z_start..z_end];
+            let parity = pauli_z_parity(
+                source_active,
+                z_support,
+                &terms.z_words[term_index * terms.word_count..(term_index + 1) * terms.word_count],
+                sector.complement,
+            );
             let contribution = terms.weighted_coefficients[term_index];
             if parity & 1 == 0 {
                 value += contribution;
@@ -958,14 +1040,41 @@ fn aggregate_source(
         if is_exact_zero(value) {
             continue;
         }
-        if weight != sector.particle_number {
+        let actual_weight = if sector.complement {
+            sector.nqubits - destination_active_weight
+        } else {
+            destination_active_weight
+        };
+        if actual_weight != sector.particle_number {
             return Err(PauliError::SectorLeakage {
                 source_index,
                 expected: sector.particle_number,
-                actual: weight,
+                actual: actual_weight,
             });
         }
-        let restricted_destination = sector.rank_words_known_weight(destination, weight)?;
+        destination_active.clear();
+        destination_active.extend_from_slice(source_active);
+        for &qubit in x_support {
+            match destination_active.binary_search(&qubit) {
+                Ok(index) => {
+                    destination_active.remove(index);
+                }
+                Err(index) => destination_active.insert(index, qubit),
+            }
+        }
+        debug_assert_eq!(destination_active.len(), sector.active_number);
+        let active_rank = sector.rank_active_positions(destination_active)?;
+        let restricted_destination = if sector.complement {
+            sector
+                .dimension
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(active_rank))
+                .ok_or(PauliError::Overflow {
+                    context: "ranking complemented U1 destination state",
+                })?
+        } else {
+            active_rank
+        };
         let restricted_destination =
             usize::try_from(restricted_destination).map_err(|_| PauliError::Overflow {
                 context: "converting U1 destination rank to a native index",
@@ -973,6 +1082,53 @@ fn aggregate_source(
         aggregate.push((restricted_destination, value));
     }
     Ok(())
+}
+
+fn symmetric_intersection_count(
+    source_active: &[usize],
+    x_support: &[usize],
+    x_words: &[u64],
+) -> usize {
+    if x_support.len() <= source_active.len() {
+        x_support
+            .iter()
+            .filter(|&&qubit| source_active.binary_search(&qubit).is_ok())
+            .count()
+    } else {
+        source_active
+            .iter()
+            .filter(|&&qubit| mask_contains(x_words, qubit))
+            .count()
+    }
+}
+
+fn pauli_z_parity(
+    source_active: &[usize],
+    z_support: &[usize],
+    z_words: &[u64],
+    complement: bool,
+) -> u32 {
+    let intersection = if z_support.len() <= source_active.len() {
+        z_support
+            .iter()
+            .filter(|&&qubit| source_active.binary_search(&qubit).is_ok())
+            .count()
+    } else {
+        source_active
+            .iter()
+            .filter(|&&qubit| mask_contains(z_words, qubit))
+            .count()
+    };
+    let parity = (intersection & 1) as u32;
+    if complement {
+        parity ^ ((z_support.len() & 1) as u32)
+    } else {
+        parity
+    }
+}
+
+fn mask_contains(words: &[u64], qubit: usize) -> bool {
+    words[qubit / 64] & (1_u64 << (qubit % 64)) != 0
 }
 
 fn transition_upper_bound(sector: &U1Sector, terms: &CompiledU1Terms) -> Result<usize, PauliError> {
@@ -1016,6 +1172,11 @@ fn estimate_plan_bytes(
     let compiled = (terms.x_words.len() as u128)
         .checked_mul(size_of::<u64>() as u128)
         .and_then(|bytes| {
+            (terms.x_support.len() as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|support| bytes.checked_add(support))
+        })
+        .and_then(|bytes| {
             (terms.z_words.len() as u128)
                 .checked_mul(size_of::<u64>() as u128)
                 .and_then(|z| bytes.checked_add(z))
@@ -1024,6 +1185,16 @@ fn estimate_plan_bytes(
             (terms.weighted_coefficients.len() as u128)
                 .checked_mul(size_of::<Complex64>() as u128)
                 .and_then(|coefficients| bytes.checked_add(coefficients))
+        })
+        .and_then(|bytes| {
+            (terms.z_support_offsets.len() as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|offsets| bytes.checked_add(offsets))
+        })
+        .and_then(|bytes| {
+            (terms.z_support.len() as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|support| bytes.checked_add(support))
         })
         .and_then(|bytes| {
             (terms.groups.len() as u128)

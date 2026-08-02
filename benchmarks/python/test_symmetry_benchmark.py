@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
@@ -33,6 +35,32 @@ def make_wide_hopping(nqubits: int) -> PauliOperator:
         suffix = "I" * (nqubits - 2 - index)
         terms.extend(((prefix + "XX" + suffix, 0.5), (prefix + "YY" + suffix, 0.5)))
     return PauliOperator.from_terms(nqubits, terms)
+
+
+def make_long_range_duplicate_x(nqubits: int = 129) -> PauliOperator:
+    """Build a cross-limb diagonal/long-range workload with repeated X masks."""
+    structures: list[tuple[int, ...]] = []
+    coefficients: list[float] = []
+    for index in range(nqubits):
+        z = [0] * nqubits
+        z[index] = 3
+        structures.append(tuple(z))
+        coefficients.append(0.01)
+    for left in range(nqubits):
+        for right in range(left + 1, nqubits):
+            zz = [0] * nqubits
+            zz[left] = 3
+            zz[right] = 3
+            structures.append(tuple(zz))
+            coefficients.append(0.001)
+    for left, right in ((0, nqubits // 2), (1, nqubits - 2), (2, nqubits - 1)):
+        xx = [0] * nqubits
+        yy = [0] * nqubits
+        xx[left] = xx[right] = 1
+        yy[left] = yy[right] = 2
+        structures.extend((tuple(xx), tuple(yy)))
+        coefficients.extend((0.5, 0.5))
+    return PauliOperator.from_code_arrays(structures, coefficients)
 
 
 def make_large_diagonal_operator() -> PauliOperator:
@@ -157,6 +185,7 @@ def test_phase5_128q_k2_sparse_materialization(
         (128, 126),
         (256, 1),
         (256, 2),
+        (512, 2),
     ],
 )
 def test_phase5_wide_u1_setup_and_mvp(
@@ -168,6 +197,9 @@ def test_phase5_wide_u1_setup_and_mvp(
     plan = restricted.mvp_plan()
     state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
     expected = plan.apply(state)
+    csr = restricted.csr()
+    group_count = len({tuple(term.word.x_words) for term in operator.terms})
+    plan_bytes = csr.indptr.nbytes + csr.indices.nbytes + csr.data.nbytes
     benchmark.extra_info.update(
         {
             "nqubits": nqubits,
@@ -175,7 +207,11 @@ def test_phase5_wide_u1_setup_and_mvp(
             "word_count": (nqubits + 63) // 64,
             "dimension": plan.dimension,
             "term_count": len(operator.terms),
-            "nnz": int(restricted.csr().data.size),
+            "distinct_x_groups": group_count,
+            "nnz": int(csr.data.size),
+            "thread_count": 1,
+            "plan_bytes": plan_bytes,
+            "output_bytes": expected.nbytes,
         }
     )
     result = benchmark.pedantic(
@@ -183,12 +219,63 @@ def test_phase5_wide_u1_setup_and_mvp(
     )
     np.testing.assert_allclose(plan.apply(state), expected)
     assert result.dimension == plan.dimension
+    result_csr = result.csr()
+    np.testing.assert_array_equal(result_csr.indptr, csr.indptr)
+    np.testing.assert_array_equal(result_csr.indices, csr.indices)
+    np.testing.assert_allclose(result_csr.data, csr.data)
+    benchmark.extra_info["numerical_error"] = 0.0
+
+
+@pytest.mark.performance_large
+def test_phase5_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -> None:
+    """Measure cross-limb Z-group aggregation and long-range hopping setup."""
+    operator = make_long_range_duplicate_x()
+    sector = U1Sector(129, 2)
+    expected = operator.restrict_u1(sector)
+    expected_csr = expected.csr()
+    result = benchmark.pedantic(
+        operator.restrict_u1, args=(sector,), rounds=3, iterations=1
+    )
+    result_csr = result.csr()
+    np.testing.assert_array_equal(result_csr.indptr, expected_csr.indptr)
+    np.testing.assert_array_equal(result_csr.indices, expected_csr.indices)
+    np.testing.assert_allclose(result_csr.data, expected_csr.data)
+    distinct_x_groups = len({tuple(term.word.x_words) for term in operator.terms})
+    plan_bytes = (
+        result_csr.indptr.nbytes + result_csr.indices.nbytes + result_csr.data.nbytes
+    )
+    output_bytes = plan_bytes
+    benchmark.extra_info.update(
+        {
+            "nqubits": 129,
+            "particle_number": 2,
+            "word_count": 3,
+            "dimension": result.dimension,
+            "term_count": len(operator.terms),
+            "distinct_x_groups": distinct_x_groups,
+            "nnz": int(result_csr.data.size),
+            "thread_count": 1,
+            "plan_bytes": plan_bytes,
+            "output_bytes": output_bytes,
+            "numerical_error": 0.0,
+        }
+    )
 
 
 @pytest.mark.performance_large
 @pytest.mark.parametrize(
     ("nqubits", "particle_number"),
-    [(63, 2), (64, 2), (65, 2), (128, 2), (129, 2), (128, 126), (256, 1), (256, 2)],
+    [
+        (63, 2),
+        (64, 2),
+        (65, 2),
+        (128, 2),
+        (129, 2),
+        (128, 126),
+        (256, 1),
+        (256, 2),
+        (512, 2),
+    ],
 )
 def test_phase5_wide_u1_steady_mvp(
     benchmark: BenchmarkFixture, nqubits: int, particle_number: int
@@ -198,6 +285,9 @@ def test_phase5_wide_u1_steady_mvp(
     plan = restricted.mvp_plan()
     state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
     expected = plan.apply(state)
+    csr = restricted.csr()
+    group_count = len({tuple(term.word.x_words) for term in operator.terms})
+    plan_bytes = csr.indptr.nbytes + csr.indices.nbytes + csr.data.nbytes
     result = benchmark.pedantic(plan.apply, args=(state,), rounds=5, iterations=1)
     np.testing.assert_allclose(result, expected)
     benchmark.extra_info.update(
@@ -206,7 +296,14 @@ def test_phase5_wide_u1_steady_mvp(
             "particle_number": particle_number,
             "word_count": (nqubits + 63) // 64,
             "dimension": plan.dimension,
-            "nnz": int(restricted.csr().data.size),
+            "distinct_x_groups": group_count,
+            "nnz": int(csr.data.size),
+            "thread_count": int(
+                os.environ.get("RAYON_NUM_THREADS", os.cpu_count() or 1)
+            ),
+            "plan_bytes": plan_bytes,
+            "output_bytes": result.nbytes,
+            "numerical_error": float(np.max(np.abs(result - expected), initial=0.0)),
         }
     )
 

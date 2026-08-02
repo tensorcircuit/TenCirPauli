@@ -23,6 +23,39 @@ fn make_hopping(nqubits: usize) -> PauliOperator {
     PauliOperator::from_terms(nqubits, &structures, &coefficients).unwrap()
 }
 
+fn make_long_range_duplicate_x(nqubits: usize) -> PauliOperator {
+    let mut structures = Vec::new();
+    let mut coefficients = Vec::new();
+    for index in 0..nqubits {
+        let mut z = vec![0_u8; nqubits];
+        z[index] = 3;
+        structures.push(z);
+        coefficients.push(Complex64::new(0.01, 0.0));
+    }
+    for left in 0..nqubits {
+        for right in (left + 1)..nqubits {
+            let mut zz = vec![0_u8; nqubits];
+            zz[left] = 3;
+            zz[right] = 3;
+            structures.push(zz);
+            coefficients.push(Complex64::new(0.001, 0.0));
+        }
+    }
+    for (left, right) in [(0, nqubits / 2), (1, nqubits - 2), (2, nqubits - 1)] {
+        let mut xx = vec![0_u8; nqubits];
+        let mut yy = vec![0_u8; nqubits];
+        xx[left] = 1;
+        xx[right] = 1;
+        yy[left] = 2;
+        yy[right] = 2;
+        structures.push(xx);
+        structures.push(yy);
+        coefficients.push(Complex64::new(0.5, 0.0));
+        coefficients.push(Complex64::new(0.5, 0.0));
+    }
+    PauliOperator::from_terms(nqubits, &structures, &coefficients).unwrap()
+}
+
 fn make_tfim(nqubits: usize) -> PauliOperator {
     let mut structures = Vec::with_capacity(2 * nqubits);
     let mut coefficients = Vec::with_capacity(structures.capacity());
@@ -77,6 +110,7 @@ fn benchmark_u1(criterion: &mut Criterion) {
         (128, 126),
         (256, 1),
         (256, 2),
+        (512, 2),
     ] {
         let operator = make_hopping(nqubits);
         let sector = U1Sector::new(nqubits, particle_number).unwrap();
@@ -143,6 +177,18 @@ fn benchmark_u1(criterion: &mut Criterion) {
             );
         }
     }
+    let nqubits = 129;
+    let particle_number = 2;
+    let operator = make_long_range_duplicate_x(nqubits);
+    let sector = U1Sector::new(nqubits, particle_number).unwrap();
+    group.bench_function(
+        "restriction_setup_long_range_duplicate_x_129q_k2",
+        |bencher| {
+            bencher.iter(|| {
+                black_box(U1RestrictedOperator::new(&operator, sector.clone(), u128::MAX).unwrap())
+            });
+        },
+    );
     group.finish();
 }
 
