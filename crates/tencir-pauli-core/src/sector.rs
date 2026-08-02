@@ -8,6 +8,8 @@ use crate::error::PauliError;
 use crate::operator::{PauliOperator, PauliTerm};
 use crate::scalar::{is_exact_zero, Complex64};
 
+const U1_PARALLEL_TRANSITION_THRESHOLD: usize = 1 << 14;
+
 /// A fixed-particle-number computational-basis sector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct U1Sector {
@@ -378,16 +380,26 @@ impl U1MvpPlan {
             });
         }
         output.fill(Complex64::default());
-        self.indptr
-            .par_windows(2)
-            .zip(output.par_iter_mut())
-            .for_each(|(window, result)| {
+        if self.values.len() < U1_PARALLEL_TRANSITION_THRESHOLD {
+            for (destination, result) in output.iter_mut().enumerate() {
                 let mut value = Complex64::default();
-                for index in window[0]..window[1] {
+                for index in self.indptr[destination]..self.indptr[destination + 1] {
                     value += self.values[index] * state[self.columns[index]];
                 }
                 *result = value;
-            });
+            }
+        } else {
+            self.indptr
+                .par_windows(2)
+                .zip(output.par_iter_mut())
+                .for_each(|(window, result)| {
+                    let mut value = Complex64::default();
+                    for index in window[0]..window[1] {
+                        value += self.values[index] * state[self.columns[index]];
+                    }
+                    *result = value;
+                });
+        }
         Ok(())
     }
 
