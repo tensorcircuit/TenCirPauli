@@ -138,6 +138,36 @@ def test_near_clifford_rotation_100q_scalar(benchmark: BenchmarkFixture) -> None
     assert result == pytest.approx(expected)
 
 
+def test_deep_near_clifford_128q_scalar(benchmark: BenchmarkFixture) -> None:
+    tape = tcp.GateTape(128)
+    for layer in range(12):
+        for wire in range(0, 128, 2):
+            tape.h(wire)
+            tape.s(wire + 1)
+            tape.cnot(wire, wire + 1)
+        for wire in range(1, 127, 2):
+            tape.cz(wire, wire + 1)
+        for wire in range(layer % 8, 128, 8):
+            tape.rz(wire, parameter=wire % 2)
+    observable_terms = []
+    for wire in (0, 31, 64, 127):
+        codes = [0] * 128
+        codes[wire] = 1
+        observable_terms.append((codes, 0.25))
+    engine = tcp.PropagationEngine(
+        tape,
+        tcp.PauliOperator.from_terms(128, observable_terms),
+        max_weight=4,
+    )
+    params = np.array([0.031, -0.047])
+    expected = engine.expectation(params)
+    result = benchmark(engine.expectation, params)
+    assert result == pytest.approx(expected)
+    benchmark.extra_info["nqubits"] = 128
+    benchmark.extra_info["layers"] = 12
+    benchmark.extra_info["max_weight"] = 4
+
+
 @pytest.mark.performance_large
 def test_2d_heisenberg_rotation_workload(benchmark: BenchmarkFixture) -> None:
     nqubits = 16

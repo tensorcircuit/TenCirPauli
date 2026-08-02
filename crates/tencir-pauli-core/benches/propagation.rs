@@ -45,6 +45,39 @@ fn tape(nqubits: usize, layers: usize) -> Vec<GateOperation> {
     operations
 }
 
+fn deep_near_clifford_tape(nqubits: usize, layers: usize) -> Vec<GateOperation> {
+    let mut operations = Vec::new();
+    for layer in 0..layers {
+        for wire in (0..nqubits).step_by(2) {
+            operations.push(GateOperation::clifford1(nqubits, Clifford1::H, wire).unwrap());
+            operations.push(GateOperation::clifford1(nqubits, Clifford1::S, wire + 1).unwrap());
+            operations
+                .push(GateOperation::clifford2(nqubits, Clifford2::Cnot, wire, wire + 1).unwrap());
+        }
+        for wire in (1..nqubits.saturating_sub(1)).step_by(2) {
+            operations
+                .push(GateOperation::clifford2(nqubits, Clifford2::Cz, wire, wire + 1).unwrap());
+        }
+        for wire in (layer % 8..nqubits).step_by(8) {
+            let angle = 0.031 + 0.0001 * wire as f64 + 0.002 * layer as f64;
+            operations.push(
+                GateOperation::rotation(
+                    nqubits,
+                    RotationAxis::Z,
+                    wire,
+                    None,
+                    ParameterRef::Static {
+                        cos: angle.cos(),
+                        sin: angle.sin(),
+                    },
+                )
+                .unwrap(),
+            );
+        }
+    }
+    operations
+}
+
 fn benchmark_local_kernels(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("propagation/local");
     let observable_word = observable(2, 1);
@@ -95,6 +128,21 @@ fn benchmark_tapes(criterion: &mut Criterion) {
             },
         );
     }
+    let deep_engine = PropagationEngine::new(
+        128,
+        deep_near_clifford_tape(128, 12),
+        observable(128, 4),
+        ProductState::Zero,
+        Some(4),
+        None,
+    )
+    .unwrap();
+    group.throughput(Throughput::Elements(deep_engine.gate_count() as u64));
+    group.bench_with_input(
+        BenchmarkId::new("weight_projected", "128q_12layers"),
+        &deep_engine,
+        |bencher, engine_input| bencher.iter(|| black_box(engine_input.expectation(&[]).unwrap())),
+    );
     group.finish();
 }
 
