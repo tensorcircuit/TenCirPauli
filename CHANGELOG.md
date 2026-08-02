@@ -6,6 +6,8 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
+- Add the Rust-native `GateTape`/`PropagationEngine` with exact and per-gate Pauli-weight-projected Heisenberg propagation, supported Clifford and Pauli-rotation gates, finite real custom PTMs, product-state expectations, explicit operator materialization, typed parameter slots, and profile metadata.
+- Add the independent Phase 3 dense propagation reference, differential/boundary tests, 100-qubit packed-key coverage, release Criterion/Python workloads, and synchronized complex128 JAX warm-reference comparison.
 - Implement Phase 2 Pauli Z2 symmetry analysis, reusable Clifford tapering plans, explicit U(1) fixed-particle sectors, restricted MVP/CSR operators, public typed APIs, and deterministic setup/apply benchmark workloads.
 - Add symmetry-aware JAX reduced-space baselines with matched U(1) transition aggregation and Z2 tapered TFIM semantics, including setup, steady-state, first-JIT, and end-to-end measurements at larger qubit counts.
 - Close the Phase 1 acceptance blockers: make caller-owned MVP output overwrite-safe, enforce canonical packed words and finite/nonzero operator invariants, remove per-term PyO3 round trips and repeated canonicalization, release the GIL on long native paths, use zero-copy shared complex buffers, bound grouping/backend allocations, and accelerate deterministic canonicalization and QWC grouping. Add contiguous NumPy canonicalization APIs and matched Python performance baselines.
@@ -13,7 +15,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 - Add release-mode cross-implementation sparse benchmarks for TensorCircuit NumPy COO and JAX BCOO first/warm construction, duplicate canonicalization, storage, and warm matvec semantics.
 - Add synchronized 20-qubit COO/CSR/native-MVP/JAX-MVP benchmarks, explicit materialization memory-guard cases, and asynchronous JAX timing safeguards.
 - Add a paired Python-to-sparse canonical benchmark for local Heisenberg chains, including JAX BCOO duplicate aggregation and in-call synchronization so native and TensorCircuit endpoint timings use the same contract.
-- Set the public materialization safety budget to 4 GiB by default, expose `DEFAULT_MAX_BYTES`, and add local Heisenberg nearest/next-nearest chain benchmarks with explicit larger-budget coverage.
+- Set the public materialization safety budget to 16 GiB by default, expose `DEFAULT_MAX_BYTES`, accept `None` for an unbounded best-effort guard, and add local Heisenberg nearest/next-nearest chain benchmarks with explicit larger-budget coverage.
 - Complete the Phase 1 PauliWord, PauliOperator, deterministic grouping, and Hamiltonian compiler vertical slices.
 - Add an independent NumPy dense reference, fixed regression vectors, Rust/PyO3 batch conversion, and deterministic release-mode benchmarks.
 - Add dense/COO/CSR/native MVP/backend MVP targets with explicit allocation guards and a lazy optional TensorCircuit adapter.
