@@ -175,6 +175,29 @@ def test_wide_low_particle_circuit_does_not_use_single_word_state() -> None:
     assert np.isclose(np.linalg.norm(state), 1.0)
 
 
+def test_large_pair_kernel_round_trip() -> None:
+    circuit = tcp.U1Circuit(40, k=5, filled=list(range(5)))
+    circuit.iswap(0, 1, theta=0.37)
+    circuit.iswap(0, 1, theta=-0.37)
+    np.testing.assert_allclose(circuit.state(), circuit._initial_state, atol=1e-12)
+
+
+def test_129_qubit_k2_cross_limb_execution() -> None:
+    nqubits = 129
+    circuit = tcp.U1Circuit(nqubits, k=2, filled=[0, 1])
+    circuit.iswap(0, 128, theta=0.25)
+    state = circuit.state()
+    initial_basis = (1 << (nqubits - 1)) | (1 << (nqubits - 2))
+    moved_basis = (1 << (nqubits - 2)) | 1
+    initial_index = circuit.sector.rank(initial_basis)
+    moved_index = circuit.sector.rank(moved_basis)
+    expected = np.zeros(circuit.dimension, dtype=np.complex128)
+    angle = 0.25 * np.pi / 2.0
+    expected[initial_index] = np.cos(angle)
+    expected[moved_index] = 1j * np.sin(angle)
+    np.testing.assert_allclose(state, expected, atol=1e-12, rtol=1e-12)
+
+
 def test_qir_round_trip_preserves_gate_order_and_slots() -> None:
     parameter = tcp.Parameter(0)
     circuit = tcp.U1Circuit(2, k=1, filled=[0])

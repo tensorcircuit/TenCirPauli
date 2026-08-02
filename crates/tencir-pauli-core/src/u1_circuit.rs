@@ -5,11 +5,15 @@ use std::f64::consts::PI;
 use std::mem::size_of;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::circuit_ir::{CircuitGate, CircuitProgram};
 use crate::error::PauliError;
 use crate::operator::PauliOperator;
 use crate::scalar::Complex64;
 use crate::sector::U1Sector;
+
+const U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD: usize = 1 << 14;
 
 #[derive(Clone, Copy, Debug)]
 struct PairIndex {
@@ -31,16 +35,24 @@ enum DiagonalOp {
     Cz {
         wire0: usize,
         wire1: usize,
+        indices: Arc<[usize]>,
     },
     Cphase {
         wire0: usize,
         wire1: usize,
         angle: usize,
+        indices: Arc<[usize]>,
     },
     Static {
         wires: Arc<[usize]>,
         payload: Arc<[Complex64]>,
     },
+}
+
+impl DiagonalOp {
+    fn is_sparse(&self) -> bool {
+        matches!(self, Self::Cz { .. } | Self::Cphase { .. })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,14 +115,29 @@ impl U1CircuitPlan {
         }
 
         let mut pair_maps = HashMap::<(usize, usize), Arc<[PairIndex]>>::new();
+        let mut diagonal_indices = HashMap::<(usize, usize), Arc<[usize]>>::new();
         let mut gates = Vec::with_capacity(program.operations().len());
         let mut operation_index = 0;
         while operation_index < program.operations().len() {
-            if let Some(first) = diagonal_op(&program.operations()[operation_index]) {
+            if let Some(first) = diagonal_op(
+                &program.operations()[operation_index],
+                &basis_words,
+                word_count,
+                dimension,
+                &mut diagonal_indices,
+                max_bytes,
+            )? {
                 let mut operations = vec![first];
                 operation_index += 1;
                 while operation_index < program.operations().len() {
-                    if let Some(operation) = diagonal_op(&program.operations()[operation_index]) {
+                    if let Some(operation) = diagonal_op(
+                        &program.operations()[operation_index],
+                        &basis_words,
+                        word_count,
+                        dimension,
+                        &mut diagonal_indices,
+                        max_bytes,
+                    )? {
                         operations.push(operation);
                         operation_index += 1;
                     } else {
@@ -140,9 +167,20 @@ impl U1CircuitPlan {
                 context: "estimating U1 circuit pair-map memory",
             })
         })?;
+        let diagonal_bytes = diagonal_indices.values().try_fold(0_u128, |sum, indices| {
+            let bytes = (indices.len() as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating U1 circuit diagonal-index memory",
+                })?;
+            sum.checked_add(bytes).ok_or(PauliError::Overflow {
+                context: "estimating U1 circuit diagonal-index memory",
+            })
+        })?;
         check_budget(
             basis_bytes
                 .checked_add(pair_bytes)
+                .and_then(|bytes| bytes.checked_add(diagonal_bytes))
                 .ok_or(PauliError::Overflow {
                     context: "estimating U1 circuit compiled metadata",
                 })?,
@@ -353,6 +391,32 @@ impl U1CircuitPlan {
     ) -> Result<(), PauliError> {
         match gate {
             CompiledU1Gate::DiagonalBlock { operations } => {
+                if operations.iter().all(DiagonalOp::is_sparse) {
+                    for operation in operations.iter() {
+                        match operation {
+                            DiagonalOp::Cz { indices, .. } => {
+                                for index in indices.iter().copied() {
+                                    state[index] = -state[index];
+                                }
+                            }
+                            DiagonalOp::Cphase { angle, indices, .. } => {
+                                let sign = if inverse { -1.0 } else { 1.0 };
+                                let phase = Complex64::from_polar(1.0, sign * values[*angle]);
+                                for index in indices.iter().copied() {
+                                    state[index] *= phase;
+                                }
+                            }
+                            DiagonalOp::Rz { .. }
+                            | DiagonalOp::Rzz { .. }
+                            | DiagonalOp::Static { .. } => {
+                                return Err(PauliError::InvalidCircuit {
+                                    context: "non-sparse gate entered sparse diagonal path",
+                                });
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
                 for (index, value) in state.iter_mut().enumerate() {
                     let mut phase = Complex64::new(1.0, 0.0);
                     for operation in operations.iter() {
@@ -370,11 +434,26 @@ impl U1CircuitPlan {
                 let theta = values[*angle] * PI / 2.0 * if inverse { -1.0 } else { 1.0 };
                 let cosine = theta.cos();
                 let sine = Complex64::new(0.0, theta.sin());
-                for pair in pairs.iter() {
-                    let left = state[pair.zero_one];
-                    let right = state[pair.one_zero];
-                    state[pair.zero_one] = cosine * left + sine * right;
-                    state[pair.one_zero] = cosine * right + sine * left;
+                if pairs.len() >= U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD {
+                    // Pair construction emits disjoint endpoints: every sector basis
+                    // state with one occupied wire in this pair appears exactly once.
+                    // The raw pointer permits Rayon to update those disjoint pairs in
+                    // place without allocating a full second state vector.
+                    let state_ptr = state.as_mut_ptr() as usize;
+                    pairs.par_iter().for_each(|pair| unsafe {
+                        let state_ptr = state_ptr as *mut Complex64;
+                        let left = *state_ptr.add(pair.zero_one);
+                        let right = *state_ptr.add(pair.one_zero);
+                        *state_ptr.add(pair.zero_one) = cosine * left + sine * right;
+                        *state_ptr.add(pair.one_zero) = cosine * right + sine * left;
+                    });
+                } else {
+                    for pair in pairs.iter() {
+                        let left = state[pair.zero_one];
+                        let right = state[pair.one_zero];
+                        state[pair.zero_one] = cosine * left + sine * right;
+                        state[pair.one_zero] = cosine * right + sine * left;
+                    }
                 }
             }
         }
@@ -408,7 +487,7 @@ impl U1CircuitPlan {
                 };
                 Complex64::from_polar(1.0, -0.5 * values[*angle] * z0 * z1)
             }
-            DiagonalOp::Cz { wire0, wire1 } => {
+            DiagonalOp::Cz { wire0, wire1, .. } => {
                 if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
                     Complex64::new(-1.0, 0.0)
                 } else {
@@ -419,6 +498,7 @@ impl U1CircuitPlan {
                 wire0,
                 wire1,
                 angle,
+                ..
             } => {
                 if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
                     Complex64::from_polar(1.0, values[*angle])
@@ -545,6 +625,7 @@ fn accumulate_gate_derivative(
                         wire0,
                         wire1,
                         angle,
+                        ..
                     } => {
                         let mut result = 0.0;
                         for index in 0..after.len() {
@@ -599,40 +680,102 @@ fn inner_product(left: &[Complex64], right: &[Complex64]) -> Complex64 {
         .fold(Complex64::default(), |sum, (a, b)| sum + a.conj() * b)
 }
 
-fn diagonal_op(gate: &CircuitGate) -> Option<DiagonalOp> {
-    match gate {
-        CircuitGate::Rz { wire, angle } => Some(DiagonalOp::Rz {
+fn diagonal_op(
+    gate: &CircuitGate,
+    basis_words: &[u64],
+    word_count: usize,
+    dimension: usize,
+    diagonal_indices: &mut HashMap<(usize, usize), Arc<[usize]>>,
+    max_bytes: Option<u128>,
+) -> Result<Option<DiagonalOp>, PauliError> {
+    let operation = match gate {
+        CircuitGate::Rz { wire, angle } => DiagonalOp::Rz {
             wire: *wire,
             angle: *angle,
-        }),
+        },
         CircuitGate::Rzz {
             wire0,
             wire1,
             angle,
-        } => Some(DiagonalOp::Rzz {
+        } => DiagonalOp::Rzz {
             wire0: *wire0,
             wire1: *wire1,
             angle: *angle,
-        }),
-        CircuitGate::Cz { wire0, wire1 } => Some(DiagonalOp::Cz {
+        },
+        CircuitGate::Cz { wire0, wire1 } => DiagonalOp::Cz {
             wire0: *wire0,
             wire1: *wire1,
-        }),
+            indices: diagonal_index_map(
+                basis_words,
+                word_count,
+                dimension,
+                *wire0,
+                *wire1,
+                diagonal_indices,
+                max_bytes,
+            )?,
+        },
         CircuitGate::Cphase {
             wire0,
             wire1,
             angle,
-        } => Some(DiagonalOp::Cphase {
+        } => DiagonalOp::Cphase {
             wire0: *wire0,
             wire1: *wire1,
             angle: *angle,
-        }),
-        CircuitGate::Diagonal { wires, payload } => Some(DiagonalOp::Static {
+            indices: diagonal_index_map(
+                basis_words,
+                word_count,
+                dimension,
+                *wire0,
+                *wire1,
+                diagonal_indices,
+                max_bytes,
+            )?,
+        },
+        CircuitGate::Diagonal { wires, payload } => DiagonalOp::Static {
             wires: Arc::from(wires.clone().into_boxed_slice()),
             payload: Arc::from(payload.clone().into_boxed_slice()),
-        }),
-        CircuitGate::Swap { .. } | CircuitGate::Iswap { .. } => None,
+        },
+        CircuitGate::Swap { .. } | CircuitGate::Iswap { .. } => return Ok(None),
+    };
+    Ok(Some(operation))
+}
+
+fn diagonal_index_map(
+    basis_words: &[u64],
+    word_count: usize,
+    dimension: usize,
+    wire0: usize,
+    wire1: usize,
+    cache: &mut HashMap<(usize, usize), Arc<[usize]>>,
+    max_bytes: Option<u128>,
+) -> Result<Arc<[usize]>, PauliError> {
+    let key = if wire0 < wire1 {
+        (wire0, wire1)
+    } else {
+        (wire1, wire0)
+    };
+    if let Some(indices) = cache.get(&key) {
+        return Ok(indices.clone());
     }
+    let mut indices = Vec::new();
+    for index in 0..dimension {
+        if bit_from_basis(basis_words, word_count, index, wire0) != 0
+            && bit_from_basis(basis_words, word_count, index, wire1) != 0
+        {
+            indices.push(index);
+        }
+    }
+    let bytes = (indices.len() as u128)
+        .checked_mul(size_of::<usize>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 circuit diagonal-index memory",
+        })?;
+    check_budget(bytes, max_bytes)?;
+    let result: Arc<[usize]> = Arc::from(indices.into_boxed_slice());
+    cache.insert(key, result.clone());
+    Ok(result)
 }
 
 fn compile_non_diagonal_gate(

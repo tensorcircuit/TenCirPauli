@@ -23,6 +23,7 @@ Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `Paul
 - Rust 使用 release benchmark profile；Python benchmark 前重新执行 release 模式的 maturin develop。
 - 分开测量纯 Rust kernel、Python/FFI 路径和端到端 workload，避免把跨层收益错误归因于单个 kernel。
 - 对并行算法分别记录单线程与固定线程数 scaling；不要在未知线程池配置下比较结果。
+- U1Circuit 的 `40q-k5` compressed sector（`C(40,5)=658008`）默认只跑 native benchmark；TensorCircuit JAX JIT 的首次编译必须显式设置 `TENCIRPAULI_ALLOW_HEAVY_JAX=1`，因为同机实测 peak RSS 约 3.4 GB，不能把 JAX 编译内存误当作 10 MB state storage。
 - Sparse COO 对照必须拆分 TensorCircuit/JAX BCOO 的 first construction（含 shape-specialized compile）、warm raw construction、first/warm `sum_duplicates()` 和 warm matvec；同时报告 raw/padded `nse`、实际 data count、unique/sorted flags 与 values/indices storage，不能把 duplicate BCOO 当作 TenCirPauli canonical COO。
 - 任何宣称两个公开 sparse 接口性能可比的结果，都必须另设 canonical end-to-end workload：从 Python 公开调用开始，计时到两侧 sparse 对象及其 data/indices 完成；如果目标语义要求 unique/sorted/aggregated entries，则两侧都必须在计时内完成相应 canonicalization。TensorCircuit `PauliStringSum2COO()` 的 raw BCOO 不自动满足这一合同，因此 benchmark 必须显式调用并同步 `sum_duplicates()`，不能把单独的 canonicalization 时间冒充完整接口时间，也不能把 raw-only 时间冒充 canonical 结果。
 - JAX 异步 backend 的 warm benchmark 必须在 timed callable 内对结果及 sparse `data`/`indices` 调用 `block_until_ready()`；只在 timed loop 外同步会把 enqueue latency 错当执行时间。
