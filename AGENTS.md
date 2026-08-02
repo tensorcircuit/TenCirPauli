@@ -2,7 +2,7 @@
 
 ## Mission
 
-TenCirPauli is a standalone Rust-native library for Pauli algebra, measurement grouping, Hamiltonian construction, symmetry analysis, and Pauli propagation. Keep the Rust core independent from Python and TensorCircuit while providing a stable Python API and an optional TensorCircuit adapter.
+TenCirPauli is TensorCircuit's Rust-native companion for Pauli algebra, measurement grouping, Hamiltonian construction, symmetry analysis, and Pauli propagation. Keep the Rust core independent from Python and TensorCircuit while providing a stable TensorCircuit-facing Python API.
 
 ## Engineering Priorities
 
@@ -18,7 +18,7 @@ Correctness tests are the gate for optimization. Maintain dense or otherwise tru
 - `crates/tencir-pauli-core/` contains pure Rust algorithms and must not depend on PyO3, Python, NumPy, or TensorCircuit.
 - `crates/tencirpauli-native/` contains the thin PyO3 binding and builds the private Python module `tencirpauli._native`.
 - `python/tencirpauli/` contains the single public Python package.
-- `python/tencirpauli/integrations/tensorcircuit.py` is the only place that may directly import TensorCircuit.
+- `tensorcircuit-ng` is a required Python runtime dependency; `python/tencirpauli/integrations/tensorcircuit.py` remains the boundary that may directly import TensorCircuit.
 - `docs/vibe/architecture.md` is the architecture and scope source of truth.
 - `docs/vibe/` contains experimental specifications, design decisions, release notes, and other vibe-coding working documents. Keep this material out of the repository root and maintain `docs/vibe/README.md` as its index.
 
@@ -30,7 +30,7 @@ Correctness tests are the gate for optimization. Maintain dense or otherwise tru
 - Rust propagation supports exact dynamic operators and Pauli-weight projection. Do not reproduce fixed-buffer top-k sparse propagation in the Rust engine.
 - Apply weight projection only after contributions with the same Pauli word have been aggregated.
 - Native gradients use explicit local derivative/VJP rules. A parameter-dependent coefficient cutoff must not silently enter a gradient-supported path.
-- Fail fast for unsupported gates, invalid dimensions, incompatible word lengths, obviously excessive major allocations, and missing optional integrations.
+- Fail fast for unsupported gates, invalid dimensions, incompatible word lengths, obviously excessive major allocations, and missing required runtime dependencies.
 - Keep changes minimal and avoid speculative abstractions that are not required by the current milestone.
 - Treat public `max_bytes` values as best-effort guards for cheaply estimated major outputs and workspaces, not as exact peak-RSS guarantees. Checked dimension/arithmetic overflow remains mandatory, but do not add complex allocator, FFI, or transient-buffer accounting solely to make `max_bytes` exact.
 
@@ -52,8 +52,8 @@ Correctness tests are the gate for optimization. Maintain dense or otherwise tru
 - Use type hints for public Python APIs and provide concise public docstrings.
 - Format Python with Black, lint it with Ruff, and type-check the public package with strict mypy. Do not add Pylint alongside Ruff unless a documented gap justifies the duplicate tool.
 - Validate friendly input forms in Python, then make one batched native call.
-- Keep TensorCircuit imports lazy and optional.
-- Run `black --check python tests benchmarks scripts`, `ruff check python tests benchmarks scripts`, and `mypy` for Python quality validation.
+- Keep TensorCircuit imports inside the Python boundary; Rust core code must never import or depend on TensorCircuit.
+- Run `black --check python tests benchmarks scripts examples`, `ruff check python tests benchmarks scripts examples`, and `mypy` for Python quality validation.
 - Run `maturin develop --release` followed by `pytest` for integration validation.
 
 ## Packaging and Compatibility

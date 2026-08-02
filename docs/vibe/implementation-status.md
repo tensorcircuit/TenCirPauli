@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5 已完成：deterministic frozen-support reverse、SPPS fixed/adaptive engines、optional TensorCircuit adapter 和 arbitrary-width packed U1 restricted Hamiltonian engine 已贯通。最终 full benchmark record/compare、内存与可选依赖审计及 Phase 1–5 regression 已完成；项目暂不增加 MSRV 1.85 CI job。
+Phase 1–6 已完成：deterministic frozen-support reverse、SPPS fixed/adaptive engines、TensorCircuit-facing adapter、arbitrary-width packed U1 restricted Hamiltonian engine 和 TensorCircuit-semantics-compatible U1 circuit engine 已贯通。Phase Alpha Python facade 正规化已完成；项目当前保持 public API 与发布基础稳定，暂不启动 Phase 6.5 或 Phase 7；项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -28,7 +28,7 @@ Phase 1–5 已完成：deterministic frozen-support reverse、SPPS fixed/adapti
 - COO/CSR 先按 X mask 聚合 term contributions，再生成按 row 分块的 contiguous entries、exact-zero filter 和稳定 row-major sort；大 workload 使用 Rayon row parallel，CSR 直接从每行计数构造 row pointer、columns 和 values。每个 X mask 只有一个 term 且不存在行内抵消时，COO/CSR 直接写最终数组，跳过候选缓冲区和二次拆分。
 - P4 物化 target 与 MVP output 都在分配前估算 dimension/bytes；默认 public limit `DEFAULT_MAX_BYTES` 为 4 GiB，可通过每次调用的 `max_bytes` 显式降低或提高，超限映射为 `MemoryError`，dimension overflow 映射为 `OverflowError`。
 - P5 顶层 `tencirpauli` 仅导出 typed public classes/results/targets；private `_native` symbols remain behind Python facades. README、docstrings、typing stub、examples、CHANGELOG 和 CI packaging smoke 已同步。
-- P5 TensorCircuit adapter 已迁移到 lazy optional boundary：缺失 `tensorcircuit-ng` 明确失败；backend plan 使用 TensorCircuit backend operations，支持 NumPy/JAX smoke when those optional dependencies are installed。
+- P5 TensorCircuit-facing adapter 已固定在 Python boundary：`tensorcircuit-ng` 是 distribution 的必需 runtime dependency；backend plan 使用 TensorCircuit backend operations，支持 NumPy/JAX backend smoke。
 - Minimal phase-free `PauliWord` weight/commutation 路径已贯通 Rust、PyO3、Python 和 tests；S1 已确认该 phase-free 方向。
 - Linux/macOS/Windows correctness/package CI 与 GitHub Release/PyPI workflow 已建立。
 - 本地 Criterion + pytest-benchmark 记录/比较基础设施已建立；性能结果不进入 CI 门禁。
@@ -60,7 +60,7 @@ Phase 4 owner decisions recorded on 2026-08-02：both deterministic frozen-suppo
 - P0–P1 vertical slice：`PropagationEngine.value_and_grad()` 已贯通 pure Rust、PyO3 和 Python dataclass；reverse 只遍历本次 forward retained edge，支持 exact/finite `max_weight`、shared slots、static PTM transpose action、product Bloch state、non-Hermitian/nonfinite/invalid checkpoint errors，并返回 contiguous read-only `float64` gradient。
 - P2 checkpoint slice：显式 interval 使用 block boundary checkpoints 与 deterministic replay，`None` 使用固定 auto heuristic；interval=1 走已保存 boundary，跳过无意义 replay。不同 interval 的 value/gradient 在 focused tests 中 bitwise 一致；best-effort checkpoint/replay/gradient storage checks 复用 `max_bytes`。
 - P3–P4 SPPS slice：`SPPSEngine` 独立于 deterministic recurrence，支持 Clifford 与六种 Pauli rotations、positive smoothing、importance-reweighted value、exact-zero-safe PAD 和 near-zero prefix/suffix fallback、fixed/adaptive budget、term-wise adaptive A/B doubling、counter-derived seed replay 和 fixed-order sample-index Rayon chunks；custom PTM、`max_weight` 与 unsupported inputs construction-time fail。
-- P5 public/integration slice：顶层导出 `PropagationValueAndGradient`、`SPPSEngine`、`SPPSEstimate`；新增 numeric/direct-symbol TensorCircuit QIR adapter，保持 lazy optional dependency 与 integration-module 边界。TensorCircuit source 本身未修改。
+- P5 public/integration slice：顶层导出 `PropagationValueAndGradient`、`SPPSEngine`、`SPPSEstimate`；新增 numeric/direct-symbol TensorCircuit QIR adapter，保持 framework boundary 与 integration-module 边界。TensorCircuit source 本身未修改。
 - Correctness evidence：`conda run -p .conda cargo test --locked --workspace` 为 19 passed；`conda run -p .conda pytest -q` 为 114 passed, 4 skipped；独立 dense finite-difference、exact legal-path enumerator、zero-factor PAD、seed replay、adaptive metadata、PTM、checkpoint 和 adapter tests 已加入。新增的原地 Clifford/generator path kernels 通过 allocating reference differential tests。
 - Release benchmark evidence：Phase 4 Python native median on this arm64/macOS host is approximately deterministic 12q projected gradient `0.45 ms` at checkpoint 1 and `0.76 ms` at interval 4, SPPS 12q/12-term `0.10 ms` at 128 paths/term and `0.68 ms` at 1024 paths/term, and 100q near-Clifford SPPS `0.14 ms` at 640 total paths. Rust Criterion covers local VJP/tape/checkpoint/SPPS cases. The full local record `20260802T050154Z_f6ff7d7eae22-dirty` completed 88 benchmark cases with 41 optional skips during commit `cb5823b`; results are informational, not wall-time gates.
 - TensorCircuit end-to-end comparison：using the local `examples/spps_pauli_path_vqe.py` workload at 12q/2 layers, 23 TFIM terms and 256 paths/term, Rust deterministic value+gradient is approximately `1.45 ms` versus TensorCircuit `PauliPropagationEngine` + JAX `value_and_grad` approximately `15.97 ms` warm. Rust SPPS is approximately `3.64 ms` versus the example's JAX-vmap SPPS approximately `3.50 ms`; both are complete Python-call boundaries with synchronization, and the SPPS numbers are not a claim of lower variance or identical random paths.
@@ -156,6 +156,14 @@ Known boundary remains intentional: Phase 5.5 does not batch propagated-operator
 ## Next actions
 
 Phase 4 handoff, the Phase 5 review remediation, and Phase 5.5 are complete. Phase 6 has an implemented remediation checkpoint: M1 same-pair blocks, M2 diagonal lookup/static folding, M3 projected reducers and final-state cache, M4 in-place reverse, N1/N2 validation, N3 pair-map scratch reuse, and a release A/B workload are present. The phase remains under acceptance review until the complete P0–P4 concurrency, memory, matched-backend, and benchmark handoff matrix is recorded; future performance work should keep the current correctness and benchmark gates and only introduce further optimization when a representative release profile identifies a bottleneck.
+
+## Phase Alpha completion checkpoint
+
+Phase Alpha is implemented as the public Python facade contract in `docs/vibe/phase-alpha-spec.md`. `U1Circuit`, `PropagationCircuit`, and `SPPSCircuit` now share `theta=`, `Parameter`/`ParameterExpr`, contiguous runtime parameter vectors, `compile()`/cache, `expectation(observable, parameters=...)`, `value_and_grad(observable, parameters=...)`, `to_qir()`, and target-type `from_circuit()` conversion. Their Rust executors remain independent. U1 additionally preserves state/probability terminals; deterministic propagation additionally exposes operator/profile terminals; SPPS additionally exposes fixed and adaptive stochastic estimator terminals, including value-only `expectation()` without a gradient buffer.
+
+The canonical logical QIR spelling is `name`, `index`, `parameters`, and `diagonal`; U1 restore accepts historical `gate`/`diag` spellings for compatibility. Concrete NumPy, Python sequences, and concrete JAX arrays are converted at the host boundary; JAX tracers and `jax.jit` are intentionally outside this native contract. `tensorcircuit-ng>=1.8,<2` is a required distribution dependency, and user-facing conversion is through `U1Circuit.from_circuit()` or `PropagationCircuit.from_circuit()`.
+
+Acceptance evidence includes `tests/test_phase_alpha.py`, executable scripts under `examples/`, direct TensorCircuit integration tests, the examples CI job, and the full local quality/build/test gate. The examples exercise U1, deterministic propagation, SPPS, and TensorCircuit conversion end to end.
 
 ## Phase 6 remediation checkpoint
 

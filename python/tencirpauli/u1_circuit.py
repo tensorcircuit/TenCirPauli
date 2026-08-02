@@ -410,12 +410,22 @@ class U1Circuit:
         self._append(_gate("iswap", (i, j), theta))
 
     def diagonal(
-        self, *indices: int, diag: Sequence[complex] | np.ndarray[Any, Any]
+        self,
+        *indices: int,
+        diagonal: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        diag: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
     ) -> None:
-        values = np.asarray(diag, dtype=np.complex128).reshape(-1)
+        if diagonal is not None and diag is not None:
+            raise ValueError("provide only one of diagonal or diag")
+        payload = diagonal if diagonal is not None else diag
+        if payload is None:
+            raise TypeError("diagonal requires a diagonal payload")
+        values = np.asarray(payload, dtype=np.complex128).reshape(-1)
         expected = 1 << len(indices)
         if values.shape != (expected,):
-            raise ValueError(f"diag must have shape ({expected},), got {values.shape}")
+            raise ValueError(
+                f"diagonal must have shape ({expected},), got {values.shape}"
+            )
         self._append(_gate("diagonal", indices, payload=values.tolist()))
 
     def compile(self) -> U1CircuitPlan:
@@ -524,6 +534,19 @@ class U1Circuit:
         )
         return complex(float(real), float(imaginary))
 
+    def expectation(
+        self,
+        observable: PauliOperator,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+    ) -> complex:
+        """Return one observable expectation without computing a gradient."""
+        if not isinstance(observable, PauliOperator):
+            raise TypeError("observable must be a PauliOperator")
+        real, imaginary = self._cached_final(parameters).native.expectation(
+            *observable._arrays()
+        )
+        return complex(float(real), float(imaginary))
+
     def value_and_grad(
         self,
         observable: PauliOperator,
@@ -538,6 +561,22 @@ class U1Circuit:
         return U1CircuitValueAndGradient(
             float(value), _readonly(np.asarray(gradient, dtype=np.float64))
         )
+
+    @classmethod
+    def from_circuit(
+        cls,
+        circuit: Any,
+        *,
+        parameter_order: Optional[Sequence[Any]] = None,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "U1Circuit":
+        """Convert a supported TensorCircuit U(1) circuit."""
+        from .integrations.tensorcircuit import u1_circuit_from_tensorcircuit
+
+        conversion = u1_circuit_from_tensorcircuit(
+            circuit, parameter_order=parameter_order, max_bytes=max_bytes
+        )
+        return conversion.circuit
 
     def bind_parameters(self, values: Mapping[int, float]) -> "U1Circuit":
         return self._from_program(self, self._program.bind(values))
@@ -630,11 +669,12 @@ class U1Circuit:
             elif name == "iswap":
                 circuit.iswap(wires[0], wires[1], angle(theta, 1.0))
             elif name == "diagonal":
-                if "diag" not in item:
+                payload = item.get("diagonal", item.get("diag"))
+                if payload is None:
                     raise ValueError(
-                        "QIR diagonal item must contain a static diag payload"
+                        "QIR diagonal item must contain a static diagonal payload"
                     )
-                circuit.diagonal(*wires, diag=cast(Sequence[complex], item["diag"]))
+                circuit.diagonal(*wires, diagonal=cast(Sequence[complex], payload))
             else:
                 raise ValueError(f"unsupported U1Circuit QIR gate {name!r}")
         return circuit

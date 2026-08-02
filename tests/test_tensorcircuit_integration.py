@@ -1,11 +1,10 @@
-"""Optional TensorCircuit NumPy/JAX adapter smoke tests."""
+"""TensorCircuit NumPy/JAX adapter smoke tests."""
 
 from __future__ import annotations
 
-import importlib.util
-
 import numpy as np
 import pytest
+import tensorcircuit as tc
 
 from tencirpauli import PauliOperator
 from tencirpauli.integrations.tensorcircuit import (
@@ -16,17 +15,11 @@ from tencirpauli.integrations.tensorcircuit import (
 )
 
 
-def test_missing_tensorcircuit_dependency_is_explicit() -> None:
-    if importlib.util.find_spec("tensorcircuit") is not None:
-        pytest.skip(
-            "TensorCircuit is installed; missing-dependency branch is not applicable"
-        )
-    with pytest.raises(ImportError, match="tensorcircuit-ng"):
-        require_tensorcircuit()
+def test_tensorcircuit_runtime_dependency_is_available() -> None:
+    assert require_tensorcircuit() is tc
 
 
 def test_numpy_backend_plan_smoke() -> None:
-    tc = pytest.importorskip("tensorcircuit")
     tc.set_backend("numpy")
     operator = PauliOperator.from_terms(2, (("XY", 0.5), ("ZI", -1.25j)))
     plan = operator.backend_mvp_plan()
@@ -38,7 +31,6 @@ def test_numpy_backend_plan_smoke() -> None:
 
 
 def test_jax_backend_plan_smoke() -> None:
-    pytest.importorskip("tensorcircuit")
     pytest.importorskip("jax")
     tc = require_tensorcircuit()
     tc.set_backend("jax")
@@ -50,7 +42,6 @@ def test_jax_backend_plan_smoke() -> None:
 
 
 def test_numeric_qir_tape_conversion() -> None:
-    tc = pytest.importorskip("tensorcircuit")
     circuit = tc.Circuit(2)
     circuit.h(0)
     circuit.rx(1, theta=0.23)
@@ -62,7 +53,6 @@ def test_numeric_qir_tape_conversion() -> None:
 
 
 def test_symbol_qir_tape_conversion_and_order() -> None:
-    tc = pytest.importorskip("tensorcircuit")
     sympy = pytest.importorskip("sympy")
     theta, phi = sympy.symbols("theta phi")
     circuit = tc.SymbolCircuit(2)
@@ -74,7 +64,6 @@ def test_symbol_qir_tape_conversion_and_order() -> None:
 
 
 def test_u1_qir_conversion_matches_native_state() -> None:
-    tc = pytest.importorskip("tensorcircuit")
     tc.set_dtype("complex128")
     tc.set_backend("numpy")
     circuit = tc.U1Circuit(3, k=1, filled=[0])

@@ -160,6 +160,9 @@ class NativeSPPSEngine:
     def observable_terms(self) -> int: ...
     @property
     def smoothing(self) -> float: ...
+    def expectation(
+        self, parameters: object, samples_per_term: int, seed: int
+    ) -> tuple[float, float, int, Sequence[int], int, int]: ...
     def value_and_grad(
         self, parameters: object, samples_per_term: int, seed: int
     ) -> tuple[

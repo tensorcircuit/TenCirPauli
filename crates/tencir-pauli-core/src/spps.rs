@@ -36,6 +36,17 @@ pub struct SPPSEstimate {
     pub converged: Option<bool>,
 }
 
+/// One value-only stochastic Pauli-path estimate.
+#[derive(Clone, Debug)]
+pub struct SPPSValueEstimate {
+    pub value: f64,
+    pub value_standard_error: f64,
+    pub replicates: usize,
+    pub samples_per_replicate: Vec<usize>,
+    pub total_paths: usize,
+    pub seed: u64,
+}
+
 /// Immutable stochastic Pauli-path engine.
 #[derive(Clone, Debug)]
 pub struct SPPSEngine {
@@ -270,6 +281,71 @@ impl SPPSEngine {
 
     pub fn smoothing(&self) -> f64 {
         self.smoothing
+    }
+
+    /// Estimate only the value without allocating or accumulating gradients.
+    pub fn expectation(
+        &self,
+        parameters: &[f64],
+        samples_per_term: usize,
+        seed: u64,
+    ) -> Result<SPPSValueEstimate, PauliError> {
+        if samples_per_term < 2 {
+            return Err(PauliError::InvalidSppsBudget {
+                context: "samples_per_term; expected at least 2",
+            });
+        }
+        self.validate_parameters(parameters)?;
+        let term_count = self.observable.terms().len();
+        if term_count == 0 {
+            return Ok(SPPSValueEstimate {
+                value: 0.0,
+                value_standard_error: 0.0,
+                replicates: 1,
+                samples_per_replicate: Vec::new(),
+                total_paths: 0,
+                seed,
+            });
+        }
+        self.check_execution_budget(samples_per_term, 1)?;
+        let operations = self.resolve_operations(parameters)?;
+        let mut stats = (0..term_count)
+            .map(|_| TermStats::new(0))
+            .collect::<Vec<_>>();
+        stats
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|(term_index, stats)| {
+                let mut scratch = PathScratch::new(self.operations.len());
+                let term = &self.observable.terms()[term_index];
+                run_samples_batched(
+                    &operations,
+                    &self.initial_state,
+                    self.nqubits,
+                    self.smoothing,
+                    term,
+                    term_index,
+                    0,
+                    0,
+                    samples_per_term,
+                    seed,
+                    stats,
+                    &mut scratch,
+                )
+            })?;
+        let (value, _, standard_error) = combine_fixed(&stats, 0)?;
+        Ok(SPPSValueEstimate {
+            value,
+            value_standard_error: standard_error,
+            replicates: 1,
+            samples_per_replicate: vec![samples_per_term; term_count],
+            total_paths: samples_per_term
+                .checked_mul(term_count)
+                .ok_or(PauliError::Overflow {
+                    context: "counting SPPS paths",
+                })?,
+            seed,
+        })
     }
 
     /// Estimate with one independent replicate per observable term.
@@ -779,8 +855,10 @@ fn run_samples(
                                 });
                             }
                             scratch.ratios.push(cosine / q);
-                            scratch.derivatives.push(slot.map_or(0.0, |_| -sine / q));
-                            scratch.slots.push(*slot);
+                            if !stats.gradient_sum.is_empty() {
+                                scratch.derivatives.push(slot.map_or(0.0, |_| -sine / q));
+                                scratch.slots.push(*slot);
+                            }
                         } else {
                             let probability = 1.0 - q;
                             let local_sign = phase_sign_i(phase);
@@ -794,10 +872,12 @@ fn run_samples(
                                 });
                             }
                             scratch.ratios.push(local_sign * sine / probability);
-                            scratch
-                                .derivatives
-                                .push(slot.map_or(0.0, |_| local_sign * cosine / probability));
-                            scratch.slots.push(*slot);
+                            if !stats.gradient_sum.is_empty() {
+                                scratch
+                                    .derivatives
+                                    .push(slot.map_or(0.0, |_| local_sign * cosine / probability));
+                                scratch.slots.push(*slot);
+                            }
                         }
                     }
                 }
@@ -875,23 +955,25 @@ fn run_samples(
                 index: sample_index,
             });
         }
-        for index in 0..scratch.ratios.len() {
-            if let Some(slot) = scratch.slots[index] {
-                let product_without_factor = if use_stable_products && zero_count == 0 {
-                    scratch.prefix[index] * scratch.suffix[index + 1]
-                } else {
-                    match zero_count {
-                        0 => nonzero_product / scratch.ratios[index],
-                        1 if index == zero_index => nonzero_product,
-                        _ => 0.0,
+        if !stats.gradient_sum.is_empty() {
+            for index in 0..scratch.ratios.len() {
+                if let Some(slot) = scratch.slots[index] {
+                    let product_without_factor = if use_stable_products && zero_count == 0 {
+                        scratch.prefix[index] * scratch.suffix[index + 1]
+                    } else {
+                        match zero_count {
+                            0 => nonzero_product / scratch.ratios[index],
+                            1 if index == zero_index => nonzero_product,
+                            _ => 0.0,
+                        }
+                    };
+                    stats.gradient_sum[slot] +=
+                        value_factor * scratch.derivatives[index] * product_without_factor;
+                    if !stats.gradient_sum[slot].is_finite() {
+                        return Err(PauliError::NonFiniteCoefficient {
+                            index: sample_index,
+                        });
                     }
-                };
-                stats.gradient_sum[slot] +=
-                    value_factor * scratch.derivatives[index] * product_without_factor;
-                if !stats.gradient_sum[slot].is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient {
-                        index: sample_index,
-                    });
                 }
             }
         }

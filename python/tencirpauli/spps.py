@@ -9,6 +9,7 @@ from typing import Any, Optional, Sequence, cast
 import numpy as np
 
 from . import _native
+from .circuit import _coerce_parameters
 from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
 from .pauli import PauliOperator
 from .propagation import (
@@ -37,6 +38,18 @@ class SPPSEstimate:
     gradient_error_proxy: Optional[float]
     term_gradient_error_proxies: Optional[tuple[float, ...]]
     converged: Optional[bool]
+
+
+@dataclass(frozen=True)
+class SPPSValueEstimate:
+    """One value-only stochastic Pauli-path estimate."""
+
+    value: float
+    value_standard_error: float
+    replicates: int
+    samples_per_replicate: tuple[int, ...]
+    total_paths: int
+    seed: int
 
 
 class SPPSEngine:
@@ -88,11 +101,7 @@ class SPPSEngine:
     def _parameters(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> np.ndarray[Any, Any]:
-        values = np.asarray(parameters, dtype=np.float64)
-        if values.ndim != 1 or values.shape[0] != self.nparameters:
-            raise ValueError(
-                f"parameters must have shape ({self.nparameters},), got {values.shape}"
-            )
+        values = _coerce_parameters(parameters, self.nparameters)
         return cast(np.ndarray[Any, Any], np.ascontiguousarray(values))
 
     @staticmethod
@@ -108,6 +117,30 @@ class SPPSEngine:
         if not isinstance(value, int) or isinstance(value, bool) or value < 2:
             raise ValueError(f"{name} must be an integer >= 2")
         return value
+
+    def expectation(
+        self,
+        parameters: Sequence[float] | np.ndarray[Any, Any],
+        *,
+        samples_per_term: int,
+        seed: int,
+    ) -> SPPSValueEstimate:
+        """Estimate only the value without computing a gradient."""
+        budget = self._budget(samples_per_term, "samples_per_term")
+        normalized_seed = self._seed(seed)
+        value, standard_error, replicates, budgets, total_paths, result_seed = (
+            self._native.expectation(
+                self._parameters(parameters), budget, normalized_seed
+            )
+        )
+        return SPPSValueEstimate(
+            value=float(value),
+            value_standard_error=float(standard_error),
+            replicates=int(replicates),
+            samples_per_replicate=tuple(int(item) for item in budgets),
+            total_paths=int(total_paths),
+            seed=int(result_seed),
+        )
 
     def value_and_grad(
         self,

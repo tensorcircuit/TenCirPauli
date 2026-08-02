@@ -1,7 +1,7 @@
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use tencir_pauli_core::{SPPSEngine, SPPSEstimate};
+use tencir_pauli_core::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 
 use crate::convert::{build_canonical_operator, map_error};
 use crate::propagation::{compile_operation, compile_state};
@@ -18,6 +18,7 @@ type SppsOutput<'py> = (
     Option<Vec<f64>>,
     Option<bool>,
 );
+type SppsValueOutput = (f64, f64, usize, Vec<usize>, usize, u64);
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeSPPSEngine {
@@ -49,6 +50,22 @@ impl NativeSPPSEngine {
     #[getter]
     fn smoothing(&self) -> f64 {
         self.engine.smoothing()
+    }
+
+    fn expectation(
+        &self,
+        py: Python<'_>,
+        parameters: PyReadonlyArray1<'_, f64>,
+        samples_per_term: usize,
+        seed: u64,
+    ) -> PyResult<SppsValueOutput> {
+        let values = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let result = py
+            .allow_threads(|| self.engine.expectation(values, samples_per_term, seed))
+            .map_err(map_error)?;
+        Ok(materialize_value(result))
     }
 
     fn value_and_grad<'py>(
@@ -145,5 +162,16 @@ fn materialize<'py>(py: Python<'py>, result: SPPSEstimate) -> SppsOutput<'py> {
         result.gradient_error_proxy,
         result.term_gradient_error_proxies,
         result.converged,
+    )
+}
+
+fn materialize_value(result: SPPSValueEstimate) -> SppsValueOutput {
+    (
+        result.value,
+        result.value_standard_error,
+        result.replicates,
+        result.samples_per_replicate,
+        result.total_paths,
+        result.seed,
     )
 }

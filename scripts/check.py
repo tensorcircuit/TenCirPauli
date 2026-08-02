@@ -40,10 +40,20 @@ def run_formatters(fix: bool) -> None:
     """Apply formatters or verify that committed sources are formatted."""
     if fix:
         run(["cargo", "fmt", "--all"])
-        run(["black", "python", "tests", "benchmarks", "scripts"])
+        run(["black", "python", "tests", "benchmarks", "scripts", "examples"])
     else:
         run(["cargo", "fmt", "--all", "--", "--check"])
-        run(["black", "--check", "python", "tests", "benchmarks", "scripts"])
+        run(
+            [
+                "black",
+                "--check",
+                "python",
+                "tests",
+                "benchmarks",
+                "scripts",
+                "examples",
+            ]
+        )
 
 
 def run_quality_checks() -> None:
@@ -61,7 +71,7 @@ def run_quality_checks() -> None:
             "warnings",
         ]
     )
-    run(["ruff", "check", "python", "tests", "benchmarks", "scripts"])
+    run(["ruff", "check", "python", "tests", "benchmarks", "scripts", "examples"])
     run(["mypy"])
     run(["git", "diff", "--check"])
 

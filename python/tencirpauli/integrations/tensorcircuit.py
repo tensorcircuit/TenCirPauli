@@ -1,7 +1,7 @@
-"""Optional TensorCircuit backend-plan adapter.
+"""TensorCircuit backend-plan and circuit conversion boundary.
 
-TensorCircuit is imported only when an adapter is explicitly requested. The
-Rust core and public top-level package remain independent of that dependency.
+TensorCircuit is a required Python runtime dependency. It remains behind this
+Python boundary so that the Rust core never depends on the framework.
 """
 
 from __future__ import annotations
@@ -40,13 +40,13 @@ class TensorCircuitU1Conversion:
 
 
 def require_tensorcircuit() -> Any:
-    """Import TensorCircuit or fail with an actionable optional-dependency error."""
+    """Import TensorCircuit or report an incomplete runtime installation."""
     try:
         return importlib.import_module("tensorcircuit")
     except ImportError as error:
         raise ImportError(
-            "TensorCircuit integration requires the optional 'tensorcircuit-ng' "
-            "dependency; install tencirpauli[tensorcircuit]"
+            "TenCirPauli requires the 'tensorcircuit-ng' runtime dependency; "
+            "reinstall the package with its dependencies"
         ) from error
 
 
@@ -208,7 +208,7 @@ def u1_circuit_from_tensorcircuit(
             gate = instruction.get("gate")
             payload = getattr(gate, "tensor", gate)
             values = np.asarray(payload, dtype=np.complex128).reshape(-1)
-            item["diag"] = values
+            item["diagonal"] = values
         qir.append(item)
 
     if parameter_order is None:

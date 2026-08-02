@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple, Union, cast
+
+import numpy as np
 
 
 _Real = Union[float, int]
@@ -143,6 +145,62 @@ def _slot_set(value: Union[float, Parameter, ParameterExpr]) -> set[int]:
                 result.update(_slot_set(operand))
         return result
     return set()
+
+
+def _coerce_parameters(
+    parameters: Optional[Sequence[float] | np.ndarray[Any, Any]],
+    nparameters: int,
+) -> np.ndarray[Any, Any]:
+    """Convert a runtime parameter vector to a finite contiguous float64 array."""
+    if parameters is None:
+        if nparameters != 0:
+            raise ValueError("parameters are required for a parameterized circuit")
+        values: np.ndarray[Any, Any] = np.empty(0, dtype=np.float64)
+    else:
+        values = np.asarray(parameters, dtype=np.float64)
+    if values.ndim != 1 or values.shape[0] != nparameters:
+        raise ValueError(
+            f"parameters must have shape ({nparameters},), got {values.shape}"
+        )
+    if not np.isfinite(values).all():
+        raise ValueError("parameters must be finite")
+    return cast(np.ndarray[Any, Any], np.ascontiguousarray(values))
+
+
+def _evaluate_angle(
+    value: Angle,
+    parameters: np.ndarray[Any, Any],
+    nparameters: int,
+) -> tuple[float, np.ndarray[Any, Any]]:
+    """Evaluate one angle and its public-slot Jacobian."""
+    if isinstance(value, Parameter):
+        if value.slot >= nparameters:
+            raise ValueError(f"parameter slot {value.slot} is outside 0..{nparameters}")
+        gradient: np.ndarray[Any, Any] = np.zeros(nparameters, dtype=np.float64)
+        gradient[value.slot] = 1.0
+        return float(parameters[value.slot]), gradient
+    if not isinstance(value, ParameterExpr):
+        return _real_constant(value), np.zeros(nparameters, dtype=np.float64)
+
+    evaluated = [
+        _evaluate_angle(operand, parameters, nparameters) for operand in value.operands
+    ]
+    left, left_gradient = evaluated[0]
+    if value.operation == "neg":
+        return -left, -left_gradient
+    right, right_gradient = evaluated[1]
+    if value.operation == "add":
+        return left + right, left_gradient + right_gradient
+    if value.operation == "sub":
+        return left - right, left_gradient - right_gradient
+    if value.operation == "mul":
+        return left * right, right * left_gradient + left * right_gradient
+    if right == 0.0:
+        raise ValueError("parameter expression divides by zero")
+    return (
+        left / right,
+        (right * left_gradient - left * right_gradient) / (right * right),
+    )
 
 
 def _replace_expression(
@@ -373,13 +431,13 @@ class _CircuitProgram:
         result: list[dict[str, object]] = []
         for operation in self.operations:
             item: dict[str, object] = {
-                "gate": operation.name,
+                "name": operation.name,
                 "index": operation.wires,
             }
             if operation.angle is not None:
                 item["parameters"] = {"theta": operation.angle}
             if operation.payload is not None:
-                item["diag"] = operation.payload
+                item["diagonal"] = operation.payload
             result.append(item)
         return result
 

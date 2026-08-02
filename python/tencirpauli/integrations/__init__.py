@@ -1,4 +1,4 @@
-"""Optional framework integrations for TenCirPauli."""
+"""TensorCircuit-facing boundary helpers for TenCirPauli."""
 
 from .tensorcircuit import (
     TensorCircuitTapeConversion,

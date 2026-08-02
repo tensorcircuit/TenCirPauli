@@ -4,6 +4,13 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning once the public API reaches its first tagged release.
 
+## 0.1.0 - 2026-08-02
+
+- Implement the Phase Alpha unified Python circuit facade for `U1Circuit`, `PropagationCircuit`, and `SPPSCircuit`, including `theta=` parameter expressions, shared parameter slots, value-only `expectation()`, deterministic/stochastic `value_and_grad()`, compiled-plan caching, canonical QIR, and classmethod TensorCircuit conversion.
+- Make `tensorcircuit-ng>=1.8,<2` a required runtime dependency of the Python distribution and add TensorCircuit-backed CI coverage.
+- Add executable end-to-end VQE and TensorCircuit interoperability examples under `examples/`, with a CI smoke job.
+- Add the value-only SPPS native path without allocating a gradient buffer and add Phase Alpha contract regression tests.
+
 ## Unreleased
 
 - Complete the Phase 6 performance remediation checkpoint: fuse consecutive same-pair SWAP/iSWAP blocks, precompute diagonal phase lookups and static runs, reuse in-place adjoint state storage, add projected U1 observable reduction, and share one exact-parameter native final-state cache across facade terminals. Add fail-fast IR/input validation, width acceptance cases, and release-mode Phase 6 A/B workloads.
@@ -12,7 +19,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 - Add Phase 4 Rust-native frozen-support reverse gradients with analytic local VJPs, shared parameter slots, checkpoint replay, static PTM transpose action, typed Python results, and deterministic differential tests.
 - Add the independent Rust-native SPPS engine with smoothed importance sampling, stable prefix/suffix PAD, fixed and adaptive A/B budgets, counter-derived seeded replay, streamed fixed-chunk Rayon batching, typed estimates, and explicit unsupported-gate validation.
 - Add Phase 4 release Criterion/Python workloads and optional end-to-end comparisons against the TensorCircuit `spps_pauli_path_vqe.py` example and `PauliPropagationEngine` plus JAX `value_and_grad`.
-- Add the optional TensorCircuit QIR/SymbolCircuit-to-`GateTape` adapter for supported numeric and direct-symbol Clifford/Pauli-rotation circuits.
+- Add the TensorCircuit QIR/SymbolCircuit-to-`GateTape` adapter for supported numeric and direct-symbol Clifford/Pauli-rotation circuits.
 - Add the Rust-native `GateTape`/`PropagationEngine` with exact and per-gate Pauli-weight-projected Heisenberg propagation, supported Clifford and Pauli-rotation gates, finite real custom PTMs, product-state expectations, explicit operator materialization, typed parameter slots, and profile metadata.
 - Add the independent Phase 3 dense propagation reference, differential/boundary tests, 100-qubit packed-key coverage, release Criterion/Python workloads, and synchronized complex128 JAX warm-reference comparison.
 - Implement Phase 2 Pauli Z2 symmetry analysis, reusable Clifford tapering plans, explicit U(1) fixed-particle sectors, restricted MVP/CSR operators, public typed APIs, and deterministic setup/apply benchmark workloads.
@@ -25,5 +32,5 @@ The project follows Semantic Versioning once the public API reaches its first ta
 - Set the public materialization safety budget to 16 GiB by default, expose `DEFAULT_MAX_BYTES`, accept `None` for an unbounded best-effort guard, and add local Heisenberg nearest/next-nearest chain benchmarks with explicit larger-budget coverage.
 - Complete the Phase 1 PauliWord, PauliOperator, deterministic grouping, and Hamiltonian compiler vertical slices.
 - Add an independent NumPy dense reference, fixed regression vectors, Rust/PyO3 batch conversion, and deterministic release-mode benchmarks.
-- Add dense/COO/CSR/native MVP/backend MVP targets with explicit allocation guards and a lazy optional TensorCircuit adapter.
+- Add dense/COO/CSR/native MVP/backend MVP targets with explicit allocation guards and a lazy TensorCircuit adapter boundary.
 - Refresh the public README, typing surface, examples, and implementation-status evidence.

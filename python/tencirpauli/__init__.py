@@ -13,6 +13,7 @@ from .hamiltonian import (
     CSRMatrix,
     NativeMVPPlan,
 )
+from .integrations.tensorcircuit import backend_mvp
 from .pauli import (
     CanonicalizationArrayResult,
     CanonicalizationResult,
@@ -34,7 +35,9 @@ from .propagation import (
     PropagationValueAndGradient,
     ZeroState,
 )
-from .spps import SPPSEngine, SPPSEstimate
+from .propagation_circuit import PropagationCircuit, PropagationCircuitPlan
+from .spps import SPPSEngine, SPPSEstimate, SPPSValueEstimate
+from .spps_circuit import SPPSCircuit, SPPSCircuitPlan
 from .symmetry import (
     U1MvpPlan,
     U1RestrictedOperator,
@@ -67,12 +70,17 @@ __all__ = [
     "ProfiledExpectation",
     "PropagationBatch",
     "PropagationBatchValueAndGradient",
+    "PropagationCircuit",
+    "PropagationCircuitPlan",
     "PropagationEngine",
     "PropagationProfile",
     "PropagationValueAndGradient",
     "QWCGroupingResult",
+    "SPPSCircuit",
+    "SPPSCircuitPlan",
     "SPPSEngine",
     "SPPSEstimate",
+    "SPPSValueEstimate",
     "U1Circuit",
     "U1CircuitPlan",
     "U1CircuitValueAndGradient",
@@ -83,4 +91,5 @@ __all__ = [
     "Z2TaperingPlan",
     "ZeroState",
     "__version__",
+    "backend_mvp",
 ]

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import tensorcircuit as tc
 
 import tencirpauli as tcp
 
 
 def _circuits() -> tuple[tcp.U1Circuit, object]:
-    tc = pytest.importorskip("tensorcircuit")
     tc.set_dtype("complex128")
     tc.set_backend("numpy")
     initial = np.array([1.0, 0.3j, -0.2], dtype=np.complex128)
@@ -62,7 +62,6 @@ def test_u1_observable_matches_tensorcircuit() -> None:
 def test_u1_benchmark_workloads_match_tensorcircuit(
     nqubits: int, particles: int, layers: int
 ) -> None:
-    tc = pytest.importorskip("tensorcircuit")
     tc.set_dtype("complex128")
     tc.set_backend("numpy")
     native = tcp.U1Circuit(nqubits, k=particles, filled=list(range(particles)))

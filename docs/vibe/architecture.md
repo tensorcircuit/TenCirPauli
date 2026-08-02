@@ -4,7 +4,7 @@
 
 ## 1. 决策摘要
 
-TenCirPauli 围绕 Pauli 代数、Pauli 算符、Hamiltonian 生成、对称性分析和 Pauli propagation 建立一个可选的 Rust 原生扩展。它不替代 TensorCircuit 的 tensor backend，也不把通用量子线路数值计算搬到 Rust。Rust 负责离散、bit-packed、CPU 密集且适合批量执行的结构化工作；JAX、TensorFlow、PyTorch 和 NumPy 继续负责需要 backend tensor、自动微分或加速器执行的数值工作。
+TenCirPauli 是 TensorCircuit 的 Rust-native companion，围绕 Pauli 代数、Pauli 算符、Hamiltonian 生成、对称性分析和 Pauli propagation 提供必需的 Python runtime package。它不替代 TensorCircuit 的 tensor backend，也不把通用量子线路数值计算搬到 Rust。Rust 负责离散、bit-packed、CPU 密集且适合批量执行的结构化工作；JAX、TensorFlow、PyTorch 和 NumPy 继续负责需要 backend tensor、自动微分或加速器执行的数值工作。
 
 项目采用两种互补执行模式：Rust-native 模式在 CPU 上完成动态 Pauli operator propagation，并在 Phase 4 同时提供两类原生梯度，即只对当次非零 sparse forward trace 求导的 deterministic frozen-support reverse，以及从完整 Pauli path 空间采样得到的 SPPS 随机 value-and-gradient；backend-plan 模式由 Rust 生成稳定的代数、Hamiltonian 和 measurement plan，再由 `tc.backend` 执行需要多 backend、JIT 或加速器的数值计算。两类梯度针对不同执行合同，均为 REQUIRED 能力，不能互相替代。
 
@@ -33,7 +33,7 @@ TenCirPauli 的核心技术壁垒不是单个 bit operation，而是一套与 Te
 - 提供一个统一的动态 Pauli propagation recurrence；Clifford gate 自然走不分支的 exact fast path，`max_weight` 决定是否在聚合后应用 Pauli-weight projection。
 - 提供无需 JAX tracing 的 Rust-native forward 路径，并在后续阶段同时提供 deterministic frozen-support reverse gradient 与 SPPS stochastic value-and-gradient。
 - 提供 backend-plan 路径，使结构计算离开 JIT hot path，同时保留 `tc.backend` 数值执行和自动微分。
-- 保持核心 TensorCircuit 纯 Python 安装可用；Rust 扩展作为显式可选依赖发布。
+- TensorCircuit 是 Python distribution 的必需运行依赖；Rust wheel 或 source build 是 TenCirPauli 的执行依赖。Rust core 仍保持纯 Rust，不依赖 TensorCircuit。
 
 ## 5. 非目标
 
@@ -249,7 +249,7 @@ TenCirPauli/
 
 在模块边界和维护团队扩大前，不提前把 algebra、symmetry 和 propagation 拆成更多 crate。核心 crate 不依赖 Python，便于 fuzz/property testing 和未来 CLI/WASM 复用；Python crate 使用 PyO3、numpy bindings 和 maturin。发布优先评估 `abi3`，目标覆盖项目支持的 Python 版本以及 Linux、macOS x86_64/arm64 和 Windows wheels。
 
-Rust 扩展保持可选，不改变 TensorCircuit 当前 setuptools 构建。TensorCircuit core 中只增加轻量 adapter 和类型协议，并且只在用户调用 native API 时导入扩展。
+TensorCircuit 是 TenCirPauli Python distribution 的必需 runtime dependency；Rust extension 是 TenCirPauli 执行路径的必需组件，不改变 TensorCircuit 当前 setuptools 构建。TensorCircuit-facing adapter 仍然只位于 Python 边界，Rust core 不直接导入 framework。
 
 ### 12.3 开发环境
 
@@ -355,7 +355,7 @@ maturin --version
 
 ### 阶段四：双梯度引擎与 TensorCircuit integration
 
-同时实现两类REQUIRED gradient。第一类为deterministic frozen-support reverse：对受支持rotation gates实现analytic local VJP、reverse mode和checkpointing，只反传当次forward实际保留的nonzero sparse trace。第二类为arXiv:2607.17804 SPPS：实现sequential path sampling、importance reweighting、stable PAD、fixed/adaptive sample budgets、A/B proxy、seeded reproducibility和parallel path batching。完成TenCirPauli侧optional TensorCircuit QIR/SymbolCircuit adapter、文档和examples；不开发JAX custom call，也不加入bias/optimization-trajectory研究。
+同时实现两类REQUIRED gradient。第一类为deterministic frozen-support reverse：对受支持rotation gates实现analytic local VJP、reverse mode和checkpointing，只反传当次forward实际保留的nonzero sparse trace。第二类为arXiv:2607.17804 SPPS：实现sequential path sampling、importance reweighting、stable PAD、fixed/adaptive sample budgets、A/B proxy、seeded reproducibility和parallel path batching。完成TenCirPauli侧 TensorCircuit QIR/SymbolCircuit adapter、文档和examples；不开发JAX custom call，也不加入bias/optimization-trajectory研究。
 
 ### 阶段五：任意宽 multiword U1 Hamiltonian engine
 
@@ -421,7 +421,7 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 
 ## 19. 关键开放问题
 
-- Phase 4之后是否需要上游TensorCircuit增加`tc.pauli`入口；Phase 4只实现TenCirPauli侧optional QIR/SymbolCircuit adapter。
+- Phase 4之后是否需要上游TensorCircuit增加`tc.pauli`入口；TenCirPauli侧先提供 TensorCircuit-facing QIR/SymbolCircuit adapter。
 - Deterministic frozen-support reverse的auto checkpoint heuristic可按profile演进，但显式interval和结果语义已由Phase 4 spec冻结。
 - SPPS后续是否增加adaptive smoothing、observable-term sampling或correlated sampling；这些均不属于Phase 4。
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
@@ -435,4 +435,4 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 
 TenCirPauli 值得进入原型阶段。它与 TensorCircuit 的 Hamiltonian、VQE、time evolution、U(1) 和 Heisenberg-picture 能力直接相连，同时把 Rust 放在其最擅长且不会破坏 backend abstraction 的位置。
 
-推荐在独立仓库中从阶段零和阶段一开始，不承诺完整 native autodiff。第一交付物应该是一个可 benchmark、可验证、可选安装的 Pauli algebra、measurement grouping 与 Hamiltonian engine；第二交付物是 forward-only native weight-truncated propagation。每个阶段以真实 TensorCircuit workload 的端到端结果决定是否继续。
+推荐在独立仓库中从阶段零和阶段一开始，不承诺完整 native autodiff。第一交付物应该是一个可 benchmark、可验证、面向 TensorCircuit 用户发布的 Pauli algebra、measurement grouping 与 Hamiltonian engine；第二交付物是 forward-only native weight-truncated propagation。每个阶段以真实 TensorCircuit workload 的端到端结果决定是否继续。

@@ -1,6 +1,6 @@
 # Contributing to TenCirPauli
 
-TenCirPauli accepts focused changes that preserve the separation between the pure Rust core, the PyO3 boundary, the public Python API, and optional framework integrations.
+TenCirPauli accepts focused changes that preserve the separation between the pure Rust core, the PyO3 boundary, the public TensorCircuit-facing Python API, and framework boundary code.
 
 ## Development checks
 
@@ -10,8 +10,8 @@ Run the following before submitting a substantial change:
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-black --check python tests benchmarks scripts
-ruff check python tests benchmarks scripts
+black --check python tests benchmarks scripts examples
+ruff check python tests benchmarks scripts examples
 mypy
 maturin develop --release
 pytest
