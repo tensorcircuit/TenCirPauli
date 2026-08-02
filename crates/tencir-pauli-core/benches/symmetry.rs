@@ -66,10 +66,21 @@ fn benchmark_z2(criterion: &mut Criterion) {
 
 fn benchmark_u1(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("symmetry/u1");
-    for (nqubits, particle_number) in [(12_usize, 2_usize), (16, 8)] {
+    for (nqubits, particle_number) in [
+        (12_usize, 2_usize),
+        (16, 8),
+        (63, 2),
+        (64, 2),
+        (65, 2),
+        (128, 2),
+        (129, 2),
+        (128, 126),
+        (256, 1),
+        (256, 2),
+    ] {
         let operator = make_hopping(nqubits);
         let sector = U1Sector::new(nqubits, particle_number).unwrap();
-        let restricted = U1RestrictedOperator::new(&operator, sector, u128::MAX).unwrap();
+        let restricted = U1RestrictedOperator::new(&operator, sector.clone(), u128::MAX).unwrap();
         let plan = restricted.mvp_plan(u128::MAX).unwrap();
         let state = (0..plan.dimension())
             .map(|index| Complex64::new(index as f64, -(index as f64)))
@@ -83,7 +94,10 @@ fn benchmark_u1(criterion: &mut Criterion) {
             &operator,
             |bencher, operator_input| {
                 bencher.iter(|| {
-                    black_box(U1RestrictedOperator::new(operator_input, sector, u128::MAX).unwrap())
+                    black_box(
+                        U1RestrictedOperator::new(operator_input, sector.clone(), u128::MAX)
+                            .unwrap(),
+                    )
                 });
             },
         );

@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–4 已完成：deterministic frozen-support reverse、SPPS fixed/adaptive engines、release benchmark/profile 和 optional TensorCircuit adapter 已贯通。最终 full benchmark record/compare、内存与可选依赖审计及 Phase 1–4 regression 已完成；项目暂不增加 MSRV 1.85 CI job。
+Phase 1–5 已完成：deterministic frozen-support reverse、SPPS fixed/adaptive engines、optional TensorCircuit adapter 和 arbitrary-width packed U1 restricted Hamiltonian engine 已贯通。最终 full benchmark record/compare、内存与可选依赖审计及 Phase 1–5 regression 已完成；项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -49,7 +49,7 @@ Phase 2 Spike 已完成：自动 Z2 Pauli symmetry analysis、可复用的最小
 
 Phase 2 implementation evidence：pure-Rust `symmetry.rs` performs deterministic packed GF(2) null-space analysis and in-place Clifford tapering with one authoritative row-sign store; `sector.rs` provides combinatorial U(1) rank/unrank, precomputed term masks, aggregated sector-leakage validation, destination-major flat restricted storage shared through `Arc`, parallel MVP, and reduced dense/COO/CSR; the PyO3 layer exposes coarse batched calls; and `python/tencirpauli/symmetry.py` exports typed public wrappers. `tests/test_symmetry.py` covers the reported `ZYY + 2*YIZ` projector regression, random n=4 dense projectors, TFIM-style and multi-generator Z2 cases, hopping cancellation, complex/Y U1 properties, basis ordering, dense/COO/CSR/MVP projection, leakage, width boundary, and invalid inputs.
 
-Owner decisions recorded on 2026-08-02：`max_bytes` remains a cheap best-effort guard rather than an exact peak-RSS contract；stable cross-process Z2 plan serialization is de-scoped because the primary workflow is direct Python access to sparse matrices、MVP plans and functions；current native U1 restriction is limited to `nqubits < usize::BITS`，with 64+ qubit multiword restriction scheduled for Phase 5 and TensorCircuit-style U1 circuit/time evolution scheduled for Phase 6。
+Owner decisions recorded on 2026-08-02：`max_bytes` remains a cheap best-effort guard rather than an exact peak-RSS contract；stable cross-process Z2 plan serialization is de-scoped because the primary workflow is direct Python access to sparse matrices、MVP plans and functions；the pre-Phase-5 native U1 restriction was limited to `nqubits < usize::BITS` and is now resolved by the arbitrary-width packed-`u64` engine。TensorCircuit-style U1 circuit/time evolution remains scheduled for Phase 6。Phase 5 representation、index、algorithm and acceptance contracts were frozen on 2026-08-02 in `phase-5-spec.md`：full-space occupation uses any number of `u64` limbs，restricted/public sparse indices remain bounded `u64`，and 129/256-qubit tests prevent a new `u128` boundary。
 
 Phase 3 owner decisions recorded on 2026-08-02：propagation uses one recurrence parameterized only by `max_weight`，with `None` or `max_weight >= nqubits` recovering exact propagation and Clifford gates acting as an automatic no-branch fast path；projection occurs only after canonical aggregation；coefficient cutoff、top-k、fixed buffers and discarded-norm error estimates are excluded；the first gate set is `X/Y/Z/H/S/Sdg/CNOT/CZ/SWAP` plus `RX/RY/RZ/RXX/RYY/RZZ`；custom one-/two-qubit PTM accepts finite real `float64` only；initial states cover zero、computational-basis and product Bloch states；Rust computes the default expectation result and materializes the propagated operator only on request；all public `DEFAULT_MAX_BYTES` values migrate from the currently implemented 4 GiB to 16 GiB in Phase 3 P0 and may be explicitly disabled with `None`；performance has no fixed speedup completion threshold but requires synchronized warm-JIT comparison、profiling and continued bottleneck-driven optimization。
 
@@ -127,13 +127,26 @@ The 2026-08-02 review remediation also closes the finite-coefficient aggregation
 
 A native-only regression workload now extends the coverage to 128 qubits and 12 layers with `max_weight=4`, alternating Clifford layers, sparse RZ rotations, and scalar expectation only. Clean full release record `phase3-native-scale-20260802` (commit `93e3447`) measured approximately `0.911 ms` Python public median and `1.198 ms` Rust Criterion median on the same arm64/macOS machine; the record completed with 79 Python benchmark cases and 36 optional skips. This point is intentionally not a TensorCircuit comparison: it exists to catch scaling regressions in the inline 128-qubit key and deep dynamic recurrence. Python smoke executes the point once for correctness, while full benchmark recording measures its steady distribution; benchmark results remain informational rather than automatic wall-time gates.
 
+## Phase 5 completion checkpoint
+
+Phase 5 P0–P5 is implemented. `U1Sector` now stores checked combinatorial data and exposes packed `rank_words`, caller-owned `unrank_into`, `word_count`, and `basis_words_packed` primitives; the old narrow Rust convenience methods remain available through the native integer boundary. Restricted setup compiles flat multiword X/Z masks, groups terms by X mask in canonical input order, aggregates each source/destination before exact-zero removal and leakage validation, and builds deterministic destination-major storage without a full-space basis or per-transition heap allocation. Restricted indices and public sparse arrays remain checked bounded indices, while the occupation representation has no 64- or 128-qubit semantic ceiling.
+
+The independent Python big-int reference in `tests/test_phase5_u1.py` covers TensorCircuit basis ordering, packed padding, multiword Pauli action, complex/Y phase, exact-zero XX+YY cancellation, sparse differential results, and post-aggregation leakage. Boundary tests cover 63/64/65, 127/128/129, and 256 qubits, including low-particle and low-hole sectors; the Rust property tests cover particle and particle-hole rank/unrank paths and three-limb boundary lookup.
+
+Verification evidence: `python scripts/check.py --benchmark smoke` passed with Rust 21 tests, Python 130 passed and 4 optional skips, Black, Ruff, strict mypy, Clippy `-D warnings`, release `maturin develop --release --locked`, and all Criterion/Python smoke workloads. The full release records are `phase5-arbitrary-width-20260802` (Rust) and `phase5-arbitrary-width-20260802-python` (Python): the Python record completed 107 benchmark cases with 41 optional skips.
+
+Representative release measurements on the local arm64/macOS machine are approximately 14.8 ms core setup and 82.6 µs core steady MVP for 129q/k2, 129.4 ms core setup and 108.7 µs core steady MVP for 256q/k2, and 15.5 ms native Python setup plus 0.11 ms Python steady MVP for 129q/k2. The 256q/k2 Python setup median was 131.8 ms and the steady MVP median was 0.21 ms. The hot-path optimization changed rank from a per-qubit scan to limb set-bit/zero-bit iteration; the release boundary and low-hole measurements remain matched in combinatorial scale. These are informational same-machine measurements, not CI wall-time gates.
+
+The representative release Criterion profile identifies setup work in combinatorial source generation, packed X/Z parity aggregation, and combinatorial destination rank; steady execution remains the existing destination-major gather. A macOS `/usr/bin/sample` attempt was rejected by the local process-inspection permission, so no system-sampler percentages are claimed; the benchmark records and code-level hot-path conclusion are the reproducible profile evidence for this checkout.
+
+Known boundary remains intentional: Phase 5 does not materialize full-space `2**n` targets and does not implement U1Circuit, number-conserving circuit execution, time evolution, Trotterization, backend/JIT execution, or gradients; those remain Phase 6 scope.
+
 ## Next actions
 
 Phase 4 handoff and the 2026-08-02 acceptance remediation are complete. Future performance work should keep the current correctness and benchmark gates, and only introduce further optimization when a representative release profile identifies a bottleneck; preserve the distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
 
 ## Scheduled future phases
 
-- **Phase 5 — 64+ qubit multiword U1 Hamiltonian engine**：implement packed multiword source/destination transitions、combinatorial rank/lookup、restricted MVP/CSR and 64/65/128-qubit low-particle-number differential/scaling benchmarks。This phase starts after the current Phase 2 remediation and the Phase 3–4 propagation/integration boundaries are stable。
 - **Phase 6 — U1Circuit and time evolution**：implement a TensorCircuit `U1Circuit`-compatible fixed-particle-number circuit workflow covering state preparation、number-conserving gates、time-independent/time-dependent or Trotter evolution、observables and TensorCircuit differential tests。This phase starts after the Phase 5 multiword engine and must freeze its gate-tape/adapter、backend/JIT and gradient scope before implementation。
 - **Phase 7 — Qudit generalized Pauli/Weyl**：preserve the existing qudit word/operator/Hamiltonian compiler roadmap after the U1 engine and circuit semantics are stable；do not mix it into the current qubit Phase 2 remediation。
 

@@ -25,6 +25,16 @@ def make_hopping(nqubits: int = 12) -> PauliOperator:
     return PauliOperator.from_terms(nqubits, terms)
 
 
+def make_wide_hopping(nqubits: int) -> PauliOperator:
+    """Build the fixed Phase 5 nearest-neighbor hopping workload."""
+    terms = []
+    for index in range(nqubits - 1):
+        prefix = "I" * index
+        suffix = "I" * (nqubits - 2 - index)
+        terms.extend(((prefix + "XX" + suffix, 0.5), (prefix + "YY" + suffix, 0.5)))
+    return PauliOperator.from_terms(nqubits, terms)
+
+
 def make_large_diagonal_operator() -> PauliOperator:
     """Make a 26-qubit diagonal workload without materializing its matrix."""
     identity = (0,) * 26
@@ -95,6 +105,72 @@ def test_u1_restricted_coo(benchmark: BenchmarkFixture) -> None:
     np.testing.assert_array_equal(result.row, expected.row)
     np.testing.assert_array_equal(result.column, expected.column)
     np.testing.assert_allclose(result.data, expected.data)
+
+
+@pytest.mark.performance_large
+@pytest.mark.parametrize(
+    ("nqubits", "particle_number"),
+    [
+        (63, 2),
+        (64, 2),
+        (65, 2),
+        (128, 2),
+        (129, 2),
+        (128, 126),
+        (256, 1),
+        (256, 2),
+    ],
+)
+def test_phase5_wide_u1_setup_and_mvp(
+    benchmark: BenchmarkFixture, nqubits: int, particle_number: int
+) -> None:
+    operator = make_wide_hopping(nqubits)
+    sector = U1Sector(nqubits, particle_number)
+    restricted = operator.restrict_u1(sector)
+    plan = restricted.mvp_plan()
+    state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
+    expected = plan.apply(state)
+    benchmark.extra_info.update(
+        {
+            "nqubits": nqubits,
+            "particle_number": particle_number,
+            "word_count": (nqubits + 63) // 64,
+            "dimension": plan.dimension,
+            "term_count": len(operator.terms),
+            "nnz": int(restricted.csr().data.size),
+        }
+    )
+    result = benchmark.pedantic(
+        operator.restrict_u1, args=(sector,), rounds=3, iterations=1
+    )
+    np.testing.assert_allclose(plan.apply(state), expected)
+    assert result.dimension == plan.dimension
+
+
+@pytest.mark.performance_large
+@pytest.mark.parametrize(
+    ("nqubits", "particle_number"),
+    [(63, 2), (64, 2), (65, 2), (128, 2), (129, 2), (128, 126), (256, 1), (256, 2)],
+)
+def test_phase5_wide_u1_steady_mvp(
+    benchmark: BenchmarkFixture, nqubits: int, particle_number: int
+) -> None:
+    operator = make_wide_hopping(nqubits)
+    restricted = operator.restrict_u1(U1Sector(nqubits, particle_number))
+    plan = restricted.mvp_plan()
+    state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
+    expected = plan.apply(state)
+    result = benchmark.pedantic(plan.apply, args=(state,), rounds=5, iterations=1)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "nqubits": nqubits,
+            "particle_number": particle_number,
+            "word_count": (nqubits + 63) // 64,
+            "dimension": plan.dimension,
+            "nnz": int(restricted.csr().data.size),
+        }
+    )
 
 
 @pytest.mark.performance_large

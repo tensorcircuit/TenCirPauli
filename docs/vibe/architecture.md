@@ -357,11 +357,11 @@ maturin --version
 
 同时实现两类REQUIRED gradient。第一类为deterministic frozen-support reverse：对受支持rotation gates实现analytic local VJP、reverse mode和checkpointing，只反传当次forward实际保留的nonzero sparse trace。第二类为arXiv:2607.17804 SPPS：实现sequential path sampling、importance reweighting、stable PAD、fixed/adaptive sample budgets、A/B proxy、seeded reproducibility和parallel path batching。完成TenCirPauli侧optional TensorCircuit QIR/SymbolCircuit adapter、文档和examples；不开发JAX custom call，也不加入bias/optimization-trajectory研究。
 
-### 阶段五：64+ qubit multiword U1 Hamiltonian engine
+### 阶段五：任意宽 multiword U1 Hamiltonian engine
 
-在阶段二的 static restricted Hamiltonian 语义与阶段四的 Python/TensorCircuit integration boundary 稳定后，将 U1 basis index 从单字 `usize` 扩展为 packed multiword representation。实现 64+ qubit low-particle-number source/destination transitions、combinatorial rank/lookup、sector-preservation validation、restricted MVP 和 CSR，并保持现有 Python `U1Sector`/`U1RestrictedOperator` 语义兼容。
+已完成：full-space U1 occupation word 使用任意数量的 packed `u64` limbs，不在128 qubits处建立新边界。Restricted-space logical index和公开sparse index保持有界`u64`，native内存寻址前执行checked `usize`/NumPy `intp` gate；wide low-particle/low-hole source/destination transitions、combinatorial rank/lookup、sector-preservation validation、restricted MVP和CSR已贯通，并保持现有Python `U1Sector`/`U1RestrictedOperator`语义兼容。
 
-该阶段以 64、65 和 128 qubits 的 low-k differential tests 为 correctness gate，并记录 term count、particle number、sector dimension、setup、steady MVP、CSR storage 和 scaling。它不包含 circuit execution 或 time evolution；这些属于阶段六。
+该阶段以63/64/65、127/128/129和256 qubits的low-k/low-hole differential tests为correctness gate，并记录word count、term/X-group count、particle number、sector dimension、setup、steady MVP、CSR storage和scaling。它不包含circuit execution或time evolution；这些属于阶段六。完整冻结合同见`phase-5-spec.md`。
 
 ### 阶段六：U1Circuit 与含时演化
 
