@@ -1004,6 +1004,56 @@ pub(crate) fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (P
     (result, sign)
 }
 
+pub(crate) fn apply_clifford1_in_place(key: &mut PackedKey, gate: Clifford1, wire: usize) -> f64 {
+    let code = key.code_at(wire);
+    let (mapped_code, sign) = match gate {
+        Clifford1::X => match code {
+            0 => (0, 1.0),
+            1 => (1, 1.0),
+            2 => (2, -1.0),
+            3 => (3, -1.0),
+            _ => unreachable!(),
+        },
+        Clifford1::Y => match code {
+            0 => (0, 1.0),
+            1 => (1, -1.0),
+            2 => (2, 1.0),
+            3 => (3, -1.0),
+            _ => unreachable!(),
+        },
+        Clifford1::Z => match code {
+            0 => (0, 1.0),
+            1 => (1, -1.0),
+            2 => (2, -1.0),
+            3 => (3, 1.0),
+            _ => unreachable!(),
+        },
+        Clifford1::H => match code {
+            0 => (0, 1.0),
+            1 => (3, 1.0),
+            2 => (2, -1.0),
+            3 => (1, 1.0),
+            _ => unreachable!(),
+        },
+        Clifford1::S => match code {
+            0 => (0, 1.0),
+            1 => (2, -1.0),
+            2 => (1, 1.0),
+            3 => (3, 1.0),
+            _ => unreachable!(),
+        },
+        Clifford1::Sdg => match code {
+            0 => (0, 1.0),
+            1 => (2, 1.0),
+            2 => (1, -1.0),
+            3 => (3, 1.0),
+            _ => unreachable!(),
+        },
+    };
+    key.set_code(wire, mapped_code);
+    sign
+}
+
 pub(crate) fn map_clifford2(
     key: &PackedKey,
     gate: Clifford2,
@@ -1017,6 +1067,20 @@ pub(crate) fn map_clifford2(
     result.set_code(wire0, mapped_first);
     result.set_code(wire1, mapped_second);
     (result, multiplier)
+}
+
+pub(crate) fn apply_clifford2_in_place(
+    key: &mut PackedKey,
+    gate: Clifford2,
+    wire0: usize,
+    wire1: usize,
+) -> f64 {
+    let first = key.code_at(wire0);
+    let second = key.code_at(wire1);
+    let (mapped_first, mapped_second, multiplier) = clifford2_local_map(gate, first, second);
+    key.set_code(wire0, mapped_first);
+    key.set_code(wire1, mapped_second);
+    multiplier
 }
 
 fn clifford2_local_map(gate: Clifford2, first: u8, second: u8) -> (u8, u8, f64) {
@@ -1107,18 +1171,19 @@ pub(crate) fn multiply_by_generator(
     (result, phase)
 }
 
-pub(crate) fn generator_phase(
+pub(crate) fn generator_transition(
     key: &PackedKey,
     generator_code: u8,
     wire0: usize,
     wire1: Option<usize>,
-) -> PauliPhase {
-    let mut phase = PauliPhase::PlusOne;
-    for wire in [Some(wire0), wire1].into_iter().flatten() {
-        let (_, local_phase) = local_product(generator_code, key.code_at(wire));
-        phase = phase.multiply(local_phase);
+) -> (PauliPhase, u8, u8) {
+    let (first, first_phase) = local_product(generator_code, key.code_at(wire0));
+    if let Some(second_wire) = wire1 {
+        let (second, second_phase) = local_product(generator_code, key.code_at(second_wire));
+        (first_phase.multiply(second_phase), first, second)
+    } else {
+        (first_phase, first, 0)
     }
-    phase
 }
 
 fn local_product(left: u8, right: u8) -> (u8, PauliPhase) {
@@ -1200,9 +1265,27 @@ fn expectation_from_dynamic_terms(
 }
 
 pub(crate) fn expectation_of_key(key: &PackedKey, state: &ProductState, nqubits: usize) -> f64 {
-    (0..nqubits).fold(1.0, |product, qubit| {
-        product * expectation_component(state, key.code_at(qubit), qubit)
-    })
+    match state {
+        ProductState::Zero => match key {
+            PackedKey::Inline { x, .. } => {
+                if (0..packed_word_count(nqubits)).all(|index| x[index] == 0) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            PackedKey::Wide { x, .. } => {
+                if x.iter().all(|word| *word == 0) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        },
+        _ => (0..nqubits).fold(1.0, |product, qubit| {
+            product * expectation_component(state, key.code_at(qubit), qubit)
+        }),
+    }
 }
 
 fn expectation_component(state: &ProductState, code: u8, qubit: usize) -> f64 {
@@ -1262,6 +1345,59 @@ mod tests {
         assert_eq!(clifford2_local_map(Clifford2::Cnot, 2, 2), (1, 3, -1.0));
         assert_eq!(clifford2_local_map(Clifford2::Cz, 1, 2), (2, 1, -1.0));
         assert_eq!(clifford2_local_map(Clifford2::Swap, 1, 3), (3, 1, 1.0));
+    }
+
+    #[test]
+    fn in_place_path_updates_match_allocating_maps() {
+        for gate in [
+            Clifford1::X,
+            Clifford1::Y,
+            Clifford1::Z,
+            Clifford1::H,
+            Clifford1::S,
+            Clifford1::Sdg,
+        ] {
+            for code in 0..4 {
+                let word = PauliWord::from_codes(1, &[code]).unwrap();
+                let key = PackedKey::from_word(&word);
+                let (expected, expected_sign) = map_clifford1(&key, gate, 0);
+                let mut actual = key.clone();
+                let actual_sign = apply_clifford1_in_place(&mut actual, gate, 0);
+                assert_eq!(actual, expected);
+                assert_eq!(actual_sign, expected_sign);
+            }
+        }
+        for gate in [Clifford2::Cnot, Clifford2::Cz, Clifford2::Swap] {
+            for first in 0..4 {
+                for second in 0..4 {
+                    let word = PauliWord::from_codes(2, &[first, second]).unwrap();
+                    let key = PackedKey::from_word(&word);
+                    let (expected, expected_sign) = map_clifford2(&key, gate, 0, 1);
+                    let mut actual = key.clone();
+                    let actual_sign = apply_clifford2_in_place(&mut actual, gate, 0, 1);
+                    assert_eq!(actual, expected);
+                    assert_eq!(actual_sign, expected_sign);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generator_transition_matches_allocating_product() {
+        for generator in 1..=3 {
+            for code in 0..4 {
+                let word = PauliWord::from_codes(1, &[code]).unwrap();
+                let key = PackedKey::from_word(&word);
+                let (expected, expected_phase) = multiply_by_generator(&key, generator, 0, None);
+                let (phase, mapped_first, mapped_second) =
+                    generator_transition(&key, generator, 0, None);
+                let mut actual = key.clone();
+                actual.set_code(0, mapped_first);
+                assert_eq!(actual, expected);
+                assert_eq!(phase, expected_phase);
+                assert_eq!(mapped_second, 0);
+            }
+        }
     }
 
     #[test]

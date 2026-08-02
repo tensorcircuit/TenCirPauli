@@ -9,10 +9,10 @@ use std::collections::HashSet;
 use rayon::prelude::*;
 
 use crate::error::PauliError;
-use crate::gate::{GateKind, GateOperation, ParameterRef};
+use crate::gate::{Clifford1, Clifford2, GateKind, GateOperation, ParameterRef};
 use crate::operator::PauliOperator;
 use crate::propagation::{
-    expectation_of_key, generator_phase, map_clifford1, map_clifford2, multiply_by_generator,
+    apply_clifford1_in_place, apply_clifford2_in_place, expectation_of_key, generator_transition,
     phase_sign_i, resolve_parameter, rotation_code, validate_state, PackedKey, ProductState,
 };
 
@@ -37,18 +37,52 @@ pub struct SPPSEstimate {
 #[derive(Clone, Debug)]
 pub struct SPPSEngine {
     nqubits: usize,
-    operations: Vec<GateOperation>,
+    operations: Vec<SppsOperation>,
     observable: PauliOperator,
     initial_state: ProductState,
     smoothing: f64,
     nparameters: usize,
 }
 
-#[derive(Clone, Copy)]
-struct ResolvedRotation {
-    cosine: f64,
-    sine: f64,
-    slot: Option<usize>,
+#[derive(Clone, Debug)]
+enum SppsOperation {
+    Clifford1 {
+        gate: Clifford1,
+        wire: usize,
+    },
+    Clifford2 {
+        gate: Clifford2,
+        wire0: usize,
+        wire1: usize,
+    },
+    Rotation {
+        generator_code: u8,
+        wire0: usize,
+        wire1: Option<usize>,
+        parameter: ParameterRef,
+        source_index: usize,
+    },
+}
+
+enum ResolvedOperation {
+    Clifford1 {
+        gate: Clifford1,
+        wire: usize,
+    },
+    Clifford2 {
+        gate: Clifford2,
+        wire0: usize,
+        wire1: usize,
+    },
+    Rotation {
+        generator_code: u8,
+        wire0: usize,
+        wire1: Option<usize>,
+        cosine: f64,
+        sine: f64,
+        slot: Option<usize>,
+        source_index: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -74,8 +108,6 @@ struct PathScratch {
     ratios: Vec<f64>,
     derivatives: Vec<f64>,
     slots: Vec<Option<usize>>,
-    prefix: Vec<f64>,
-    suffix: Vec<f64>,
 }
 
 impl PathScratch {
@@ -84,8 +116,6 @@ impl PathScratch {
             ratios: Vec::with_capacity(gate_count),
             derivatives: Vec::with_capacity(gate_count),
             slots: Vec::with_capacity(gate_count),
-            prefix: Vec::with_capacity(gate_count + 1),
-            suffix: Vec::with_capacity(gate_count + 1),
         }
     }
 
@@ -93,8 +123,6 @@ impl PathScratch {
         self.ratios.clear();
         self.derivatives.clear();
         self.slots.clear();
-        self.prefix.clear();
-        self.suffix.clear();
     }
 }
 
@@ -166,9 +194,38 @@ impl SPPSEngine {
                 });
             }
         }
+        let path_operations = operations
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(source_index, operation)| match &operation.kind {
+                GateKind::Clifford1 { gate, wire } => SppsOperation::Clifford1 {
+                    gate: *gate,
+                    wire: *wire,
+                },
+                GateKind::Clifford2 { gate, wire0, wire1 } => SppsOperation::Clifford2 {
+                    gate: *gate,
+                    wire0: *wire0,
+                    wire1: *wire1,
+                },
+                GateKind::Rotation {
+                    axis,
+                    wire0,
+                    wire1,
+                    parameter,
+                } => SppsOperation::Rotation {
+                    generator_code: rotation_code(*axis),
+                    wire0: *wire0,
+                    wire1: *wire1,
+                    parameter: *parameter,
+                    source_index,
+                },
+                GateKind::CustomPtm { .. } => unreachable!("custom PTM was rejected above"),
+            })
+            .collect();
         Ok(Self {
             nqubits,
-            operations,
+            operations: path_operations,
             observable,
             initial_state,
             smoothing,
@@ -209,7 +266,7 @@ impl SPPSEngine {
             });
         }
         self.validate_parameters(parameters)?;
-        let rotations = self.resolve_rotations(parameters)?;
+        let operations = self.resolve_operations(parameters)?;
         let term_count = self.observable.terms().len();
         if term_count == 0 {
             return Ok(empty_estimate(self.nparameters, seed, 1, false));
@@ -217,24 +274,27 @@ impl SPPSEngine {
         let mut stats = (0..term_count)
             .map(|_| TermStats::new(self.nparameters))
             .collect::<Vec<_>>();
-        let mut scratch = PathScratch::new(self.operations.len());
-        for (term_index, term) in self.observable.terms().iter().enumerate() {
-            run_samples_batched(
-                &self.operations,
-                &self.initial_state,
-                self.nqubits,
-                self.smoothing,
-                &rotations,
-                term,
-                term_index,
-                0,
-                0,
-                samples_per_term,
-                seed,
-                &mut stats[term_index],
-                &mut scratch,
-            )?;
-        }
+        stats
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|(term_index, stats)| {
+                let mut scratch = PathScratch::new(self.operations.len());
+                let term = &self.observable.terms()[term_index];
+                run_samples(
+                    &operations,
+                    &self.initial_state,
+                    self.nqubits,
+                    self.smoothing,
+                    term,
+                    term_index,
+                    0,
+                    0,
+                    samples_per_term,
+                    seed,
+                    stats,
+                    &mut scratch,
+                )
+            })?;
         let (value, gradient, standard_error) = combine_fixed(&stats, self.nparameters)?;
         Ok(SPPSEstimate {
             value,
@@ -280,7 +340,7 @@ impl SPPSEngine {
             });
         }
         self.validate_parameters(parameters)?;
-        let rotations = self.resolve_rotations(parameters)?;
+        let operations = self.resolve_operations(parameters)?;
         let term_count = self.observable.terms().len();
         if term_count == 0 {
             return Ok(empty_estimate(self.nparameters, seed, 2, true));
@@ -312,11 +372,10 @@ impl SPPSEngine {
                 if next > old {
                     let term = &self.observable.terms()[term_index];
                     run_samples_batched(
-                        &self.operations,
+                        &operations,
                         &self.initial_state,
                         self.nqubits,
                         self.smoothing,
-                        &rotations,
                         term,
                         term_index,
                         0,
@@ -327,11 +386,10 @@ impl SPPSEngine {
                         &mut scratch,
                     )?;
                     run_samples_batched(
-                        &self.operations,
+                        &operations,
                         &self.initial_state,
                         self.nqubits,
                         self.smoothing,
-                        &rotations,
                         term,
                         term_index,
                         1,
@@ -404,22 +462,43 @@ impl SPPSEngine {
         Ok(())
     }
 
-    fn resolve_rotations(
-        &self,
-        parameters: &[f64],
-    ) -> Result<Vec<Option<ResolvedRotation>>, PauliError> {
+    fn resolve_operations(&self, parameters: &[f64]) -> Result<Vec<ResolvedOperation>, PauliError> {
         self.operations
             .iter()
-            .map(|operation| match &operation.kind {
-                GateKind::Rotation { parameter, .. } => {
+            .map(|operation| match operation {
+                SppsOperation::Clifford1 { gate, wire, .. } => Ok(ResolvedOperation::Clifford1 {
+                    gate: *gate,
+                    wire: *wire,
+                }),
+                SppsOperation::Clifford2 {
+                    gate, wire0, wire1, ..
+                } => Ok(ResolvedOperation::Clifford2 {
+                    gate: *gate,
+                    wire0: *wire0,
+                    wire1: *wire1,
+                }),
+                SppsOperation::Rotation {
+                    generator_code,
+                    wire0,
+                    wire1,
+                    parameter,
+                    source_index,
+                } => {
                     let (cosine, sine) = resolve_parameter(*parameter, parameters)?;
                     let slot = match parameter {
                         ParameterRef::Slot(index) => Some(*index),
                         ParameterRef::Static { .. } => None,
                     };
-                    Ok(Some(ResolvedRotation { cosine, sine, slot }))
+                    Ok(ResolvedOperation::Rotation {
+                        generator_code: *generator_code,
+                        wire0: *wire0,
+                        wire1: *wire1,
+                        cosine,
+                        sine,
+                        slot,
+                        source_index: *source_index,
+                    })
                 }
-                _ => Ok(None),
             })
             .collect()
     }
@@ -447,11 +526,10 @@ fn empty_estimate(
 
 #[allow(clippy::too_many_arguments)]
 fn run_samples_batched(
-    operations: &[GateOperation],
+    operations: &[ResolvedOperation],
     initial_state: &ProductState,
     nqubits: usize,
     smoothing: f64,
-    rotations: &[Option<ResolvedRotation>],
     term: &crate::operator::PauliTerm,
     term_index: usize,
     replicate: usize,
@@ -468,7 +546,6 @@ fn run_samples_batched(
             initial_state,
             nqubits,
             smoothing,
-            rotations,
             term,
             term_index,
             replicate,
@@ -494,7 +571,6 @@ fn run_samples_batched(
                 initial_state,
                 nqubits,
                 smoothing,
-                rotations,
                 term,
                 term_index,
                 replicate,
@@ -526,11 +602,10 @@ fn run_samples_batched(
 
 #[allow(clippy::too_many_arguments)]
 fn run_samples(
-    operations: &[GateOperation],
+    operations: &[ResolvedOperation],
     initial_state: &ProductState,
     nqubits: usize,
     smoothing: f64,
-    rotations: &[Option<ResolvedRotation>],
     term: &crate::operator::PauliTerm,
     term_index: usize,
     replicate: usize,
@@ -544,37 +619,38 @@ fn run_samples(
         scratch.clear();
         let mut current = PackedKey::from_word(&term.word);
         let mut sign = 1.0;
-        for (reverse_index, operation) in operations.iter().rev().enumerate() {
-            let gate_index = operations.len() - 1 - reverse_index;
-            match &operation.kind {
-                GateKind::Clifford1 { gate, wire } => {
-                    let (mapped, multiplier) = map_clifford1(&current, *gate, *wire);
-                    current = mapped;
-                    sign *= multiplier;
+        for operation in operations {
+            match operation {
+                ResolvedOperation::Clifford1 { gate, wire } => {
+                    sign *= apply_clifford1_in_place(&mut current, *gate, *wire);
                 }
-                GateKind::Clifford2 { gate, wire0, wire1 } => {
-                    let (mapped, multiplier) = map_clifford2(&current, *gate, *wire0, *wire1);
-                    current = mapped;
-                    sign *= multiplier;
+                ResolvedOperation::Clifford2 { gate, wire0, wire1 } => {
+                    sign *= apply_clifford2_in_place(&mut current, *gate, *wire0, *wire1);
                 }
-                GateKind::Rotation {
-                    axis, wire0, wire1, ..
+                ResolvedOperation::Rotation {
+                    generator_code,
+                    wire0,
+                    wire1,
+                    cosine,
+                    sine,
+                    slot,
+                    source_index,
                 } => {
-                    let resolved = rotations[gate_index].expect("rotation was resolved");
-                    let phase = generator_phase(&current, rotation_code(*axis), *wire0, *wire1);
+                    let (phase, mapped_first, mapped_second) =
+                        generator_transition(&current, *generator_code, *wire0, *wire1);
                     if matches!(
                         phase,
                         crate::word::PauliPhase::PlusI | crate::word::PauliPhase::MinusI
                     ) {
-                        let q = (resolved.cosine.abs() + smoothing)
-                            / (resolved.cosine.abs() + resolved.sine.abs() + 2.0 * smoothing);
+                        let q = (cosine.abs() + smoothing)
+                            / (cosine.abs() + sine.abs() + 2.0 * smoothing);
                         let random = counter_random(
                             seed,
                             1,
                             term_index,
                             replicate,
                             sample_index,
-                            gate_index,
+                            *source_index,
                         );
                         if random < q {
                             if q <= 0.0 {
@@ -582,39 +658,29 @@ fn run_samples(
                                     index: sample_index,
                                 });
                             }
-                            scratch.ratios.push(resolved.cosine / q);
-                            scratch
-                                .derivatives
-                                .push(resolved.slot.map_or(0.0, |_| -resolved.sine / q));
-                            scratch.slots.push(resolved.slot);
+                            scratch.ratios.push(cosine / q);
+                            scratch.derivatives.push(slot.map_or(0.0, |_| -sine / q));
+                            scratch.slots.push(*slot);
                         } else {
                             let probability = 1.0 - q;
                             let local_sign = phase_sign_i(phase);
-                            current = multiply_by_generator(
-                                &current,
-                                rotation_code(*axis),
-                                *wire0,
-                                *wire1,
-                            )
-                            .0;
+                            current.set_code(*wire0, mapped_first);
+                            if let Some(second_wire) = wire1 {
+                                current.set_code(*second_wire, mapped_second);
+                            }
                             if probability <= 0.0 {
                                 return Err(PauliError::NonFiniteCoefficient {
                                     index: sample_index,
                                 });
                             }
+                            scratch.ratios.push(local_sign * sine / probability);
                             scratch
-                                .ratios
-                                .push(local_sign * resolved.sine / probability);
-                            scratch.derivatives.push(
-                                resolved
-                                    .slot
-                                    .map_or(0.0, |_| local_sign * resolved.cosine / probability),
-                            );
-                            scratch.slots.push(resolved.slot);
+                                .derivatives
+                                .push(slot.map_or(0.0, |_| local_sign * cosine / probability));
+                            scratch.slots.push(*slot);
                         }
                     }
                 }
-                GateKind::CustomPtm { .. } => return Err(PauliError::UnsupportedSppsGate),
             }
             if !sign.is_finite() {
                 return Err(PauliError::NonFiniteCoefficient {
@@ -624,16 +690,29 @@ fn run_samples(
         }
 
         let local_expectation = expectation_of_key(&current, initial_state, nqubits);
-        scratch.prefix.resize(scratch.ratios.len() + 1, 1.0);
-        scratch.suffix.resize(scratch.ratios.len() + 1, 1.0);
-        for index in 0..scratch.ratios.len() {
-            scratch.prefix[index + 1] = scratch.prefix[index] * scratch.ratios[index];
-        }
-        for index in (0..scratch.ratios.len()).rev() {
-            scratch.suffix[index] = scratch.ratios[index] * scratch.suffix[index + 1];
+        let mut nonzero_product = 1.0;
+        let mut zero_count = 0usize;
+        let mut zero_index = usize::MAX;
+        for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
+            if ratio == 0.0 {
+                zero_count += 1;
+                zero_index = index;
+            } else {
+                nonzero_product *= ratio;
+                if !nonzero_product.is_finite() {
+                    return Err(PauliError::NonFiniteCoefficient {
+                        index: sample_index,
+                    });
+                }
+            }
         }
         let value_factor = term.coefficient.re * local_expectation * sign;
-        let sample_value = value_factor * scratch.prefix[scratch.ratios.len()];
+        let path_product = if zero_count == 0 {
+            nonzero_product
+        } else {
+            0.0
+        };
+        let sample_value = value_factor * path_product;
         if !sample_value.is_finite() {
             return Err(PauliError::NonFiniteCoefficient {
                 index: sample_index,
@@ -648,10 +727,13 @@ fn run_samples(
         }
         for index in 0..scratch.ratios.len() {
             if let Some(slot) = scratch.slots[index] {
-                stats.gradient_sum[slot] += value_factor
-                    * scratch.derivatives[index]
-                    * scratch.prefix[index]
-                    * scratch.suffix[index + 1];
+                let product_without_factor = match zero_count {
+                    0 => nonzero_product / scratch.ratios[index],
+                    1 if index == zero_index => nonzero_product,
+                    _ => 0.0,
+                };
+                stats.gradient_sum[slot] +=
+                    value_factor * scratch.derivatives[index] * product_without_factor;
                 if !stats.gradient_sum[slot].is_finite() {
                     return Err(PauliError::NonFiniteCoefficient {
                         index: sample_index,
