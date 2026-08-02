@@ -7,6 +7,7 @@ mod operator;
 mod propagation;
 mod spps;
 mod symmetry;
+mod u1_circuit;
 mod word;
 
 use pyo3::prelude::*;
@@ -30,6 +31,7 @@ use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
     NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
 };
+use u1_circuit::{u1_circuit_plan, NativeU1CircuitPlan};
 use word::{
     pauli_batch_from_codes, pauli_codes, pauli_commutes, pauli_from_codes, pauli_multiply,
     pauli_support, pauli_symplectic_inner_product, pauli_weight,
@@ -42,6 +44,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeZ2TaperingPlan>()?;
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;
+    module.add_class::<NativeU1CircuitPlan>()?;
     module.add_class::<NativePropagationEngine>()?;
     module.add_class::<NativePropagationBatch>()?;
     module.add_class::<NativeSPPSEngine>()?;
@@ -78,6 +81,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_z2_tapering_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_restrict_u1, module)?)?;
     module.add_function(wrap_pyfunction!(u1_basis_words, module)?)?;
+    module.add_function(wrap_pyfunction!(u1_circuit_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_propagation_engine, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_propagation_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine, module)?)?;

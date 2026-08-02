@@ -1,6 +1,7 @@
 """Public Python API for TenCirPauli."""
 
 from ._native import __version__
+from .circuit import Parameter, ParameterExpr
 from .grouping import (
     GeneralCommutingGroupingResult,
     QWCGroupingResult,
@@ -41,6 +42,7 @@ from .symmetry import (
     Z2SymmetryAnalysis,
     Z2TaperingPlan,
 )
+from .u1_circuit import U1Circuit, U1CircuitPlan, U1CircuitValueAndGradient
 
 
 __all__ = [
@@ -54,6 +56,8 @@ __all__ = [
     "GateTape",
     "GeneralCommutingGroupingResult",
     "NativeMVPPlan",
+    "Parameter",
+    "ParameterExpr",
     "PauliOperator",
     "PauliPhase",
     "PauliProduct",
@@ -69,6 +73,9 @@ __all__ = [
     "QWCGroupingResult",
     "SPPSEngine",
     "SPPSEstimate",
+    "U1Circuit",
+    "U1CircuitPlan",
+    "U1CircuitValueAndGradient",
     "U1MvpPlan",
     "U1RestrictedOperator",
     "U1Sector",

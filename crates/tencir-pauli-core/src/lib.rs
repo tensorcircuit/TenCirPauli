@@ -1,5 +1,6 @@
 //! Pure Rust Pauli algebra and deterministic structural utilities.
 
+mod circuit_ir;
 mod error;
 mod gate;
 mod grouping;
@@ -10,8 +11,10 @@ mod scalar;
 mod sector;
 mod spps;
 mod symmetry;
+mod u1_circuit;
 mod word;
 
+pub use circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode, CIRCUIT_SCHEMA_VERSION};
 pub use error::PauliError;
 pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};
 pub use grouping::{
@@ -30,6 +33,7 @@ pub use sector::{
 };
 pub use spps::{SPPSEngine, SPPSEstimate};
 pub use symmetry::{find_z2_symmetries, CliffordOperation, Z2SymmetryAnalysis, Z2TaperingPlan};
+pub use u1_circuit::U1CircuitPlan;
 pub use word::{packed_word_count, PauliPhase, PauliWord};
 
 #[cfg(test)]

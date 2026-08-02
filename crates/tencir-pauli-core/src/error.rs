@@ -57,6 +57,10 @@ pub enum PauliError {
     InvalidSppsBudget { context: &'static str },
     /// An operation is not supported by SPPS.
     UnsupportedSppsGate,
+    /// A common circuit IR is malformed.
+    InvalidCircuit { context: &'static str },
+    /// A circuit gate is outside the implemented schema.
+    UnsupportedCircuitGate { context: &'static str },
 }
 
 impl fmt::Display for PauliError {
@@ -156,6 +160,10 @@ impl fmt::Display for PauliError {
                     formatter,
                     "SPPS supports Clifford and Pauli rotation gates only"
                 )
+            }
+            Self::InvalidCircuit { context } => write!(formatter, "invalid circuit: {context}"),
+            Self::UnsupportedCircuitGate { context } => {
+                write!(formatter, "unsupported circuit gate: {context}")
             }
         }
     }
