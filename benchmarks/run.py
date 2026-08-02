@@ -212,7 +212,7 @@ def find_python_result(label: str) -> str:
 
 def compare_rust(label: str) -> None:
     """Run Criterion and compare current measurements with a named baseline."""
-    for bench in ("pauli_word", "symmetry"):
+    for bench in ("pauli_word", "symmetry", "propagation"):
         run(
             [
                 "cargo",

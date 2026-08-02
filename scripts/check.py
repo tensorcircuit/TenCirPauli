@@ -80,7 +80,7 @@ def run_benchmarks(mode: str) -> None:
     if mode == "record":
         run([sys.executable, "benchmarks/run.py", "record"])
         return
-    for bench in ("pauli_word", "symmetry"):
+    for bench in ("pauli_word", "symmetry", "propagation"):
         run(
             [
                 "cargo",
