@@ -131,7 +131,7 @@ def rust_environment() -> Dict[str, str]:
 
 def record_rust(label: str) -> None:
     """Record a named Criterion baseline."""
-    for bench in ("pauli_word", "symmetry"):
+    for bench in ("pauli_word", "symmetry", "propagation"):
         run(
             [
                 "cargo",

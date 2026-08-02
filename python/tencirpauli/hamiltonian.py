@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from typing import Any, Sequence, Tuple, cast
+from typing import Any, Optional, Sequence, Tuple, cast
 
 import numpy as np
 
 
 # A practical default for explicit statevector Hamiltonian targets. Users can
 # lower or raise this per call through the public ``max_bytes`` parameter.
-DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+DEFAULT_MAX_BYTES = 16 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,7 @@ class NativeMVPPlan:
     def apply(
         self,
         state: Sequence[complex],
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the precompiled Rust plan without rebuilding its structure."""
         dimension = _dimension(self.nqubits)
@@ -97,7 +98,8 @@ class NativeMVPPlan:
         return cast(
             np.ndarray[Any, Any],
             np.asarray(
-                self._native_plan.apply(contiguous, max_bytes), dtype=np.complex128
+                self._native_plan.apply(contiguous, _effective_max_bytes(max_bytes)),
+                dtype=np.complex128,
             ),
         )
 
@@ -123,7 +125,7 @@ class BackendMVPPlan:
     def apply(
         self,
         state: Sequence[complex],
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the plan using only NumPy arrays and deterministic indexing."""
         dimension = _dimension(self.nqubits)
@@ -162,10 +164,21 @@ def _dimension(nqubits: int) -> int:
     return 1 << nqubits
 
 
-def _check_allocation(requested: int, limit: int, context: str) -> None:
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
-        raise ValueError("max_bytes must be a non-negative integer")
-    if requested > limit:
+def _validate_max_bytes(max_bytes: Optional[int]) -> None:
+    if max_bytes is not None and (
+        not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0
+    ):
+        raise ValueError("max_bytes must be a non-negative integer or None")
+
+
+def _effective_max_bytes(max_bytes: Optional[int]) -> int:
+    _validate_max_bytes(max_bytes)
+    return sys.maxsize if max_bytes is None else max_bytes
+
+
+def _check_allocation(requested: int, limit: Optional[int], context: str) -> None:
+    _validate_max_bytes(limit)
+    if limit is not None and requested > limit:
         raise MemoryError(
             f"{context} requires approximately {requested} bytes, "
             f"exceeding max_bytes={limit}"

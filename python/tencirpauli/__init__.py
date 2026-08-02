@@ -21,6 +21,15 @@ from .pauli import (
     PauliTerm,
     PauliWord,
 )
+from .propagation import (
+    ComputationalBasisState,
+    GateTape,
+    ProductBlochState,
+    ProfiledExpectation,
+    PropagationEngine,
+    PropagationProfile,
+    ZeroState,
+)
 from .symmetry import (
     U1MvpPlan,
     U1RestrictedOperator,
@@ -37,6 +46,8 @@ __all__ = [
     "CSRMatrix",
     "CanonicalizationArrayResult",
     "CanonicalizationResult",
+    "ComputationalBasisState",
+    "GateTape",
     "GeneralCommutingGroupingResult",
     "NativeMVPPlan",
     "PauliOperator",
@@ -44,11 +55,16 @@ __all__ = [
     "PauliProduct",
     "PauliTerm",
     "PauliWord",
+    "ProductBlochState",
+    "ProfiledExpectation",
+    "PropagationEngine",
+    "PropagationProfile",
     "QWCGroupingResult",
     "U1MvpPlan",
     "U1RestrictedOperator",
     "U1Sector",
     "Z2SymmetryAnalysis",
     "Z2TaperingPlan",
+    "ZeroState",
     "__version__",
 ]

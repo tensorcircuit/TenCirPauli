@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "symmetry"
 harness = false
+
+[[bench]]
+name = "propagation"
+harness = false

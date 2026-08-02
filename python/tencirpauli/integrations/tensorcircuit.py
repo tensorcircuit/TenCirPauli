@@ -34,7 +34,7 @@ def backend_mvp(
     plan: BackendMVPPlan,
     coefficients: Optional[Sequence[complex]] = None,
     backend: Any = None,
-    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> Any:
     """Return a TensorCircuit-backend MVP callable for a pure-array plan.
 

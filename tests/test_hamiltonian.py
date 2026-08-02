@@ -143,7 +143,7 @@ def test_native_mvp_plan_reports_explicit_memory_strategy() -> None:
 
 
 def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:
-    assert DEFAULT_MAX_BYTES == 4 * 1024**3
+    assert DEFAULT_MAX_BYTES == 16 * 1024**3
     zero = PauliOperator.empty(0)
     np.testing.assert_array_equal(zero.dense(), np.zeros((1, 1), dtype=np.complex128))
     identity = PauliOperator.from_terms(0, (((), 1.0),))

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence, Tuple, Unio
 import numpy as np
 
 from . import _native
-from .hamiltonian import DEFAULT_MAX_BYTES
+from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
 
 
 if TYPE_CHECKING:
@@ -506,19 +506,14 @@ class PauliOperator:
         )
 
     def find_z2_symmetries(
-        self, max_bytes: int = DEFAULT_MAX_BYTES
+        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "Z2SymmetryAnalysis":
         """Discover deterministic, term-wise commuting Pauli Z2 symmetries."""
         from .symmetry import Z2SymmetryAnalysis
 
-        if (
-            not isinstance(max_bytes, int)
-            or isinstance(max_bytes, bool)
-            or max_bytes < 0
-        ):
-            raise ValueError("max_bytes must be a non-negative integer")
+        _validate_max_bytes(max_bytes)
         generators, constraint_rank = _native.pauli_find_z2_symmetries(
-            self.nqubits, *self._arrays(), max_bytes
+            self.nqubits, *self._arrays(), _effective_max_bytes(max_bytes)
         )
         return Z2SymmetryAnalysis(
             self.nqubits,
@@ -529,7 +524,7 @@ class PauliOperator:
     def taper_z2(
         self,
         sector: Sequence[int],
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PauliOperator":
         """Find Z2 symmetries, select ``sector``, and taper this operator."""
         analysis = self.find_z2_symmetries(max_bytes=max_bytes)
@@ -538,17 +533,12 @@ class PauliOperator:
     def restrict_u1(
         self,
         sector: "U1Sector",
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1RestrictedOperator":
         """Validate and restrict this operator to an explicit U1 sector."""
         from .symmetry import U1Sector, _restrict_u1
 
-        if (
-            not isinstance(max_bytes, int)
-            or isinstance(max_bytes, bool)
-            or max_bytes < 0
-        ):
-            raise ValueError("max_bytes must be a non-negative integer")
+        _validate_max_bytes(max_bytes)
         if not isinstance(sector, U1Sector):
             raise TypeError(f"expected U1Sector, got {type(sector).__name__}")
         if sector.nqubits != self.nqubits:
@@ -589,35 +579,39 @@ class PauliOperator:
             )
         )
 
-    def dense(self, max_bytes: int = DEFAULT_MAX_BYTES) -> np.ndarray[Any, Any]:
+    def dense(
+        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> np.ndarray[Any, Any]:
         """Materialize a bounded complex128 dense Hamiltonian matrix."""
         from . import _native
 
         structures, coefficients_re, coefficients_im = self._arrays()
+        _validate_max_bytes(max_bytes)
         dimension, values = _native.pauli_dense_array(
             self.nqubits,
             structures,
             coefficients_re,
             coefficients_im,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         result: np.ndarray[Any, Any] = np.asarray(values, dtype=np.complex128).reshape(
             (dimension, dimension)
         )
         return result
 
-    def coo(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "COOMatrix":
+    def coo(self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "COOMatrix":
         """Compile deterministic, duplicate-aggregated COO arrays."""
         from . import _native
         from .hamiltonian import COOMatrix
 
         structures, coefficients_re, coefficients_im = self._arrays()
+        _validate_max_bytes(max_bytes)
         dimension, rows, columns, values = _native.pauli_coo_array(
             self.nqubits,
             structures,
             coefficients_re,
             coefficients_im,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         return COOMatrix(
             np.asarray(rows, dtype=np.uint64),
@@ -626,18 +620,19 @@ class PauliOperator:
             (dimension, dimension),
         )
 
-    def csr(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "CSRMatrix":
+    def csr(self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "CSRMatrix":
         """Compile deterministic CSR arrays from the canonical COO stream."""
         from . import _native
         from .hamiltonian import CSRMatrix
 
         structures, coefficients_re, coefficients_im = self._arrays()
+        _validate_max_bytes(max_bytes)
         dimension, indptr, indices, values = _native.pauli_csr_array(
             self.nqubits,
             structures,
             coefficients_re,
             coefficients_im,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         return CSRMatrix(
             np.asarray(indptr, dtype=np.uint64),
@@ -649,11 +644,12 @@ class PauliOperator:
     def mvp(
         self,
         state: Sequence[complex],
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the Hamiltonian to a one-dimensional complex128 state."""
         from . import _native
 
+        _validate_max_bytes(max_bytes)
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1:
             raise ValueError(f"state must be one-dimensional, got shape {values.shape}")
@@ -667,17 +663,20 @@ class PauliOperator:
                     coefficients_re,
                     coefficients_im,
                     np.ascontiguousarray(values),
-                    max_bytes,
+                    _effective_max_bytes(max_bytes),
                 ),
                 dtype=np.complex128,
             ),
         )
 
-    def backend_mvp_plan(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "BackendMVPPlan":
+    def backend_mvp_plan(
+        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> "BackendMVPPlan":
         """Compile a versioned pure-array plan for backend execution."""
         from . import _native
         from .hamiltonian import BackendMVPPlan
 
+        _validate_max_bytes(max_bytes)
         structures, coefficients_re, coefficients_im = self._arrays()
         schema, nqubits, word_count, x_words, z_words, real, imaginary = (
             _native.pauli_backend_plan(
@@ -685,7 +684,7 @@ class PauliOperator:
                 structures,
                 coefficients_re,
                 coefficients_im,
-                max_bytes,
+                _effective_max_bytes(max_bytes),
             )
         )
         return BackendMVPPlan(
@@ -698,18 +697,21 @@ class PauliOperator:
             + 1j * np.asarray(imaginary, dtype=np.float64),
         )
 
-    def native_mvp_plan(self, max_bytes: int = DEFAULT_MAX_BYTES) -> "NativeMVPPlan":
+    def native_mvp_plan(
+        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> "NativeMVPPlan":
         """Compile a reusable Rust-native matrix-free MVP plan."""
         from . import _native
         from .hamiltonian import NativeMVPPlan
 
+        _validate_max_bytes(max_bytes)
         structures, coefficients_re, coefficients_im = self._arrays()
         native_plan = _native.pauli_mvp_plan(
             self.nqubits,
             structures,
             coefficients_re,
             coefficients_im,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         if native_plan.nqubits != self.nqubits:
             raise RuntimeError("native MVP plan has incompatible qubit count")
@@ -719,7 +721,7 @@ class PauliOperator:
             self.nqubits, len(self.terms), native_plan.strategy, native_plan
         )
 
-    def compile(self, target: str, max_bytes: int = DEFAULT_MAX_BYTES) -> Any:
+    def compile(self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> Any:
         """Compile one named Hamiltonian target through the public API."""
         if target == "dense":
             return self.dense(max_bytes=max_bytes)

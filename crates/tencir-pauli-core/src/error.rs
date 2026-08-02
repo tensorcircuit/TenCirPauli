@@ -29,6 +29,22 @@ pub enum PauliError {
     InvalidIndex { context: &'static str },
     /// A Clifford operation is malformed.
     InvalidClifford { context: &'static str },
+    /// A gate wire is outside the tape's qubit range.
+    InvalidWire { wire: usize, nqubits: usize },
+    /// A two-qubit gate was given the same wire twice.
+    DuplicateWire,
+    /// A runtime parameter vector has the wrong length.
+    InvalidParameterLength { expected: usize, actual: usize },
+    /// A runtime gate parameter is not finite.
+    NonFiniteParameter { index: usize },
+    /// A Pauli-weight cutoff is invalid.
+    InvalidMaxWeight,
+    /// An observable requested a physical expectation but is not Hermitian.
+    NonHermitianExpectation,
+    /// A custom PTM has an invalid matrix shape.
+    InvalidPtmShape { expected: usize, actual: usize },
+    /// A custom PTM entry is not finite.
+    NonFinitePtm { index: usize },
 }
 
 impl fmt::Display for PauliError {
@@ -82,6 +98,32 @@ impl fmt::Display for PauliError {
             Self::InvalidIndex { context } => write!(formatter, "invalid sector index: {context}"),
             Self::InvalidClifford { context } => {
                 write!(formatter, "invalid Clifford plan: {context}")
+            }
+            Self::InvalidWire { wire, nqubits } => {
+                write!(formatter, "wire {wire} is outside 0..{nqubits}")
+            }
+            Self::DuplicateWire => write!(formatter, "two-qubit gate wires must differ"),
+            Self::InvalidParameterLength { expected, actual } => write!(
+                formatter,
+                "expected parameter vector of length {expected}, got {actual}"
+            ),
+            Self::NonFiniteParameter { index } => {
+                write!(formatter, "parameter at index {index} is not finite")
+            }
+            Self::InvalidMaxWeight => {
+                write!(formatter, "max_weight must be a non-negative integer")
+            }
+            Self::NonHermitianExpectation => {
+                write!(formatter, "expectation requires a Hermitian observable")
+            }
+            Self::InvalidPtmShape { expected, actual } => {
+                write!(
+                    formatter,
+                    "expected PTM with {expected} entries, got {actual}"
+                )
+            }
+            Self::NonFinitePtm { index } => {
+                write!(formatter, "PTM entry at index {index} is not finite")
             }
         }
     }

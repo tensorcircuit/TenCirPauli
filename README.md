@@ -1,8 +1,8 @@
 # TenCirPauli
 
-TenCirPauli is a Rust-native Pauli algebra, deterministic measurement grouping, and Hamiltonian compiler with a typed Python API compatible with TensorCircuit's Pauli codes and qubit-ordering conventions.
+TenCirPauli is a Rust-native Pauli algebra, deterministic measurement grouping, Hamiltonian compiler, and Heisenberg Pauli propagation engine with a typed Python API compatible with TensorCircuit's Pauli codes and qubit-ordering conventions.
 
-The public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, a versioned backend MVP plan, Pauli Z2 symmetry/tapering plans, and explicit U(1) restricted-sector operators. GateTape, Pauli propagation, and native gradients remain outside the current scope.
+The public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, a versioned backend MVP plan, Pauli Z2 symmetry/tapering plans, explicit U(1) restricted-sector operators, and a Rust-native `GateTape`/`PropagationEngine`. Native gradients remain outside the current scope.
 
 ## Architecture
 
@@ -29,6 +29,7 @@ TensorCircuit integration is optional: `pip install 'tencirpauli[tensorcircuit]'
 
 ```python
 import numpy as np
+import tencirpauli as tcp
 
 from tencirpauli import PauliOperator, PauliWord, U1Sector
 
@@ -61,9 +62,18 @@ number_conserving = PauliOperator.from_terms(
 sector = U1Sector(3, 1)
 restricted = number_conserving.restrict_u1(sector)
 next_state = restricted.apply(np.ones(sector.dimension, dtype=np.complex128))
+
+tape = tcp.GateTape(3)
+tape.h(0)
+tape.cnot(0, 1)
+tape.rz(1, parameter=0)
+observable = PauliOperator.from_terms(3, (("ZII", 1.0),))
+engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+value = engine.expectation([0.125])
+materialized = engine.propagate_operator([0.125])
 ```
 
-Explicit `dense`, `coo`, `csr`, and MVP targets use the public `DEFAULT_MAX_BYTES` best-effort guard, currently 4 GiB. Pass `max_bytes` per call to reject cheaply estimated major outputs or workspaces, or raise it when the host has enough RAM. This is not an exact peak-RSS limit: allocator overhead, FFI conversion and transient buffers may exceed the estimate, so an operating-system out-of-memory failure remains possible.
+Explicit `dense`, `coo`, `csr`, MVP targets, and propagation engines use the public `DEFAULT_MAX_BYTES` best-effort guard, currently 16 GiB. Pass `max_bytes` per call to reject cheaply estimated major outputs or workspaces, pass `None` to disable that guard, or raise it when the host has enough RAM. This is not an exact peak-RSS limit: allocator overhead, FFI conversion and transient buffers may exceed the estimate, so an operating-system out-of-memory failure remains possible.
 
 Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It precomputes phase structure in Rust, releases the GIL during application, and avoids rebuilding the operator on every statevector call. Use `backend_mvp_plan()` when the calculation must remain inside a TensorCircuit backend and JAX autodiff/JIT is required.
 
@@ -72,6 +82,12 @@ Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It
 For large numeric batches, use `PauliOperator.from_code_arrays()` to construct a static operator or `PauliOperator.canonicalize_code_arrays_numpy()` to keep canonical structures, coefficients, mappings, and phases in contiguous read-only NumPy arrays without materializing Python objects per term.
 
 `PauliOperator.group_commuting(mode="general")` returns an explicitly algebraic prototype with `measurement_ready=False`; it must not be used as a local single-qubit measurement plan. QWC reconstruction uses the returned group masks and rotated measurement bitstrings.
+
+## Rust-native propagation
+
+`GateTape` records gates in Schrödinger execution order. `PropagationEngine` traverses that tape in reverse for Heisenberg propagation, using exact recurrence when `max_weight=None` or the cutoff is at least `nqubits`, and applying a deterministic Pauli-weight projection after each aggregated gate when a finite cutoff is selected. The supported built-ins are `X/Y/Z/H/S/Sdg/CNOT/CZ/SWAP`, `RX/RY/RZ/RXX/RYY/RZZ`, and finite real one- or two-qubit PTMs.
+
+The default `expectation(parameters)` path stays in Rust and returns one scalar for `ZeroState`, `ComputationalBasisState`, or `ProductBlochState`. Use `propagate_operator()` only when the full canonical operator is needed; use `profile()` for explicit structural and timing metadata. Parameter slots are immutable after engine construction, while a mutable `GateTape` can continue to be used to build other engines.
 
 ## Symmetry and restricted sectors
 

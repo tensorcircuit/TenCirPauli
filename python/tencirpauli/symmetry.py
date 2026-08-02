@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Sequence, Tuple, cast
+from typing import Any, Optional, Sequence, Tuple, cast
 
 import numpy as np
 
 from . import _native
-from .hamiltonian import DEFAULT_MAX_BYTES, COOMatrix, CSRMatrix
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    COOMatrix,
+    CSRMatrix,
+    _check_allocation,
+    _effective_max_bytes,
+    _validate_max_bytes,
+)
 from .pauli import PauliOperator, PauliWord
 
 
@@ -154,13 +161,13 @@ class U1Sector:
         )
 
     def basis_words(
-        self, *, max_bytes: int = DEFAULT_MAX_BYTES
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> np.ndarray[Any, Any]:
         """Return a read-only packed basis in ascending computational order."""
         _validate_max_bytes(max_bytes)
         if self.nqubits < 64:
             _, values = _native.u1_basis_words(
-                self.nqubits, self.particle_number, max_bytes
+                self.nqubits, self.particle_number, _effective_max_bytes(max_bytes)
             )
             result = np.asarray(values, dtype=np.uint64)
         elif self.nqubits == 64:
@@ -206,7 +213,7 @@ class U1RestrictedOperator:
         self,
         state: Sequence[complex],
         *,
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the restricted operator without allocating a full-space state."""
         _validate_max_bytes(max_bytes)
@@ -218,29 +225,37 @@ class U1RestrictedOperator:
         return cast(
             np.ndarray[Any, Any],
             np.asarray(
-                self._native_operator.apply(np.ascontiguousarray(values), max_bytes),
+                self._native_operator.apply(
+                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
+                ),
                 dtype=np.complex128,
             ),
         )
 
-    def mvp_plan(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> "U1MvpPlan":
+    def mvp_plan(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "U1MvpPlan":
         """Build a reusable restricted matrix-free plan."""
         _validate_max_bytes(max_bytes)
-        return U1MvpPlan(self.sector, self._native_operator.mvp_plan(max_bytes))
+        return U1MvpPlan(
+            self.sector, self._native_operator.mvp_plan(_effective_max_bytes(max_bytes))
+        )
 
-    def dense(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> np.ndarray[Any, Any]:
+    def dense(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> np.ndarray[Any, Any]:
         """Materialize the bounded dense matrix in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, values = self._native_operator.dense(max_bytes)
+        dimension, values = self._native_operator.dense(_effective_max_bytes(max_bytes))
         return cast(
             np.ndarray[Any, Any],
             np.asarray(values, dtype=np.complex128).reshape((dimension, dimension)),
         )
 
-    def coo(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> COOMatrix:
+    def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
         """Materialize deterministic COO arrays in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, rows, columns, values = self._native_operator.coo(max_bytes)
+        dimension, rows, columns, values = self._native_operator.coo(
+            _effective_max_bytes(max_bytes)
+        )
         return COOMatrix(
             np.asarray(rows, dtype=np.uint64),
             np.asarray(columns, dtype=np.uint64),
@@ -248,10 +263,12 @@ class U1RestrictedOperator:
             (dimension, dimension),
         )
 
-    def csr(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> CSRMatrix:
+    def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
         """Materialize bounded CSR arrays in restricted-basis ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, indptr, indices, values = self._native_operator.csr(max_bytes)
+        dimension, indptr, indices, values = self._native_operator.csr(
+            _effective_max_bytes(max_bytes)
+        )
         return CSRMatrix(
             np.asarray(indptr, dtype=np.uint64),
             np.asarray(indices, dtype=np.uint64),
@@ -277,7 +294,7 @@ class U1MvpPlan:
         self,
         state: Sequence[complex],
         *,
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the reusable restricted plan."""
         _validate_max_bytes(max_bytes)
@@ -289,7 +306,9 @@ class U1MvpPlan:
         return cast(
             np.ndarray[Any, Any],
             np.asarray(
-                self._native_plan.apply(np.ascontiguousarray(values), max_bytes),
+                self._native_plan.apply(
+                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
+                ),
                 dtype=np.complex128,
             ),
         )
@@ -318,27 +337,15 @@ def _coerce_bitstring(nqubits: int, bitstring: int | Sequence[int]) -> int:
     return value
 
 
-def _validate_max_bytes(max_bytes: int) -> None:
-    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0:
-        raise ValueError("max_bytes must be a non-negative integer")
-
-
-def _check_allocation(requested: int, limit: int, context: str) -> None:
-    if requested > limit:
-        raise MemoryError(
-            f"{context} requires approximately {requested} bytes, exceeding max_bytes={limit}"
-        )
-
-
 def _restrict_u1(
     operator: PauliOperator,
     sector: U1Sector,
-    max_bytes: int,
+    max_bytes: Optional[int],
 ) -> U1RestrictedOperator:
     native_operator = _native.pauli_restrict_u1(
         operator.nqubits,
         *operator._arrays(),
         sector.particle_number,
-        max_bytes,
+        _effective_max_bytes(max_bytes),
     )
     return U1RestrictedOperator(sector, native_operator)

@@ -27,7 +27,7 @@ impl PauliPhase {
         }
     }
 
-    fn exponent(self) -> u8 {
+    pub(crate) fn exponent(self) -> u8 {
         match self {
             Self::PlusOne => 0,
             Self::PlusI => 1,
@@ -36,7 +36,7 @@ impl PauliPhase {
         }
     }
 
-    fn from_exponent(exponent: u8) -> Self {
+    pub(crate) fn from_exponent(exponent: u8) -> Self {
         match exponent % 4 {
             0 => Self::PlusOne,
             1 => Self::PlusI,
@@ -45,7 +45,7 @@ impl PauliPhase {
         }
     }
 
-    fn multiply(self, rhs: Self) -> Self {
+    pub(crate) fn multiply(self, rhs: Self) -> Self {
         Self::from_exponent(self.exponent() + rhs.exponent())
     }
 }
@@ -224,7 +224,7 @@ impl PauliWord {
         Ok(())
     }
 
-    fn code_at(&self, qubit: usize) -> u8 {
+    pub(crate) fn code_at(&self, qubit: usize) -> u8 {
         let x = (self.x_words[qubit / 64] >> (qubit % 64)) & 1;
         let z = (self.z_words[qubit / 64] >> (qubit % 64)) & 1;
         match (x, z) {
