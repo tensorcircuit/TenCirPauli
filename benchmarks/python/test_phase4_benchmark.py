@@ -44,6 +44,32 @@ def spps_workload() -> tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]:
     )
 
 
+def rotation_heavy_spps_workload() -> (
+    tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]
+):
+    tape = tcp.GateTape(12)
+    for _layer in range(2):
+        for wire in range(12):
+            tape.rz(wire, parameter=wire % 4)
+            tape.ry(wire, parameter=4 + wire % 4)
+        for wire in range(11):
+            tape.cnot(wire, wire + 1)
+    terms = []
+    for wire in range(11):
+        codes = [0] * 12
+        codes[wire] = codes[wire + 1] = 3
+        terms.append((codes, -1.0))
+    for wire in range(12):
+        codes = [0] * 12
+        codes[wire] = 1
+        terms.append((codes, -1.0))
+    return (
+        tape,
+        tcp.PauliOperator.from_terms(12, terms),
+        np.linspace(-0.17, 0.23, 8, dtype=np.float64),
+    )
+
+
 def test_deterministic_gradient_setup(benchmark: BenchmarkFixture) -> None:
     tape, observable, _ = deterministic_workload()
     engine = benchmark(tcp.PropagationEngine, tape, observable, max_weight=3)
@@ -73,6 +99,18 @@ def test_deterministic_checkpoint_scaling(benchmark: BenchmarkFixture) -> None:
     result = benchmark(engine.value_and_grad, parameters, checkpoint_interval=1)
     assert result.gradient.shape == (2,)
     benchmark.extra_info["checkpoint_interval"] = 1
+
+
+@pytest.mark.parametrize("max_weight", (2, 4))
+def test_deterministic_representative_max_weight(
+    benchmark: BenchmarkFixture, max_weight: int
+) -> None:
+    tape, observable, parameters = deterministic_workload()
+    engine = tcp.PropagationEngine(tape, observable, max_weight=max_weight)
+    result = benchmark(engine.value_and_grad, parameters, checkpoint_interval=1)
+    assert result.gradient.shape == (2,)
+    assert np.isfinite(result.gradient).all()
+    benchmark.extra_info["max_weight"] = max_weight
 
 
 def test_spps_fixed_budget_setup(benchmark: BenchmarkFixture) -> None:
@@ -141,6 +179,20 @@ def test_spps_100q_near_clifford_throughput(benchmark: BenchmarkFixture) -> None
         seed=20260802,
     )
     assert result.total_paths == 640
+    assert np.isfinite(result.gradient).all()
+    benchmark.extra_info["paths_per_call"] = result.total_paths
+
+
+def test_spps_rotation_heavy_throughput(benchmark: BenchmarkFixture) -> None:
+    tape, observable, parameters = rotation_heavy_spps_workload()
+    engine = tcp.SPPSEngine(tape, observable)
+    result = benchmark(
+        engine.value_and_grad,
+        parameters,
+        samples_per_term=256,
+        seed=20260802,
+    )
+    assert result.total_paths == 23 * 256
     assert np.isfinite(result.gradient).all()
     benchmark.extra_info["paths_per_call"] = result.total_paths
 

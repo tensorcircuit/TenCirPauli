@@ -59,6 +59,16 @@ def test_zero_factor_branch_preserves_pad_derivative() -> None:
     assert np.isfinite(estimate.gradient).all()
 
 
+def test_near_zero_factor_uses_stable_pad_products() -> None:
+    tape = tcp.GateTape(1)
+    tape.ry(0, parameter=0)
+    engine = tcp.SPPSEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
+    estimate = engine.value_and_grad([1.0e-14], samples_per_term=4096, seed=17)
+    assert np.isfinite(estimate.value)
+    assert np.isfinite(estimate.gradient).all()
+    assert estimate.gradient[0] == pytest.approx(1.0, abs=0.4)
+
+
 def test_adaptive_budget_and_empty_observable_contract() -> None:
     engine = _single_rotation(3)
     estimate = engine.value_and_grad_adaptive(

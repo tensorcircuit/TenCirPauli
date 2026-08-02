@@ -17,6 +17,7 @@ use crate::propagation::{
 };
 
 const RANDOM_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
+const STABLE_PRODUCT_RATIO_THRESHOLD: f64 = 1.0e-12;
 
 /// One SPPS value-and-gradient result.
 #[derive(Clone, Debug)]
@@ -108,6 +109,8 @@ struct PathScratch {
     ratios: Vec<f64>,
     derivatives: Vec<f64>,
     slots: Vec<Option<usize>>,
+    prefix: Vec<f64>,
+    suffix: Vec<f64>,
 }
 
 impl PathScratch {
@@ -116,6 +119,8 @@ impl PathScratch {
             ratios: Vec::with_capacity(gate_count),
             derivatives: Vec::with_capacity(gate_count),
             slots: Vec::with_capacity(gate_count),
+            prefix: Vec::with_capacity(gate_count + 1),
+            suffix: Vec::with_capacity(gate_count + 1),
         }
     }
 
@@ -123,6 +128,8 @@ impl PathScratch {
         self.ratios.clear();
         self.derivatives.clear();
         self.slots.clear();
+        self.prefix.clear();
+        self.suffix.clear();
     }
 }
 
@@ -693,21 +700,51 @@ fn run_samples(
         let mut nonzero_product = 1.0;
         let mut zero_count = 0usize;
         let mut zero_index = usize::MAX;
-        for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
+        let mut use_stable_products = false;
+        for ratio in scratch.ratios.iter().copied() {
             if ratio == 0.0 {
                 zero_count += 1;
-                zero_index = index;
-            } else {
-                nonzero_product *= ratio;
-                if !nonzero_product.is_finite() {
+            } else if ratio.abs() <= STABLE_PRODUCT_RATIO_THRESHOLD {
+                use_stable_products = true;
+            }
+        }
+        if zero_count == 0 && use_stable_products {
+            scratch.prefix.resize(scratch.ratios.len() + 1, 1.0);
+            scratch.suffix.resize(scratch.ratios.len() + 1, 1.0);
+            for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
+                scratch.prefix[index + 1] = scratch.prefix[index] * ratio;
+                if !scratch.prefix[index + 1].is_finite() {
                     return Err(PauliError::NonFiniteCoefficient {
                         index: sample_index,
                     });
                 }
             }
+            for index in (0..scratch.ratios.len()).rev() {
+                scratch.suffix[index] = scratch.ratios[index] * scratch.suffix[index + 1];
+                if !scratch.suffix[index].is_finite() {
+                    return Err(PauliError::NonFiniteCoefficient {
+                        index: sample_index,
+                    });
+                }
+            }
+        } else {
+            for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
+                if ratio == 0.0 {
+                    zero_index = index;
+                } else {
+                    nonzero_product *= ratio;
+                    if !nonzero_product.is_finite() {
+                        return Err(PauliError::NonFiniteCoefficient {
+                            index: sample_index,
+                        });
+                    }
+                }
+            }
         }
         let value_factor = term.coefficient.re * local_expectation * sign;
-        let path_product = if zero_count == 0 {
+        let path_product = if use_stable_products && zero_count == 0 {
+            scratch.prefix[scratch.ratios.len()]
+        } else if zero_count == 0 {
             nonzero_product
         } else {
             0.0
@@ -727,10 +764,14 @@ fn run_samples(
         }
         for index in 0..scratch.ratios.len() {
             if let Some(slot) = scratch.slots[index] {
-                let product_without_factor = match zero_count {
-                    0 => nonzero_product / scratch.ratios[index],
-                    1 if index == zero_index => nonzero_product,
-                    _ => 0.0,
+                let product_without_factor = if use_stable_products && zero_count == 0 {
+                    scratch.prefix[index] * scratch.suffix[index + 1]
+                } else {
+                    match zero_count {
+                        0 => nonzero_product / scratch.ratios[index],
+                        1 if index == zero_index => nonzero_product,
+                        _ => 0.0,
+                    }
                 };
                 stats.gradient_sum[slot] +=
                     value_factor * scratch.derivatives[index] * product_without_factor;
