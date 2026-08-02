@@ -13,7 +13,7 @@ from reference import codes_to_dense
 @dataclass(frozen=True)
 class Path:
     probability: float
-    factors: tuple[tuple[float, float], ...]
+    factors: tuple[tuple[float, float, Optional[int]], ...]
     word: tuple[int, ...]
     sign: float
 
@@ -75,14 +75,19 @@ def enumerate_paths(
     angles: Sequence[float],
     *,
     smoothing: float = 0.01,
+    parameter_slots: Sequence[Optional[int]] | None = None,
 ) -> tuple[Path, ...]:
     """Enumerate proposal paths for one observable term without native calls."""
+    if parameter_slots is None:
+        parameter_slots = (0,) * len(angles)
+    if len(parameter_slots) != len(operations):
+        raise ValueError("parameter_slots must match operations")
     resolved = []
-    for operation, angle in zip(operations, angles):
-        resolved.append((operation, float(angle)))
+    for operation, angle, slot in zip(operations, angles, parameter_slots):
+        resolved.append((operation, float(angle), slot))
 
     paths = [Path(1.0, (), tuple(observable_word), 1.0)]
-    for operation, angle in reversed(resolved):
+    for operation, angle, slot in reversed(resolved):
         kind = str(operation[0])
         if kind not in {"rx", "ry", "rz", "rxx", "ryy", "rzz"}:
             updated = []
@@ -93,7 +98,14 @@ def enumerate_paths(
                 )
             paths = updated
             continue
-        axis = {"rx": 1, "ry": 2, "rz": 3}[kind]
+        axis = {
+            "rx": 1,
+            "ry": 2,
+            "rz": 3,
+            "rxx": 1,
+            "ryy": 2,
+            "rzz": 3,
+        }[kind]
         wire0 = int(operation[1])
         wire1 = int(operation[2]) if kind in {"rxx", "ryy", "rzz"} else None
         next_paths: list[Path] = []
@@ -108,7 +120,7 @@ def enumerate_paths(
             next_paths.append(
                 Path(
                     path.probability * q,
-                    (*path.factors, (cosine, -sine)),
+                    (*path.factors, (cosine, -sine, slot)),
                     path.word,
                     path.sign,
                 )
@@ -117,7 +129,7 @@ def enumerate_paths(
             next_paths.append(
                 Path(
                     path.probability * (1.0 - q),
-                    (*path.factors, (sine_sign * sine, sine_sign * cosine)),
+                    (*path.factors, (sine_sign * sine, sine_sign * cosine, slot)),
                     product,
                     path.sign,
                 )
@@ -134,18 +146,26 @@ def exact_value_and_gradient(
     state: str = "zero",
     *,
     smoothing: float = 0.01,
+    parameter_slots: Sequence[Optional[int]] | None = None,
 ) -> tuple[float, float]:
     """Sum the unweighted legal path expansion and its local PAD derivative."""
     paths = enumerate_paths(
-        nqubits, observable_word, operations, angles, smoothing=smoothing
+        nqubits,
+        observable_word,
+        operations,
+        angles,
+        smoothing=smoothing,
+        parameter_slots=parameter_slots,
     )
     value = 0.0
     gradient = 0.0
     for path in paths:
         terminal = product_expectation_for_word(path.word, state)
-        factors = [factor for factor, _ in path.factors]
+        factors = [factor for factor, _, _ in path.factors]
         value += path.sign * terminal * np.prod(factors)
-        for index, (_, derivative) in enumerate(path.factors):
+        for index, (_, derivative, slot) in enumerate(path.factors):
+            if slot is None:
+                continue
             gradient += (
                 path.sign
                 * terminal
@@ -155,9 +175,92 @@ def exact_value_and_gradient(
     return float(value), float(gradient)
 
 
-def product_expectation_for_word(word: Sequence[int], state: str) -> float:
-    if state != "zero":
-        raise NotImplementedError("the focused oracle currently uses ZeroState")
-    return float(
-        np.prod([1.0 if code in (0, 3) else 0.0 for code in word], dtype=np.float64)
+def path_value_and_gradient(
+    path: Path,
+    state: str | Sequence[int] | np.ndarray = "zero",
+    *,
+    coefficient: float = 1.0,
+    nparameters: int = 1,
+) -> tuple[float, np.ndarray]:
+    """Return one path's value contribution and slot-scattered PAD gradient."""
+    terminal = product_expectation_for_word(path.word, state)
+    factors = [factor for factor, _, _ in path.factors]
+    value = (
+        coefficient * path.sign * terminal * float(np.prod(factors, dtype=np.float64))
     )
+    gradient = np.zeros(nparameters, dtype=np.float64)
+    for index, (_, derivative, slot) in enumerate(path.factors):
+        if slot is not None:
+            gradient[slot] += (
+                coefficient
+                * path.sign
+                * terminal
+                * derivative
+                * float(
+                    np.prod(factors[:index] + factors[index + 1 :], dtype=np.float64)
+                )
+            )
+    return float(value), gradient
+
+
+def exact_value_and_gradient_slots(
+    nqubits: int,
+    observable_word: Sequence[int],
+    operations: Sequence[tuple[object, ...]],
+    angles: Sequence[float],
+    state: str | Sequence[int] | np.ndarray = "zero",
+    *,
+    coefficient: float = 1.0,
+    smoothing: float = 0.01,
+    parameter_slots: Sequence[Optional[int]] | None = None,
+) -> tuple[float, np.ndarray]:
+    """Sum exact legal paths while scattering derivatives into shared slots."""
+    normalized_slots = (
+        tuple(parameter_slots) if parameter_slots is not None else (0,) * len(angles)
+    )
+    paths = enumerate_paths(
+        nqubits,
+        observable_word,
+        operations,
+        angles,
+        smoothing=smoothing,
+        parameter_slots=normalized_slots,
+    )
+    nparameters = (
+        max((slot for slot in normalized_slots if slot is not None), default=-1) + 1
+    )
+    value = 0.0
+    gradient = np.zeros(nparameters, dtype=np.float64)
+    for path in paths:
+        path_value, path_gradient = path_value_and_gradient(
+            path,
+            state,
+            coefficient=coefficient,
+            nparameters=nparameters,
+        )
+        value += path_value
+        gradient += path_gradient
+    return float(value), gradient
+
+
+def product_expectation_for_word(
+    word: Sequence[int], state: str | Sequence[int] | np.ndarray
+) -> float:
+    if isinstance(state, str):
+        if state != "zero":
+            raise ValueError(f"unsupported reference state {state!r}")
+        local = [1.0 if code in (0, 3) else 0.0 for code in word]
+    elif isinstance(state, np.ndarray):
+        local = [
+            1.0 if code == 0 else float(state[qubit, code - 1])
+            for qubit, code in enumerate(word)
+        ]
+    else:
+        bits = tuple(state)
+        if len(bits) != len(word):
+            raise ValueError("computational state width must match word")
+        local = [
+            1.0 if code == 0 else ((-1.0 if bits[qubit] else 1.0) if code == 3 else 0.0)
+            for qubit, code in enumerate(word)
+        ]
+    return float(np.prod(local, dtype=np.float64))

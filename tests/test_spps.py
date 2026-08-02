@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice, product
+
 import numpy as np
 import pytest
-from spps_reference import enumerate_paths, exact_value_and_gradient
+from spps_reference import (
+    enumerate_paths,
+    exact_value_and_gradient,
+    exact_value_and_gradient_slots,
+    path_value_and_gradient,
+)
 
 import tencirpauli as tcp
 
@@ -97,6 +105,169 @@ def test_adaptive_budget_and_empty_observable_contract() -> None:
     assert empty_estimate.gradient.shape == (0,)
     assert empty_estimate.total_paths == 0
     assert empty_estimate.converged is True
+
+
+def test_fixed_budget_single_term_chunk_replay_is_bitwise_stable() -> None:
+    tape = tcp.GateTape(2)
+    tape.h(0)
+    tape.rxx(0, 1, parameter=0)
+    tape.cnot(0, 1)
+    tape.ry(1, parameter=1)
+    engine = tcp.SPPSEngine(
+        tape,
+        tcp.PauliOperator(2, [((3, 1), 0.7)]),
+        initial_state=tcp.ProductBlochState([[0.3, 0.4, 0.5], [0.2, -0.1, 0.6]]),
+    )
+    first = engine.value_and_grad([0.37, -0.29], samples_per_term=1024, seed=41)
+    second = engine.value_and_grad([0.37, -0.29], samples_per_term=1024, seed=41)
+    assert first.value == second.value
+    assert first.value_standard_error == second.value_standard_error
+    np.testing.assert_array_equal(first.gradient, second.gradient)
+
+
+def test_composite_exact_paths_cover_static_two_qubit_and_shared_slots() -> None:
+    theta = 0.37
+    operations = (
+        ("h", 0),
+        ("rz", 1),
+        ("cnot", 0, 1),
+        ("rxx", 0, 1),
+        ("ry", 0),
+    )
+    angles = (0.0, -0.19, 0.0, theta, theta)
+    parameter_slots = (None, None, None, 0, 0)
+    state = np.array([[0.31, -0.27, 0.44], [-0.22, 0.35, 0.51]])
+    terms = (((1, 3), 0.7), ((2, 1), -0.4))
+    expected_value = 0.0
+    expected_gradient = np.zeros(1)
+    for word, coefficient in terms:
+        paths = enumerate_paths(
+            2,
+            word,
+            operations,
+            angles,
+            parameter_slots=parameter_slots,
+        )
+        assert sum(path.probability for path in paths) == pytest.approx(1.0)
+        path_contributions = [
+            path_value_and_gradient(path, state, coefficient=coefficient, nparameters=1)
+            for path in paths
+        ]
+        expected_value += sum(value for value, _ in path_contributions)
+        expected_gradient += sum(
+            (gradient for _, gradient in path_contributions), start=np.zeros(1)
+        )
+        exact_value, exact_gradient = exact_value_and_gradient_slots(
+            2,
+            word,
+            operations,
+            angles,
+            state,
+            coefficient=coefficient,
+            parameter_slots=parameter_slots,
+        )
+        assert exact_value == pytest.approx(
+            sum(value for value, _ in path_contributions)
+        )
+        np.testing.assert_allclose(
+            exact_gradient,
+            sum((gradient for _, gradient in path_contributions), start=np.zeros(1)),
+        )
+
+    tape = tcp.GateTape(2)
+    tape.h(0)
+    tape.rz(1, angle=-0.19)
+    tape.cnot(0, 1)
+    tape.rxx(0, 1, parameter=0)
+    tape.ry(0, parameter=0)
+    engine = tcp.SPPSEngine(
+        tape,
+        tcp.PauliOperator(2, list(terms)),
+        initial_state=tcp.ProductBlochState(state),
+    )
+    estimate = engine.value_and_grad([theta], samples_per_term=20_000, seed=73)
+    assert estimate.value == pytest.approx(expected_value, abs=0.04)
+    assert estimate.gradient[0] == pytest.approx(expected_gradient[0], abs=0.06)
+
+
+def test_composite_bloch_terminal_reduction_and_adaptive_replay() -> None:
+    tape = tcp.GateTape(2)
+    tape.h(0)
+    tape.rz(1, angle=-0.19)
+    tape.cnot(0, 1)
+    tape.rxx(0, 1, parameter=0)
+    tape.ry(0, parameter=0)
+    engine = tcp.SPPSEngine(
+        tape,
+        tcp.PauliOperator(2, [((1, 3), 0.7), ((2, 1), -0.4)]),
+        initial_state=tcp.ProductBlochState([[0.31, -0.27, 0.44], [-0.22, 0.35, 0.51]]),
+    )
+    first = engine.value_and_grad_adaptive(
+        [0.37],
+        initial_samples_per_term=8,
+        max_samples_per_term=16,
+        gradient_tolerance=1.0e-8,
+        seed=91,
+    )
+    second = engine.value_and_grad_adaptive(
+        [0.37],
+        initial_samples_per_term=8,
+        max_samples_per_term=16,
+        gradient_tolerance=1.0e-8,
+        seed=91,
+    )
+    assert first.value == second.value
+    assert first.value_standard_error == second.value_standard_error
+    assert first.samples_per_replicate in ((8, 8), (16, 16))
+    np.testing.assert_array_equal(first.gradient, second.gradient)
+    assert np.isfinite(first.value_standard_error)
+
+
+def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
+    tape = tcp.GateTape(2)
+    tape.cnot(0, 1)
+    tape.rzz(0, 1, parameter=0)
+    tape.rx(0, parameter=1)
+    engine = tcp.SPPSEngine(tape, tcp.PauliOperator(2, [((1, 2), 0.8)]))
+    parameters = ([0.21, -0.17], [0.33, 0.14])
+    expected = [
+        engine.value_and_grad(values, samples_per_term=768, seed=seed)
+        for values, seed in zip(parameters, (7, 9))
+    ]
+
+    def run(index: int):
+        return engine.value_and_grad(
+            parameters[index], samples_per_term=768, seed=(7, 9)[index]
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        actual = list(executor.map(run, (0, 1, 0, 1)))
+    for result, reference in zip(
+        actual, (expected[0], expected[1], expected[0], expected[1])
+    ):
+        assert result.value == reference.value
+        assert result.value_standard_error == reference.value_standard_error
+        np.testing.assert_array_equal(result.gradient, reference.gradient)
+
+
+def test_spps_execution_workspace_guard_covers_term_parameter_product() -> None:
+    nqubits = 10
+    tape = tcp.GateTape(nqubits)
+    for parameter in range(1000):
+        tape.rx(parameter % nqubits, parameter=parameter)
+    structures = list(islice(product(range(4), repeat=nqubits), 1000))
+    observable = tcp.PauliOperator(nqubits, [(word, 1.0) for word in structures])
+    engine = tcp.SPPSEngine(tape, observable, max_bytes=150_000)
+    with pytest.raises(MemoryError, match="memory limit"):
+        engine.value_and_grad([0.1] * 1000, samples_per_term=2, seed=3)
+    with pytest.raises(MemoryError, match="memory limit"):
+        engine.value_and_grad_adaptive(
+            [0.1] * 1000,
+            initial_samples_per_term=2,
+            max_samples_per_term=2,
+            gradient_tolerance=0.1,
+            seed=3,
+        )
 
 
 def test_spps_validation_and_unsupported_ptm() -> None:

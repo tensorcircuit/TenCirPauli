@@ -5,6 +5,7 @@
 //! active local factors; no dynamic operator aggregation is performed.
 
 use std::collections::HashSet;
+use std::mem::size_of;
 
 use rayon::prelude::*;
 
@@ -18,6 +19,7 @@ use crate::propagation::{
 
 const RANDOM_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
 const STABLE_PRODUCT_RATIO_THRESHOLD: f64 = 1.0e-12;
+const SAMPLE_CHUNK_SIZE: usize = 256;
 
 /// One SPPS value-and-gradient result.
 #[derive(Clone, Debug)]
@@ -42,6 +44,7 @@ pub struct SPPSEngine {
     observable: PauliOperator,
     initial_state: ProductState,
     smoothing: f64,
+    max_bytes: Option<u128>,
     nparameters: usize,
 }
 
@@ -177,7 +180,9 @@ impl SPPSEngine {
         let observable_bytes = observable
             .terms()
             .len()
-            .checked_mul(nqubits.saturating_add(32))
+            .checked_mul(nqubits.checked_add(32).ok_or(PauliError::Overflow {
+                context: "estimating SPPS observable storage",
+            })?)
             .ok_or(PauliError::Overflow {
                 context: "estimating SPPS observable storage",
             })?;
@@ -187,9 +192,15 @@ impl SPPSEngine {
             .ok_or(PauliError::Overflow {
                 context: "estimating SPPS gradient storage",
             })?;
+        let operation_bytes = operations
+            .len()
+            .checked_mul(64)
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS operation storage",
+            })?;
         let estimate = observable_bytes
             .checked_add(gradient_bytes)
-            .and_then(|bytes| bytes.checked_add(operations.len().saturating_mul(64)))
+            .and_then(|bytes| bytes.checked_add(operation_bytes))
             .ok_or(PauliError::Overflow {
                 context: "estimating SPPS engine storage",
             })?;
@@ -236,6 +247,7 @@ impl SPPSEngine {
             observable,
             initial_state,
             smoothing,
+            max_bytes,
             nparameters,
         })
     }
@@ -273,11 +285,12 @@ impl SPPSEngine {
             });
         }
         self.validate_parameters(parameters)?;
-        let operations = self.resolve_operations(parameters)?;
         let term_count = self.observable.terms().len();
         if term_count == 0 {
             return Ok(empty_estimate(self.nparameters, seed, 1, false));
         }
+        self.check_execution_budget(samples_per_term, 1)?;
+        let operations = self.resolve_operations(parameters)?;
         let mut stats = (0..term_count)
             .map(|_| TermStats::new(self.nparameters))
             .collect::<Vec<_>>();
@@ -287,7 +300,7 @@ impl SPPSEngine {
             .try_for_each(|(term_index, stats)| {
                 let mut scratch = PathScratch::new(self.operations.len());
                 let term = &self.observable.terms()[term_index];
-                run_samples(
+                run_samples_batched(
                     &operations,
                     &self.initial_state,
                     self.nqubits,
@@ -347,11 +360,12 @@ impl SPPSEngine {
             });
         }
         self.validate_parameters(parameters)?;
-        let operations = self.resolve_operations(parameters)?;
         let term_count = self.observable.terms().len();
         if term_count == 0 {
             return Ok(empty_estimate(self.nparameters, seed, 2, true));
         }
+        self.check_execution_budget(max_samples_per_term, 2)?;
+        let operations = self.resolve_operations(parameters)?;
         let mut left = (0..term_count)
             .map(|_| TermStats::new(self.nparameters))
             .collect::<Vec<_>>();
@@ -469,6 +483,98 @@ impl SPPSEngine {
         Ok(())
     }
 
+    fn check_execution_budget(
+        &self,
+        samples_per_term: usize,
+        replicates: usize,
+    ) -> Result<(), PauliError> {
+        let term_count = self.observable.terms().len();
+        let gradient_bytes = term_count
+            .checked_mul(replicates)
+            .and_then(|value| value.checked_mul(self.nparameters))
+            .and_then(|value| value.checked_mul(size_of::<f64>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS term gradient workspace",
+            })?;
+        let moment_bytes = term_count
+            .checked_mul(replicates)
+            .and_then(|value| value.checked_mul(2))
+            .and_then(|value| value.checked_mul(size_of::<f64>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS term moment workspace",
+            })?;
+        let chunk_count = if samples_per_term > SAMPLE_CHUNK_SIZE {
+            samples_per_term
+                .checked_add(SAMPLE_CHUNK_SIZE - 1)
+                .map(|value| value / SAMPLE_CHUNK_SIZE)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating SPPS sample chunks",
+                })?
+        } else {
+            0
+        };
+        let active_terms = if replicates == 2 {
+            1
+        } else {
+            term_count.min(rayon::current_num_threads().max(1))
+        };
+        let chunk_results = active_terms
+            .checked_mul(chunk_count)
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS chunk result workspace",
+            })?;
+        let chunk_gradient_bytes = chunk_results
+            .checked_mul(self.nparameters)
+            .and_then(|value| value.checked_mul(size_of::<f64>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS chunk gradient workspace",
+            })?;
+        let scratch_bytes_per_path = self
+            .operations
+            .len()
+            .checked_mul(
+                size_of::<f64>()
+                    .checked_mul(4)
+                    .and_then(|value| value.checked_add(size_of::<Option<usize>>()))
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating SPPS path scratch workspace",
+                    })?,
+            )
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS path scratch workspace",
+            })?;
+        let scratch_bytes = active_terms
+            .checked_add(chunk_results)
+            .and_then(|count| count.checked_mul(scratch_bytes_per_path))
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS scratch workspace",
+            })?;
+        let resolved_operation_bytes = self
+            .operations
+            .len()
+            .checked_mul(size_of::<ResolvedOperation>())
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS resolved operation workspace",
+            })?;
+        let requested = gradient_bytes
+            .checked_add(moment_bytes)
+            .and_then(|value| value.checked_add(chunk_gradient_bytes))
+            .and_then(|value| value.checked_add(scratch_bytes))
+            .and_then(|value| value.checked_add(resolved_operation_bytes))
+            .ok_or(PauliError::Overflow {
+                context: "estimating SPPS execution workspace",
+            })?;
+        if let Some(limit) = self.max_bytes {
+            if requested as u128 > limit {
+                return Err(PauliError::MemoryLimit {
+                    requested: requested as u128,
+                    limit,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_operations(&self, parameters: &[f64]) -> Result<Vec<ResolvedOperation>, PauliError> {
         self.operations
             .iter()
@@ -546,8 +652,7 @@ fn run_samples_batched(
     stats: &mut TermStats,
     scratch: &mut PathScratch,
 ) -> Result<(), PauliError> {
-    const CHUNK_SIZE: usize = 256;
-    if end - start <= CHUNK_SIZE {
+    if end - start <= SAMPLE_CHUNK_SIZE {
         return run_samples(
             operations,
             initial_state,
@@ -565,8 +670,16 @@ fn run_samples_batched(
     }
 
     let ranges = (start..end)
-        .step_by(CHUNK_SIZE)
-        .map(|chunk_start| (chunk_start, (chunk_start + CHUNK_SIZE).min(end)))
+        .step_by(SAMPLE_CHUNK_SIZE)
+        .map(|chunk_start| {
+            (
+                chunk_start,
+                chunk_start
+                    .checked_add(SAMPLE_CHUNK_SIZE)
+                    .unwrap_or(end)
+                    .min(end),
+            )
+        })
         .collect::<Vec<_>>();
     let partials = ranges
         .into_par_iter()
@@ -847,7 +960,7 @@ fn combine_adaptive(
         value += 0.5 * (left_mean + right_mean);
         let left_var = (left_stat.sum_squared / count - left_mean * left_mean).max(0.0);
         let right_var = (right_stat.sum_squared / count - right_mean * right_mean).max(0.0);
-        variance += 0.5 * (left_var + right_var) / count;
+        variance += 0.25 * (left_var + right_var) / count;
         for ((output, left_sum), right_sum) in gradient
             .iter_mut()
             .zip(&left_stat.gradient_sum)
@@ -880,4 +993,67 @@ fn counter_random(
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^= value >> 31;
     ((value >> 11) as f64) * RANDOM_SCALE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{combine_adaptive, TermStats};
+    use crate::{
+        Clifford1, Complex64, GateOperation, ParameterRef, PauliOperator, ProductState,
+        RotationAxis, SPPSEngine,
+    };
+    use rayon::ThreadPoolBuilder;
+
+    #[test]
+    fn adaptive_standard_error_uses_squared_average_coefficient() {
+        let mut left = TermStats::new(0);
+        left.sum = 1.0;
+        left.sum_squared = 1.0;
+        left.count = 2;
+        let mut right = TermStats::new(0);
+        right.sum = 3.0;
+        right.sum_squared = 5.0;
+        right.count = 2;
+
+        let (_, _, standard_error) = combine_adaptive(&[left], &[right], &[2]).unwrap();
+        assert!((standard_error - 0.25).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn fixed_sample_chunks_replay_across_local_rayon_pools() {
+        let operations = vec![
+            GateOperation::clifford1(2, Clifford1::H, 0).unwrap(),
+            GateOperation::rotation(2, RotationAxis::X, 0, Some(1), ParameterRef::Slot(0)).unwrap(),
+            GateOperation::rotation(2, RotationAxis::Y, 1, None, ParameterRef::Slot(1)).unwrap(),
+        ];
+        let observable =
+            PauliOperator::from_terms(2, &[vec![3, 1]], &[Complex64::new(0.7, 0.0)]).unwrap();
+        let engine = SPPSEngine::new(
+            2,
+            operations,
+            observable,
+            ProductState::Bloch(vec![[0.3, 0.4, 0.5], [0.2, -0.1, 0.6]]),
+            0.01,
+            Some(u128::MAX),
+        )
+        .unwrap();
+        let one_thread = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| engine.value_and_grad(&[0.37, -0.29], 1024, 41))
+            .unwrap();
+        let four_threads = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| engine.value_and_grad(&[0.37, -0.29], 1024, 41))
+            .unwrap();
+        assert_eq!(one_thread.value, four_threads.value);
+        assert_eq!(
+            one_thread.value_standard_error,
+            four_threads.value_standard_error
+        );
+        assert_eq!(one_thread.gradient, four_threads.gradient);
+    }
 }
