@@ -18,6 +18,8 @@ use crate::operator::{PauliOperator, PauliTerm};
 use crate::scalar::{is_exact_zero, Complex64};
 use crate::word::{packed_word_count, PauliPhase, PauliWord};
 
+const BATCH_PARALLEL_WORK_THRESHOLD: usize = 128;
+
 /// A product initial state for expectation evaluation.
 #[derive(Clone, Debug)]
 pub enum ProductState {
@@ -521,34 +523,25 @@ impl PropagationBatch {
             .map(|observable| observable.terms().len())
             .max()
             .unwrap_or(0);
-        let work = observables
-            .len()
-            .saturating_mul(program.operations.len().max(1))
-            .saturating_mul(maximum_terms.max(1));
-        let active_workers = if observables.len() > 1 && work >= 64 {
-            observables.len().min(rayon::current_num_threads())
-        } else {
-            usize::from(!observables.is_empty())
-        };
-        let per_worker_bytes = maximum_terms
-            .checked_mul(dynamic_term_storage_bytes(program.nqubits)?)
-            .and_then(|terms| terms.checked_mul(2))
-            .and_then(|terms| {
-                program
-                    .nparameters
-                    .checked_mul(size_of::<f64>())
-                    .and_then(|gradient| gradient.checked_mul(2))
-                    .and_then(|gradient| terms.checked_add(gradient))
-            })
+        let per_worker_bytes = estimate_batch_worker_bytes(&program, maximum_terms, None)?;
+        let base_bytes = observable_bytes
+            .checked_add(program.transition_bytes)
+            .and_then(|bytes| bytes.checked_add(output_bytes))
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch shared storage",
+            })?;
+        let active_workers = allowed_batch_workers(
+            observables.len(),
+            &program,
+            maximum_terms,
+            per_worker_bytes,
+            base_bytes,
+        )?;
+        let worker_bytes = active_workers
+            .checked_mul(per_worker_bytes.min(remaining_budget(base_bytes, program.max_bytes)?))
             .ok_or(PauliError::Overflow {
                 context: "estimating propagation batch worker storage",
             })?;
-        let worker_bytes =
-            active_workers
-                .checked_mul(per_worker_bytes)
-                .ok_or(PauliError::Overflow {
-                    context: "estimating propagation batch worker storage",
-                })?;
         let shared_bytes = observable_bytes
             .checked_add(program.transition_bytes)
             .and_then(|bytes| bytes.checked_add(output_bytes))
@@ -593,7 +586,7 @@ impl PropagationBatch {
             return Err(PauliError::NonHermitianExpectation);
         }
         validate_parameters(parameters, self.program.nparameters)?;
-        let results = self.map_observables(|engine| engine.expectation(parameters));
+        let results = self.map_observables(|engine| engine.expectation(parameters), None);
         collect_batch_values(results)
     }
 
@@ -609,8 +602,14 @@ impl PropagationBatch {
         if checkpoint_interval == Some(0) {
             return Err(PauliError::InvalidCheckpointInterval);
         }
-        let results =
-            self.map_observables(|engine| engine.value_and_grad(parameters, checkpoint_interval));
+        let interval = checkpoint_interval.unwrap_or_else(|| {
+            let gates = self.program.operations.len().saturating_add(1);
+            (gates as f64).sqrt().ceil() as usize
+        });
+        let results = self.map_observables(
+            |engine| engine.value_and_grad(parameters, checkpoint_interval),
+            Some(interval),
+        );
         let mut values = Vec::with_capacity(self.engines.len());
         let gradient_len = self
             .engines
@@ -628,28 +627,256 @@ impl PropagationBatch {
         Ok(PropagationBatchValueAndGradient { values, gradients })
     }
 
-    fn map_observables<T, F>(&self, function: F) -> Vec<Result<T, PauliError>>
+    fn map_observables<T, F>(
+        &self,
+        function: F,
+        checkpoint_interval: Option<usize>,
+    ) -> Vec<Result<T, PauliError>>
     where
         T: Send,
         F: Fn(&PropagationEngine) -> Result<T, PauliError> + Sync + Send,
     {
-        let work = self
+        let maximum_terms = self
             .engines
-            .len()
-            .saturating_mul(self.program.operations.len().max(1))
-            .saturating_mul(
+            .iter()
+            .map(|engine| engine.observable.terms().len())
+            .max()
+            .unwrap_or(0);
+        let per_worker_bytes =
+            estimate_batch_worker_bytes(&self.program, maximum_terms, checkpoint_interval)
+                .unwrap_or(usize::MAX);
+        let base_bytes = self
+            .engines
+            .iter()
+            .try_fold(0usize, |sum, engine| {
+                let bytes = engine
+                    .observable
+                    .terms()
+                    .len()
+                    .checked_mul(dynamic_term_storage_bytes(self.program.nqubits)?)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating propagation batch observable storage",
+                    })?;
+                sum.checked_add(bytes).ok_or(PauliError::Overflow {
+                    context: "estimating propagation batch observable storage",
+                })
+            })
+            .ok()
+            .and_then(|bytes| bytes.checked_add(self.program.transition_bytes))
+            .and_then(|bytes| {
                 self.engines
-                    .iter()
-                    .map(|engine| engine.observable.terms().len().max(1))
-                    .max()
-                    .unwrap_or(1),
-            );
-        if self.engines.len() > 1 && work >= 64 && rayon::current_num_threads() > 1 {
-            self.engines.par_iter().map(function).collect()
+                    .len()
+                    .checked_mul(size_of::<f64>())
+                    .and_then(|values| {
+                        self.engines
+                            .len()
+                            .checked_mul(self.program.nparameters)
+                            .and_then(|entries| entries.checked_mul(size_of::<f64>()))
+                            .and_then(|gradients| values.checked_add(gradients))
+                    })
+                    .and_then(|output| bytes.checked_add(output))
+            })
+            .unwrap_or(usize::MAX);
+        let active_workers = allowed_batch_workers(
+            self.engines.len(),
+            &self.program,
+            maximum_terms,
+            per_worker_bytes,
+            base_bytes,
+        )
+        .unwrap_or(1);
+        if active_workers > 1 && rayon::current_num_threads() > 1 {
+            let chunk_size = self.engines.len().div_ceil(active_workers);
+            self.engines
+                .par_chunks(chunk_size.max(1))
+                .map(|chunk| chunk.iter().map(&function).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flatten()
+                .collect()
         } else {
             self.engines.iter().map(function).collect()
         }
     }
+}
+
+fn batch_work_units(
+    program: &CompiledPropagationProgram,
+    observable_count: usize,
+    maximum_terms: usize,
+) -> usize {
+    let operation_work = program
+        .operations
+        .iter()
+        .map(|operation| operation_branch_factor(operation).max(1))
+        .fold(0usize, usize::saturating_add)
+        .max(1);
+    observable_count
+        .saturating_mul(maximum_terms.max(1))
+        .saturating_mul(operation_work)
+}
+
+fn should_parallelize_batch(
+    program: &CompiledPropagationProgram,
+    observable_count: usize,
+    maximum_terms: usize,
+) -> bool {
+    if observable_count <= 1 {
+        return false;
+    }
+    let row_work = maximum_terms.max(1).saturating_mul(
+        program
+            .operations
+            .iter()
+            .map(|operation| operation_branch_factor(operation).max(1))
+            .fold(0usize, usize::saturating_add),
+    );
+    row_work >= 16
+        && batch_work_units(program, observable_count, maximum_terms)
+            >= BATCH_PARALLEL_WORK_THRESHOLD
+}
+
+fn allowed_batch_workers(
+    observable_count: usize,
+    program: &CompiledPropagationProgram,
+    maximum_terms: usize,
+    per_worker_bytes: usize,
+    base_bytes: usize,
+) -> Result<usize, PauliError> {
+    let thread_limit = observable_count.min(rayon::current_num_threads());
+    if thread_limit <= 1 || !should_parallelize_batch(program, observable_count, maximum_terms) {
+        return Ok(usize::from(observable_count != 0));
+    }
+    let remaining = remaining_budget(base_bytes, program.max_bytes)?;
+    let budget_limit = if per_worker_bytes == 0 {
+        thread_limit
+    } else {
+        remaining.checked_div(per_worker_bytes).unwrap_or(0).max(1)
+    };
+    Ok(thread_limit.min(budget_limit).max(1))
+}
+
+fn remaining_budget(base_bytes: usize, max_bytes: Option<u128>) -> Result<usize, PauliError> {
+    match max_bytes {
+        None => Ok(usize::MAX),
+        Some(limit) => {
+            if base_bytes as u128 > limit {
+                return Err(PauliError::MemoryLimit {
+                    requested: base_bytes as u128,
+                    limit,
+                });
+            }
+            usize::try_from(limit - base_bytes as u128).map_err(|_| PauliError::Overflow {
+                context: "converting propagation batch memory budget",
+            })
+        }
+    }
+}
+
+fn estimate_batch_worker_bytes(
+    program: &CompiledPropagationProgram,
+    maximum_terms: usize,
+    checkpoint_interval: Option<usize>,
+) -> Result<usize, PauliError> {
+    let term_bytes = dynamic_term_storage_bytes(program.nqubits)?;
+    let initial_terms = maximum_terms.max(1);
+    let growth_exponent = program
+        .operations
+        .iter()
+        .map(|operation| branch_exponent(operation_branch_factor(operation)))
+        .fold(0usize, usize::saturating_add)
+        .min(program.nqubits);
+    let growth = checked_pow_two(growth_exponent)?;
+    let propagated_terms = initial_terms
+        .checked_mul(growth)
+        .ok_or(PauliError::Overflow {
+            context: "estimating propagation batch term growth",
+        })?;
+    let maximum_branch = program
+        .operations
+        .iter()
+        .map(|operation| operation_branch_factor(operation).max(1))
+        .max()
+        .unwrap_or(1);
+    let candidate_terms =
+        propagated_terms
+            .checked_mul(maximum_branch)
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch candidate storage",
+            })?;
+    let forward_terms =
+        propagated_terms
+            .checked_add(candidate_terms)
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch forward storage",
+            })?;
+    let mut term_slots = forward_terms;
+    if let Some(interval) = checkpoint_interval {
+        let interval = interval.max(1);
+        let checkpoint_count = program
+            .operations
+            .len()
+            .checked_add(interval - 1)
+            .map(|count| count / interval)
+            .and_then(|count| count.checked_add(1))
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch checkpoint count",
+            })?;
+        let replay_states = interval.checked_add(1).ok_or(PauliError::Overflow {
+            context: "estimating propagation batch replay states",
+        })?;
+        term_slots = term_slots
+            .checked_add(
+                checkpoint_count
+                    .checked_add(replay_states)
+                    .and_then(|count| count.checked_add(2))
+                    .and_then(|count| count.checked_mul(propagated_terms))
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating propagation batch reverse storage",
+                    })?,
+            )
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch reverse storage",
+            })?;
+    }
+    let term_storage = term_slots
+        .checked_mul(term_bytes)
+        .ok_or(PauliError::Overflow {
+            context: "estimating propagation batch term storage",
+        })?;
+    let gradient_storage = program
+        .nparameters
+        .checked_mul(size_of::<f64>())
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or(PauliError::Overflow {
+            context: "estimating propagation batch gradient storage",
+        })?;
+    term_storage
+        .checked_add(gradient_storage)
+        .ok_or(PauliError::Overflow {
+            context: "estimating propagation batch worker storage",
+        })
+}
+
+fn branch_exponent(branch_factor: usize) -> usize {
+    if branch_factor <= 1 {
+        0
+    } else {
+        usize::BITS as usize - (branch_factor - 1).leading_zeros() as usize
+    }
+}
+
+fn checked_pow_two(exponent: usize) -> Result<usize, PauliError> {
+    if exponent >= usize::BITS as usize {
+        return Err(PauliError::Overflow {
+            context: "estimating propagation batch term growth",
+        });
+    }
+    1usize
+        .checked_shl(exponent as u32)
+        .ok_or(PauliError::Overflow {
+            context: "estimating propagation batch term growth",
+        })
 }
 
 fn collect_batch_values(results: Vec<Result<f64, PauliError>>) -> Result<Vec<f64>, PauliError> {
@@ -1581,6 +1808,64 @@ pub(crate) fn check_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_program(
+        operations: Vec<GateOperation>,
+        max_bytes: Option<u128>,
+    ) -> Arc<CompiledPropagationProgram> {
+        compile_program(12, operations, ProductState::Zero, None, max_bytes).unwrap()
+    }
+
+    #[test]
+    fn batch_scheduler_keeps_light_clifford_rows_serial() {
+        let operations = (0..16)
+            .map(|wire| GateOperation::clifford1(12, Clifford1::Z, wire % 12).unwrap())
+            .collect();
+        let program = test_program(operations, None);
+        assert!(!should_parallelize_batch(&program, 2, 1));
+        assert!(!should_parallelize_batch(&program, 4, 1));
+    }
+
+    #[test]
+    fn batch_scheduler_parallelizes_rotation_heavy_rows() {
+        let operations = (0..48)
+            .map(|wire| {
+                GateOperation::rotation(
+                    12,
+                    RotationAxis::Y,
+                    wire % 12,
+                    None,
+                    ParameterRef::Static { cos: 0.9, sin: 0.1 },
+                )
+                .unwrap()
+            })
+            .collect();
+        let program = test_program(operations, None);
+        assert!(should_parallelize_batch(&program, 4, 1));
+    }
+
+    #[test]
+    fn batch_worker_budget_bounds_active_rows() {
+        let operations = (0..48)
+            .map(|wire| {
+                GateOperation::rotation(
+                    12,
+                    RotationAxis::Y,
+                    wire % 12,
+                    None,
+                    ParameterRef::Static { cos: 0.9, sin: 0.1 },
+                )
+                .unwrap()
+            })
+            .collect();
+        let program = test_program(operations, Some(1_000_000));
+        let worker_bytes = estimate_batch_worker_bytes(&program, 1, None).unwrap();
+        assert!(worker_bytes > 500_000);
+        assert_eq!(
+            allowed_batch_workers(16, &program, 1, worker_bytes, 0).unwrap(),
+            1
+        );
+    }
 
     #[test]
     fn local_rotation_products_match_pauli_phase_table() {

@@ -369,11 +369,19 @@ maturin --version
 
 该阶段已按 spec 完成：`PropagationBatch` 共享一个 immutable compiled program，执行空/单/多 observable 的 expectations 与 row-wise frozen-support values/gradients，并在工作量达到 private threshold 时只沿 observable 维度使用 Rayon；小 workload 走串行路径。coefficient-batched keys、Clifford frame、inner term parallelism和batch SPPS均不属于本阶段。完整合同与验证证据见`phase-5.5-spec.md`与`implementation-status.md`。
 
-### 阶段六：U1Circuit 与含时演化
+### 阶段六：common circuit IR 与 Rust-native U1Circuit
 
-在阶段四的 GateTape/adapter 边界和阶段五的 multiword U1 engine 完成后，实现与 TensorCircuit `U1Circuit` 语义对齐的完整 fixed-particle-number circuit workflow：state preparation、number-conserving gate/circuit execution、time-independent/time-dependent Hamiltonian evolution、Trotter schedule、observable evaluation，以及 Python/TensorCircuit differential tests。
+在阶段四的GateTape/adapter边界和阶段五的multiword U1 engine完成后，先建立backend-neutral common circuit layer，统一typed gate semantics、`Parameter(slot)`、immutable `ParameterExpr`、logical transformations和deterministic Python/Rust serialization。Common IR不计算`2**n`，不包含U1 sector/rank/pair map，也不承诺public通用模拟器；未来execution mode可以消费同一logical representation，而不重复参数和gate协议。
 
-阶段六开始前必须冻结输入形态（专用 U1 gate tape、TensorCircuit circuit adapter 或 Hamiltonian evolution plan）、支持的 gate set、parameter handling、backend/JIT 和 gradient 范围。第一版必须对 non-number-conserving gates 明确失败，不静默投影，并分别验证 single-step gate action、multi-step circuit、time-evolution trajectory 和 observables。
+Phase 6唯一实现的execution backend与TensorCircuit `U1Circuit`常用构造、gate名称、basis ordering和observable语义对齐。Python gate methods只记录common typed operations；`compile()`、state、expectation或gradient terminal一次性跨PyO3，由U1 compiler完成sector validation、fusion、pair-map construction、restricted-state execution和reduction。Required gate set为RZ、RZZ、CZ、CPhase、SWAP、TensorCircuit-convention iSWAP和bounded static diagonal，并支持任意宽low-k/low-hole sectors。通用full-state和tensor-network simulator都不属于本阶段。
+
+Phase 6实现普通restricted statevector的精确adjoint gradient：forward只保留final state，reverse通过unitary inverses同时重建pre-gate state和传播adjoint state。Required bounded terminals包含`to_dense()`和`probability_full()`；static diagonal严格幺正；Givens/fSim/public general block不进入首版。它不包含time-evolution solver、noise、sampling/RDM/entropy、automatic Trotter、JAX custom call或GPU。完整冻结合同见`phase-6-spec.md`。
+
+### 阶段六点五：generic Rust-native matrix-free time evolution（deferred proposal）
+
+Phase 6.5与U1语义解耦，接受已经在Rust中的full-space `MvpPlan`、restricted `U1MvpPlan`或兼容native operator handle，在一次coarse call中完成Taylor expm-multiply、Hermitian Krylov/Lanczos或Chebyshev exponential action。所有重复MVP、vector recurrence、error checks和scratch reuse留在Rust；若未来恢复，首版只做time-independent Hermitian real-time forward evolution，可选返回state、selected-time trajectory、native observable reductions和显式time derivative。
+
+该阶段当前搁置，不是Phase 6之后的自动下一里程碑，也不得为其提前引入general linear algebra abstraction、small eigensolver或Bessel dependency。重新启动必须有真实workload、matched baseline、dependency/accuracy spike和新的owner decision。它不实现time-dependent Hamiltonian、Python callback、ODE、automatic Trotter、general autodiff、JAX custom call或accelerator integration。完整deferred proposal见`phase-6.5-spec.md`。
 
 ### 阶段七：Qudit generalized Pauli/Weyl 与 Hamiltonian compiler
 
@@ -418,8 +426,7 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 - SPPS后续是否增加adaptive smoothing、observable-term sampling或correlated sampling；这些均不属于Phase 4。
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
 - Backend MVP plan 的 portable integer dtype 如何兼容 JAX 默认关闭 int64、TensorFlow 和 PyTorch。
-- 64+ qubit U1 restricted Hamiltonian 使用何种 packed multiword basis key、combinatorial rank/lookup 和 transition storage，并如何在 low-particle-number workload 上验证其相对 Python/TensorCircuit 的收益。
-- TensorCircuit-style `U1Circuit` 的第一版是接收专用 number-conserving gate tape、TensorCircuit circuit adapter，还是先只提供 Hamiltonian time-evolution plan；time-dependent parameters、Trotter schedule、backend/JIT 与 gradient 范围需在实现前冻结。
+- Phase 6.5需要通过P0 spike冻结Krylov orthogonalization和small symmetric eigensolver dependency、Chebyshev Bessel implementation、Taylor schedule defaults以及spectral-bound safety margin。
 - Qudit canonical basis 采用直接 `X^a Z^b` 还是带中心相位的 Weyl-normalized `τ^(ab)X^a Z^b`；该选择会影响 multiplication phase、adjoint、Hermiticity 和 `d=2` 与现有 `PauliWord` 的兼容方式，必须在实现前冻结。
 - 首个 qudit slice 是支持任意整数 `d>=2`，还是先限定 prime/prime-power dimension；GF(d) symmetry 方法不能在 composite `d` 上未经说明地复用。
 - Qudit 首版是否只支持 uniform local dimension，mixed-radix systems 后续再做；公开 serialization 必须无歧义记录每个 site 的 dimension 和 exponent ordering。

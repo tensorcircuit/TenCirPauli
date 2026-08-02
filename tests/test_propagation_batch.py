@@ -144,6 +144,22 @@ def test_batch_parallel_repeat_is_bitwise_stable() -> None:
     np.testing.assert_array_equal(first.gradients, second.gradients)
 
 
+def test_batch_memory_budget_limits_expanding_rows_to_safe_concurrency() -> None:
+    tape = tcp.GateTape(12)
+    for layer in range(4):
+        for wire in range(12):
+            tape.ry(wire, parameter=layer * 12 + wire)
+    observable = tcp.PauliOperator(12, [([3] * 12, 1.0)])
+    batch = tcp.PropagationBatch(
+        tape,
+        [observable] * 16,
+        max_bytes=1_000_000,
+    )
+    result = batch.expectations(np.full(batch.nparameters, 0.2))
+    assert result.shape == (16,)
+    np.testing.assert_array_equal(result, result[0])
+
+
 def test_batch_concurrent_calls_are_isolated() -> None:
     tape = _tape()
     batch = tcp.PropagationBatch(tape, _observables(16))

@@ -11,20 +11,53 @@ from pytest_benchmark.fixture import BenchmarkFixture
 import tencirpauli as tcp
 
 
-def make_case(observable_count: int) -> tuple[tcp.GateTape, list[tcp.PauliOperator]]:
-    tape = tcp.GateTape(12)
-    for layer in range(4):
-        for wire in range(12):
-            tape.ry(wire, parameter=layer * 12 + wire)
-        for wire in range(0, 11, 2):
+def make_case(
+    observable_count: int,
+    *,
+    nqubits: int = 12,
+    layers: int = 4,
+    terms_per_observable: int = 1,
+    rotation_heavy: bool = True,
+) -> tuple[tcp.GateTape, list[tcp.PauliOperator]]:
+    tape = tcp.GateTape(nqubits)
+    for layer in range(layers):
+        if rotation_heavy:
+            for wire in range(nqubits):
+                tape.ry(wire, parameter=layer * nqubits + wire)
+        else:
+            for wire in range(0, nqubits - 1, 2):
+                tape.cz(wire, wire + 1)
+        for wire in range(0, nqubits - 1, 2):
             tape.cnot(wire, wire + 1)
     observables = []
     for index in range(observable_count):
-        codes = [0] * 12
-        codes[index % 12] = 3
-        codes[(index * 5 + 1) % 12] = 1
-        observables.append(tcp.PauliOperator(12, [(codes, 1.0)]))
+        terms = []
+        for term_index in range(terms_per_observable):
+            codes = [0] * nqubits
+            codes[(index + term_index) % nqubits] = 3
+            codes[(index * 5 + term_index + 1) % nqubits] = 1
+            terms.append((codes, 1.0 / (term_index + 1)))
+        observables.append(tcp.PauliOperator(nqubits, terms))
     return tape, observables
+
+
+def profile_metadata(
+    tape: tcp.GateTape,
+    observables: list[tcp.PauliOperator],
+    parameters: np.ndarray,
+) -> dict[str, int]:
+    profiles = [
+        tcp.PropagationEngine(tape, observable).profile(parameters).profile
+        for observable in observables
+    ]
+    return {
+        "initial_terms_max": max((item.initial_terms for item in profiles), default=0),
+        "peak_terms_max": max((item.peak_terms for item in profiles), default=0),
+        "final_terms_max": max((item.final_terms for item in profiles), default=0),
+        "estimated_peak_bytes_max": max(
+            (item.estimated_peak_bytes for item in profiles), default=0
+        ),
+    }
 
 
 @pytest.mark.parametrize("observable_count", (1, 4, 16, 64))
@@ -156,3 +189,84 @@ def test_scalar_serial_values_and_gradients(
             "numerical_error": 0.0,
         }
     )
+
+
+def test_batch_light_clifford_crossover(benchmark: BenchmarkFixture) -> None:
+    tape, observables = make_case(
+        4,
+        nqubits=12,
+        layers=2,
+        rotation_heavy=False,
+    )
+    batch = tcp.PropagationBatch(tape, observables)
+    engines = [tcp.PropagationEngine(tape, observable) for observable in observables]
+    parameters = np.empty(0, dtype=np.float64)
+    expected = np.array([engine.expectation(parameters) for engine in engines])
+    result = benchmark.pedantic(batch.expectations, args=(parameters,), rounds=5)
+    np.testing.assert_array_equal(result, expected)
+    benchmark.extra_info.update(
+        {
+            "observable_count": 4,
+            "nqubits": 12,
+            "gate_count": len(tape),
+            "nparameters": batch.nparameters,
+            "output_bytes": result.nbytes,
+            "thread_count": int(
+                os.environ.get("RAYON_NUM_THREADS", os.cpu_count() or 1)
+            ),
+            "numerical_error": 0.0,
+        }
+    )
+    benchmark.extra_info.update(profile_metadata(tape, observables, parameters))
+
+
+@pytest.mark.performance_large
+def test_batch_100q_near_clifford(benchmark: BenchmarkFixture) -> None:
+    tape, observables = make_case(
+        16,
+        nqubits=100,
+        layers=4,
+        rotation_heavy=False,
+    )
+    batch = tcp.PropagationBatch(tape, observables)
+    parameters = np.empty(0, dtype=np.float64)
+    expected = batch.expectations(parameters)
+    result = benchmark.pedantic(batch.expectations, args=(parameters,), rounds=5)
+    np.testing.assert_array_equal(result, expected)
+    benchmark.extra_info.update(
+        {
+            "observable_count": 16,
+            "nqubits": 100,
+            "gate_count": len(tape),
+            "nparameters": batch.nparameters,
+            "output_bytes": result.nbytes,
+            "thread_count": int(
+                os.environ.get("RAYON_NUM_THREADS", os.cpu_count() or 1)
+            ),
+            "numerical_error": 0.0,
+        }
+    )
+    benchmark.extra_info.update(profile_metadata(tape, observables, parameters))
+
+
+@pytest.mark.performance_large
+def test_batch_heavy_multi_term_rows(benchmark: BenchmarkFixture) -> None:
+    tape, observables = make_case(16, terms_per_observable=8)
+    batch = tcp.PropagationBatch(tape, observables)
+    parameters = np.linspace(-0.4, 0.4, batch.nparameters)
+    expected = batch.expectations(parameters)
+    result = benchmark.pedantic(batch.expectations, args=(parameters,), rounds=5)
+    np.testing.assert_array_equal(result, expected)
+    benchmark.extra_info.update(
+        {
+            "observable_count": 16,
+            "terms_per_observable": 8,
+            "nparameters": batch.nparameters,
+            "output_bytes": result.nbytes,
+            "thread_count": int(
+                os.environ.get("RAYON_NUM_THREADS", os.cpu_count() or 1)
+            ),
+            "numerical_error": 0.0,
+        }
+    )
+    benchmark.extra_info.update(profile_metadata(tape, observables, parameters))
