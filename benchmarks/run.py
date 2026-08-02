@@ -107,6 +107,10 @@ def metadata(label: str, suite: str) -> Dict[str, object]:
             "cargo": tool_version(["cargo", "--version"]),
             "maturin": tool_version(["maturin", "--version"]),
         },
+        "thread_environment": {
+            "RAYON_NUM_THREADS": os.environ.get("RAYON_NUM_THREADS", "unset"),
+            "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS", "unset"),
+        },
         "status": "running",
     }
 
@@ -127,21 +131,22 @@ def rust_environment() -> Dict[str, str]:
 
 def record_rust(label: str) -> None:
     """Record a named Criterion baseline."""
-    run(
-        [
-            "cargo",
-            "bench",
-            "--locked",
-            "-p",
-            "tencir-pauli-core",
-            "--bench",
-            "pauli_word",
-            "--",
-            "--save-baseline",
-            label,
-        ],
-        env=rust_environment(),
-    )
+    for bench in ("pauli_word", "symmetry"):
+        run(
+            [
+                "cargo",
+                "bench",
+                "--locked",
+                "-p",
+                "tencir-pauli-core",
+                "--bench",
+                bench,
+                "--",
+                "--save-baseline",
+                label,
+            ],
+            env=rust_environment(),
+        )
 
 
 def python_storage_uri() -> str:
@@ -207,21 +212,22 @@ def find_python_result(label: str) -> str:
 
 def compare_rust(label: str) -> None:
     """Run Criterion and compare current measurements with a named baseline."""
-    run(
-        [
-            "cargo",
-            "bench",
-            "--locked",
-            "-p",
-            "tencir-pauli-core",
-            "--bench",
-            "pauli_word",
-            "--",
-            "--baseline",
-            label,
-        ],
-        env=rust_environment(),
-    )
+    for bench in ("pauli_word", "symmetry"):
+        run(
+            [
+                "cargo",
+                "bench",
+                "--locked",
+                "-p",
+                "tencir-pauli-core",
+                "--bench",
+                bench,
+                "--",
+                "--baseline",
+                label,
+            ],
+            env=rust_environment(),
+        )
 
 
 def compare_python(label: str) -> None:

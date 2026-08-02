@@ -2,7 +2,7 @@
 
 TenCirPauli is a Rust-native Pauli algebra, deterministic measurement grouping, and Hamiltonian compiler with a typed Python API compatible with TensorCircuit's Pauli codes and qubit-ordering conventions.
 
-The Phase 1 public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, and a versioned backend MVP plan. Symmetry analysis, GateTape, Pauli propagation, and native gradients are intentionally outside Phase 1.
+The public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, a versioned backend MVP plan, Pauli Z2 symmetry/tapering plans, and explicit U(1) restricted-sector operators. GateTape, Pauli propagation, and native gradients remain outside the current scope.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ TensorCircuit integration is optional: `pip install 'tencirpauli[tensorcircuit]'
 ```python
 import numpy as np
 
-from tencirpauli import PauliOperator, PauliWord
+from tencirpauli import PauliOperator, PauliWord, U1Sector
 
 word = PauliWord.from_string("XYZ")
 product = PauliWord.from_string("X").multiply(PauliWord.from_string("Y"))
@@ -48,9 +48,22 @@ plan = hamiltonian.backend_mvp_plan()
 np.testing.assert_allclose(plan.apply(state), matrix @ state)
 native_plan = hamiltonian.native_mvp_plan()
 np.testing.assert_allclose(native_plan.apply(state), matrix @ state)
+
+analysis = hamiltonian.find_z2_symmetries()
+if analysis.rank:
+    tapered = analysis.tapering_plan((1,) * analysis.rank).transform_operator(
+        hamiltonian
+    )
+
+number_conserving = PauliOperator.from_terms(
+    3, (("XXI", 0.5), ("YYI", 0.5))
+)
+sector = U1Sector(3, 1)
+restricted = number_conserving.restrict_u1(sector)
+next_state = restricted.apply(np.ones(sector.dimension, dtype=np.complex128))
 ```
 
-Explicit `dense`, `coo`, `csr`, and MVP targets use the public `DEFAULT_MAX_BYTES` budget, currently 4 GiB. Pass `max_bytes` per call to lower the safety budget for a memory-constrained job or raise it when the host has enough RAM; a `MemoryError` reports the estimated request before a large allocation is attempted.
+Explicit `dense`, `coo`, `csr`, and MVP targets use the public `DEFAULT_MAX_BYTES` best-effort guard, currently 4 GiB. Pass `max_bytes` per call to reject cheaply estimated major outputs or workspaces, or raise it when the host has enough RAM. This is not an exact peak-RSS limit: allocator overhead, FFI conversion and transient buffers may exceed the estimate, so an operating-system out-of-memory failure remains possible.
 
 Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It precomputes phase structure in Rust, releases the GIL during application, and avoids rebuilding the operator on every statevector call. Use `backend_mvp_plan()` when the calculation must remain inside a TensorCircuit backend and JAX autodiff/JIT is required.
 
@@ -59,6 +72,25 @@ Use `native_mvp_plan()` when applying the same static Hamiltonian repeatedly. It
 For large numeric batches, use `PauliOperator.from_code_arrays()` to construct a static operator or `PauliOperator.canonicalize_code_arrays_numpy()` to keep canonical structures, coefficients, mappings, and phases in contiguous read-only NumPy arrays without materializing Python objects per term.
 
 `PauliOperator.group_commuting(mode="general")` returns an explicitly algebraic prototype with `measurement_ready=False`; it must not be used as a local single-qubit measurement plan. QWC reconstruction uses the returned group masks and rotated measurement bitstrings.
+
+## Symmetry and restricted sectors
+
+Z2 analysis is exposed as `analysis = h.find_z2_symmetries(max_bytes=...)`. It returns `analysis.generators`, `analysis.rank`, and `analysis.constraint_rank`; select a sector with `plan = analysis.tapering_plan((+1, -1, ...))`, then call `plan.transform_operator(h)` or reuse the same plan for compatible observables. The transformed result is an ordinary smaller `PauliOperator`, so its existing `.dense()`, `.coo()`, `.csr()`, `.mvp()`, `.native_mvp_plan()`, and `.backend_mvp_plan()` targets remain available. `h.taper_z2(sector=...)` is the one-shot convenience form.
+
+U1 is explicit rather than automatically inferred: `sector = U1Sector(nqubits=h.nqubits, particle_number=k)`. Use `sector.dimension`, `sector.rank(bitstring)`, `sector.unrank(index)`, and `sector.basis_words()` for the fixed-Hamming-weight basis. `restricted = h.restrict_u1(sector)` validates sector preservation after duplicate-transition aggregation; it exposes reduced-space `.apply(state)`, `.mvp_plan().apply(state)`, `.dense()`, `.coo()`, and `.csr()`. The U1 API never materializes a full-space dense/COO matrix or a `2**n` statevector. Python basis helpers support packed multiword states, while the current native restricted Hamiltonian/MVP/CSR path uses one `usize` computational-basis index and explicitly rejects `nqubits >= usize` bit width; multiword native restriction is planned for Phase 5.
+
+```python
+analysis = h.find_z2_symmetries()
+if analysis.rank:
+    tapered = analysis.tapering_plan((1,) * analysis.rank).transform_operator(h)
+    tapered_plan = tapered.native_mvp_plan()
+
+sector = U1Sector(nqubits=h.nqubits, particle_number=2)
+restricted = h.restrict_u1(sector)
+restricted_plan = restricted.mvp_plan()
+next_state = restricted_plan.apply(np.ones(sector.dimension, dtype=np.complex128))
+restricted_csr = restricted.csr()
+```
 
 ## Development checks
 

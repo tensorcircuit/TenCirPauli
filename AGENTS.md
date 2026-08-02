@@ -30,8 +30,9 @@ Correctness tests are the gate for optimization. Maintain dense or otherwise tru
 - Rust propagation supports exact dynamic operators and Pauli-weight projection. Do not reproduce fixed-buffer top-k sparse propagation in the Rust engine.
 - Apply weight projection only after contributions with the same Pauli word have been aggregated.
 - Native gradients use explicit local derivative/VJP rules. A parameter-dependent coefficient cutoff must not silently enter a gradient-supported path.
-- Fail fast for unsupported gates, invalid dimensions, incompatible word lengths, excessive allocations, and missing optional integrations.
+- Fail fast for unsupported gates, invalid dimensions, incompatible word lengths, obviously excessive major allocations, and missing optional integrations.
 - Keep changes minimal and avoid speculative abstractions that are not required by the current milestone.
+- Treat public `max_bytes` values as best-effort guards for cheaply estimated major outputs and workspaces, not as exact peak-RSS guarantees. Checked dimension/arithmetic overflow remains mandatory, but do not add complex allocator, FFI, or transient-buffer accounting solely to make `max_bytes` exact.
 
 ## Rust Standards
 

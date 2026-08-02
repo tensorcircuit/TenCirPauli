@@ -16,6 +16,7 @@ from .hamiltonian import DEFAULT_MAX_BYTES
 if TYPE_CHECKING:
     from .grouping import GroupingResult
     from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix, NativeMVPPlan
+    from .symmetry import U1RestrictedOperator, U1Sector, Z2SymmetryAnalysis
 
 
 class PauliPhase(IntEnum):
@@ -503,6 +504,58 @@ class PauliOperator:
             algorithm=algorithm,
             max_matrix_entries=max_matrix_entries,
         )
+
+    def find_z2_symmetries(
+        self, max_bytes: int = DEFAULT_MAX_BYTES
+    ) -> "Z2SymmetryAnalysis":
+        """Discover deterministic, term-wise commuting Pauli Z2 symmetries."""
+        from .symmetry import Z2SymmetryAnalysis
+
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or max_bytes < 0
+        ):
+            raise ValueError("max_bytes must be a non-negative integer")
+        generators, constraint_rank = _native.pauli_find_z2_symmetries(
+            self.nqubits, *self._arrays(), max_bytes
+        )
+        return Z2SymmetryAnalysis(
+            self.nqubits,
+            tuple(PauliWord.from_codes(codes) for codes in generators),
+            int(constraint_rank),
+        )
+
+    def taper_z2(
+        self,
+        sector: Sequence[int],
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
+        """Find Z2 symmetries, select ``sector``, and taper this operator."""
+        analysis = self.find_z2_symmetries(max_bytes=max_bytes)
+        return analysis.tapering_plan(sector).transform_operator(self)
+
+    def restrict_u1(
+        self,
+        sector: "U1Sector",
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> "U1RestrictedOperator":
+        """Validate and restrict this operator to an explicit U1 sector."""
+        from .symmetry import U1Sector, _restrict_u1
+
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or max_bytes < 0
+        ):
+            raise ValueError("max_bytes must be a non-negative integer")
+        if not isinstance(sector, U1Sector):
+            raise TypeError(f"expected U1Sector, got {type(sector).__name__}")
+        if sector.nqubits != self.nqubits:
+            raise ValueError(
+                f"expected sector for {self.nqubits} qubits, got {sector.nqubits}"
+            )
+        return _restrict_u1(self, sector, max_bytes)
 
     def compatibility_matrix(
         self, mode: str = "general", max_entries: int = 10_000_000

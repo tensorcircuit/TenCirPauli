@@ -1,6 +1,6 @@
 # Phase 2 Spike：Symmetry analysis 与 sector reduction
 
-状态：接口提案，供下一位实现 Agent 按纵向切片执行。Phase 1 remediation 和 Rust module split 已完成，不属于本 Spike 的待办。MSRV 1.85 CI 不在本阶段实施。
+状态：已实现并完成首轮本地检查；2026-08-02 acceptance review 发现多生成元 tapering row-sign blocker，修复并通过独立 projector/property regression 前不得标记为最终验收完成。Phase 1 remediation 和 Rust module split 已完成，不属于本 Spike 的待办。MSRV 1.85 CI 不在本阶段实施。
 
 ## 1. 这一阶段到底要解决什么
 
@@ -106,7 +106,7 @@ class Z2TaperingPlan:
 
 `sector` 长度必须等于 generator 数量，每个值只能是 `+1` 或 `-1`。`transform_operator()` 必须验证输入 operator 与所选 generators 兼容；不对易的 observable 明确失败。变换后的 coefficient、Pauli phase 和 qubit ordering 必须与对原矩阵执行同一个 Clifford transform 并投影到 sector 的 dense reference 一致。
 
-`clifford_operations` 是版本化、可序列化的紧凑 gate/bit-operation plan，不保存 Python callable 或 backend object。具体内部消元算法可以调整，但 public plan 必须保留 generator、sector、removed-qubit 和 forward transform provenance，使同一 plan 能稳定应用到多个 observables。
+`clifford_operations` 是当前进程内可检查的紧凑 gate/bit-operation provenance，不保存 Python callable 或 backend object。public plan 必须保留 generator、sector、removed-qubit 和 forward transform provenance，使同一 runtime plan 能稳定应用到多个 observables。稳定的 pickle/JSON/跨进程 plan serialization 不是 Phase 2 用户需求或验收项；需要持久化时应在真实用例出现后另行定义 schema/version。
 
 可以在上述基础上增加便利方法 `h.taper_z2(sector=...)`，但它只是 `find_z2_symmetries()`、`tapering_plan()` 和 `transform_operator()` 的组合，不替代显式的可复用接口。
 
@@ -160,6 +160,8 @@ class U1RestrictedOperator:
 
     def apply(self, state: np.ndarray, *, max_bytes: int = DEFAULT_MAX_BYTES) -> np.ndarray: ...
     def mvp_plan(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> U1MvpPlan: ...
+    def dense(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> np.ndarray: ...
+    def coo(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> COOMatrix: ...
     def csr(self, *, max_bytes: int = DEFAULT_MAX_BYTES) -> CSRMatrix: ...
 
 class U1MvpPlan:
@@ -170,6 +172,8 @@ class U1MvpPlan:
 ~~~
 
 `U1MvpPlan` 是新类型，因为现有 `NativeMvpPlan` 的状态空间固定为完整 `2**n` basis，不能让两个不同 dimension 合同共用一个名字。`restrict_u1()` 首先对完整聚合 operator 验证 sector preservation，再构造 restricted plan。MVP 是大问题的默认路径；CSR 用于可安全物化的规模。`apply()` 的输入长度必须是 `C(n,k)`，结果必须等于 full-space action 后投影回 fixed-particle basis，但实现不能偷偷分配 full `2**n` state 或 full Hamiltonian。
+
+当前 Phase 2 restricted Hamiltonian/MVP/CSR 使用单机 `usize` computational-basis index，只承诺 `nqubits < usize::BITS`；`U1Sector` 的 Python combinatorial rank/basis helper 可以覆盖更宽的 multiword bitstrings，但不能据此推断 restricted native operator 已支持 64+ qubits。64+ qubit low-particle-number U1 Hamiltonian restriction 已明确排入 roadmap 阶段五；TensorCircuit-style U1 circuit/time evolution 排入阶段六。
 
 ## 5. 典型用户流程
 
@@ -233,15 +237,15 @@ next_state = restricted.apply(state)
 
 - Core 保持 pure Rust；Z2/U1 新实现分别进入清晰模块，例如 `gf2.rs`、`symmetry.rs` 和 `sector.rs`，不再改回单文件。
 - 每次 analysis、plan construction、operator transform 或 restricted apply 使用一次粗粒度 FFI；不逐 term、generator 或 basis state 调用 Python。
-- 所有输出确定性；所有组合数、matrix dimension、scratch 和 output allocation 在分配前 checked，并服从显式 `max_bytes`。
+- 所有输出确定性；组合数、matrix dimension 和 arithmetic overflow 必须 checked。`max_bytes` 只对可廉价估算的主要 output/workspace 提供 best-effort guard，不是精确 peak-RSS 合同，不要求为 allocator overhead、FFI conversion 或所有 transient scratch 建立复杂模型。
 - U1 不守恒、非法 sector、不兼容 observable、溢出和超限必须明确失败；sector-leakage 判断必须在相同 transition contributions 聚合后进行，任何逐 term 误判、自动 projection、silent fallback 或隐藏 tolerance 都是错误。
 - Phase 1 的 complex128、exact-zero aggregation、qubit ordering、GIL release 和 public/private package 边界保持不变。
 
 ## 8. 一次性验收标准
 
-通用 format/lint/test/package 命令直接遵循 `AGENTS.md` 和 `scripts/check.py`，不在每个切片重复抄写。Phase 2 额外需要证明：所有 Z2 generators exact commute、independent、pairwise commute 且顺序稳定；tapered operator 与原 sector 的 dense action/spectrum 一致；U1 rank/unrank 与 basis order 一致；restricted MVP/CSR 与 `P†HP` 一致；错误路径在分配前失败；公开 Python 调用没有逐元素 FFI。
+通用 format/lint/test/package 命令直接遵循 `AGENTS.md` 和 `scripts/check.py`，不在每个切片重复抄写。Phase 2 额外需要证明：所有 Z2 generators exact commute、independent、pairwise commute 且顺序稳定；tapered operator 与原 sector 的 dense action/spectrum 一致；U1 rank/unrank 与 basis order 一致；restricted MVP/CSR 与 `P†HP` 一致；invalid dimension/arithmetic overflow 和可廉价识别的超大主要输出明确失败；公开 Python 调用没有逐元素 FFI。
 
-至少保留四组端到端 workload：有全局 parity 的 TFIM、具有多个 Z2 generators 的小模型、number-conserving XX/YY hopping 或 XXZ 模型，以及明确破坏 U1 的反例。Benchmark 同时记录 setup、steady apply、peak/output memory 和结果误差；本地结果仍保存在被忽略的 `.benchmarks/` 中，不设置共享 CI wall-time gate。
+至少保留四组端到端 workload：有全局 parity 的 TFIM、具有多个 Z2 generators 的小模型、number-conserving XX/YY hopping 或 XXZ 模型，以及明确破坏 U1 的反例。Benchmark 同时记录 setup、steady apply、主要 output/storage、结果误差以及有诊断价值时的 peak memory；本地结果仍保存在被忽略的 `.benchmarks/` 中，不设置共享 CI wall-time gate。
 
 ## 9. 非目标
 
@@ -249,6 +253,9 @@ next_state = restricted.apply(state)
 - 不自动发现一般连续 symmetry 或替用户选择 particle number。
 - 不实现任意 non-Pauli symmetry、non-Abelian symmetry 或多个 U1 charges。
 - 不进入 GateTape、Pauli propagation、native gradient、JAX custom call 或 general-commuting measurement diagonalization。
+- 不实现 stable Z2 plan serialization/persistence；当前 reusable plan 只保证进程内使用。
+- 不实现 64+ qubit native U1 restricted Hamiltonian/MVP/CSR；该能力属于 roadmap 阶段五。
+- 不实现 TensorCircuit-style `U1Circuit` circuit execution 或含时演化；该能力属于 roadmap 阶段六。
 - 不新增 crate，不修改 TensorCircuit 主仓库。
 
 ## 10. 给下一位 Agent 的执行边界

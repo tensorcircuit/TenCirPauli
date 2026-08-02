@@ -4,6 +4,7 @@ mod convert;
 mod grouping;
 mod hamiltonian;
 mod operator;
+mod symmetry;
 mod word;
 
 use pyo3::prelude::*;
@@ -18,6 +19,10 @@ use operator::{
     pauli_canonicalize_batch_array, pauli_canonicalize_batch_numpy, pauli_operator_adjoint,
     pauli_operator_binary, pauli_operator_is_hermitian, pauli_operator_scale,
 };
+use symmetry::{
+    pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
+    NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
+};
 use word::{
     pauli_batch_from_codes, pauli_codes, pauli_commutes, pauli_from_codes, pauli_multiply,
     pauli_support, pauli_symplectic_inner_product, pauli_weight,
@@ -27,6 +32,9 @@ use word::{
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<NativeMvpPlan>()?;
+    module.add_class::<NativeZ2TaperingPlan>()?;
+    module.add_class::<NativeU1RestrictedOperator>()?;
+    module.add_class::<NativeU1MvpPlan>()?;
     module.add_function(wrap_pyfunction!(pauli_weight, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_support, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_codes, module)?)?;
@@ -56,5 +64,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_incompatibility_edges, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_find_z2_symmetries, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_z2_tapering_plan, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_restrict_u1, module)?)?;
+    module.add_function(wrap_pyfunction!(u1_basis_words, module)?)?;
     Ok(())
 }

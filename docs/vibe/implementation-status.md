@@ -1,10 +1,10 @@
 # Implementation Status
 
-状态日期：2026-08-01。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
+状态日期：2026-08-02。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5。Phase 1 初次验收发现的阻断项已在同日 remediation 中修复并完成本地复验；core/native 机械 module split 也已完成，当前代码与文档构成 Phase 2 handoff baseline。下一 active milestone 是 review `phase-2-spec.md` 提出的 Z2 analysis/tapering 与显式 U1 sector public API，然后从 P0 reference slice 开始实现。项目暂不增加 MSRV 1.85 CI job。
+完成 `phase-1-spec.md` 中的 P0–P5，并完成 `phase-2-spec.md` 的 Z2 analysis/tapering、显式 U1 sector、restricted MVP/CSR 和 symmetry-aware JAX benchmark 对照。2026-08-02 acceptance review 暴露的多生成元 tapering row-sign blocker、U1 native width boundary、热路径布局和 correctness/benchmark evidence gaps 已完成 remediation；Phase 2 现可标记为完成，但仍保留明确的 `< usize::BITS` native U1 限制。Phase 1 remediation 和 core/native module split 已完成；项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -45,7 +45,11 @@
 
 S1–S4 已全部冻结，不再存在 owner 语义阻塞。实现必须遵循 `semantics.md`；任何修改均需新的 owner decision 与迁移测试。
 
-Phase 2 Spike 当前提出一套具体接口：自动 Z2 Pauli symmetry analysis、可复用的最小完整 tapering plan、显式 `U1Sector` 和 restricted MVP/CSR。它是待 owner review 的接口提案；完整背景和调用形状见 `phase-2-spec.md`。
+Phase 2 Spike 已完成：自动 Z2 Pauli symmetry analysis、可复用的最小完整 tapering plan、显式 `U1Sector` 和 restricted MVP/CSR。2026-08-02 remediation 进一步修复了多生成元 row-sign 传播，补齐了独立 projector/exhaustive/property gate，并完成了 U1/Z2 数据布局优化和 release benchmark evidence。完整背景、调用形状和边界见 `phase-2-spec.md`。
+
+Phase 2 implementation evidence：pure-Rust `symmetry.rs` performs deterministic packed GF(2) null-space analysis and in-place Clifford tapering with one authoritative row-sign store; `sector.rs` provides combinatorial U(1) rank/unrank, precomputed term masks, aggregated sector-leakage validation, destination-major flat restricted storage shared through `Arc`, parallel MVP, and reduced dense/COO/CSR; the PyO3 layer exposes coarse batched calls; and `python/tencirpauli/symmetry.py` exports typed public wrappers. `tests/test_symmetry.py` covers the reported `ZYY + 2*YIZ` projector regression, random n=4 dense projectors, TFIM-style and multi-generator Z2 cases, hopping cancellation, complex/Y U1 properties, basis ordering, dense/COO/CSR/MVP projection, leakage, width boundary, and invalid inputs.
+
+Owner decisions recorded on 2026-08-02：`max_bytes` remains a cheap best-effort guard rather than an exact peak-RSS contract；stable cross-process Z2 plan serialization is de-scoped because the primary workflow is direct Python access to sparse matrices、MVP plans and functions；current native U1 restriction is limited to `nqubits < usize::BITS`，with 64+ qubit multiword restriction scheduled for Phase 5 and TensorCircuit-style U1 circuit/time evolution scheduled for Phase 6。
 
 长期 roadmap 已记录 qudit generalized Pauli/Weyl 支持：以每个 site 的 `X^a Z^b` 指数对构造 `QuditPauliWord`/`QuditPauliOperator`，并编译 qudit dense、COO/CSR、native MVP 和 backend plan。该方向位于现有 qubit symmetry、propagation 与 gradient 路线之后；phase convention、支持的 local dimension 范围和 uniform/mixed-radix 边界必须在实现前单独冻结，当前 Phase 2 不越界实现。
 
@@ -84,13 +88,20 @@ Phase 2 Spike 当前提出一套具体接口：自动 Z2 Pauli symmetry analysis
 - Phase 1 acceptance remediation verification：`scripts/check.py --benchmark smoke` 全部通过；Rust core 8 tests；默认 Python 56 passed/2 skipped；只读 TensorCircuit/JAX 环境 57 passed/1 skipped；完整 release compare 48 benchmark tests passed/36 optional skips。修复后本地 benchmark label 为 `phase1-acceptance-remediation-20260801`，对照的修复前 clean baseline 为 `20260801T104116Z_a872af7f8e5b`；归档证据见 `phase-1-acceptance-review-2026-08-01.md`。
 - Remediation release performance：Rust 100k canonicalization 约 4.23 ms（clean baseline 13.18 ms），Rust 1024-term QWC 约 1.16 ms（baseline 21.84 ms）；public 100k friendly-term canonicalization 约 42.83 ms（baseline 223.67 ms），public 1024-input QWC 约 0.979 ms（baseline 12.95 ms）。Matched 100k contiguous canonicalization 为约 45.5 ms 对 Python tuple/dict 315.0 ms，1024-input QWC 为约 0.979 ms 对 Python 107.4 ms。
 - Post-module-split verification：`python scripts/check.py --benchmark smoke` 完整通过，Rust core 8 tests、默认 Python 56 passed/2 skipped、benchmark harness 48 passed/36 optional skips。对 `phase1-acceptance-remediation-20260801` 的同机 release compare 显示代表性路径保持：Rust 100k canonicalization 约 4.18 ms（约 -0.5%，noise）、Rust 1024-term QWC 约 1.10 ms（约快 6.1%）、reusable MVP apply 约 4.99 µs（10q，no change）和 319 µs（16q，约快 4.3%）；Python public 100k canonicalization 约 43.92 ms、1024-term QWC 约 1.007 ms，均为约 1–2% 波动。机械拆分未显示系统性性能回退；完整 compare 中少量 1–3% microbenchmark 与低轮次 large sparse 波动保留为本机 informational signal。
+- Phase 2 verification：`scripts/check.py --benchmark smoke` 完整通过；其中 Rust format、Clippy `-D warnings`、12 个 Rust tests、Black、Ruff、strict mypy、`maturin develop --release --locked` 和 `conda run -p .conda pytest -q`（70 passed, 2 skipped）均通过。Rust correctness additionally includes n≤3 exhaustive independent commuting-generator sectors；Python correctness includes the reported dense-projector regression and random n=4 projector checks。
+- Phase 2 benchmark coverage：新增 `crates/tencir-pauli-core/benches/symmetry.rs` 和 `Cargo.toml` Criterion target，覆盖 Z2 analysis/taper transform、U1 restriction setup、12q low-k/16q central-sector MVP、dense/CSR materialization；Python suite 覆盖 public/FFI setup、steady apply、central-sector scaling、CSR output storage、26q k=2 restricted MVP、26q full-space MVP；JAX setup arrays 在 timed callable 中同步。最终 manifest `phase2-remediation-20260802-final` 的状态为 `complete`，Rust release medians 约为 Z2 analysis/transform `1.02/2.87 µs`、U1 12q k=2 setup/apply/dense/CSR `19.50/26.75/1.13/0.125 µs`、U1 16q k=8 setup/apply `26.58 ms/87.45 µs`；Python 26q k=2 Rust endpoint 的 restriction setup/steady MVP/end-to-end medians 约为 `0.263/0.040/0.466 ms`，同步 JAX 对照的 setup/steady/end-to-end 约为 `1.931/0.008/17.573 ms`。这些是同机 release informational measurements，不构成 CI wall-time gate。
+- Phase 2 optimization evidence：Z2 Clifford H/S/Sdg/CNOT updates now mutate packed words in place；GF(2) elimination borrows pivot rows without per-row clones；taper transform uses a precomputed kept-qubit map；U1 terms precompute packed masks/phases, aggregate with reusable scratch, store destination-major flat arrays, share immutable storage between restricted operator and MVP plan, and use parallel output-row gather. Differential/property tests pass after each optimization slice。
 
 ## Next actions
 
-1. Review the concrete Phase 2 API in `phase-2-spec.md`; after approval, begin P0 independent GF(2)/dense-sector references, then implement Z2 analysis → tapering → U1 basis → restricted operator in that order。
-2. Treat public canonicalization boundary work as a separate performance follow-up：profile Python object materialization, then prefer a persistent private native operator handle、lazy `.terms` materialization and packed `uint64` x/z array APIs before considering lower-value FFI micro-optimization。
-3. Retain the small one-shot MVP regression for future profile-guided work；reusable MVP remains the recommended repeated-call path，并继续保持 benchmark artifacts、local environments 和 machine-specific profile output 不被跟踪。No pinned MSRV CI work is currently planned。
-4. Preserve the Phase 5 qudit roadmap in `architecture.md`；do not mix `QuditPauliWord`/qudit Hamiltonian work into the current qubit Phase 2 Spike。
+1. Keep the Phase 2 regression/property and benchmark workloads stable while Phase 3–4 scope is selected; do not re-open the resolved row-sign, best-effort memory, width-boundary, or serialization decisions without a new owner decision。
+2. Treat public canonicalization boundary work as a separate performance follow-up：profile Python object materialization，then prefer a persistent private native operator handle、lazy `.terms` materialization and packed `uint64` x/z array APIs before considering lower-value FFI micro-optimization。
+
+## Scheduled future phases
+
+- **Phase 5 — 64+ qubit multiword U1 Hamiltonian engine**：implement packed multiword source/destination transitions、combinatorial rank/lookup、restricted MVP/CSR and 64/65/128-qubit low-particle-number differential/scaling benchmarks。This phase starts after the current Phase 2 remediation and the Phase 3–4 propagation/integration boundaries are stable。
+- **Phase 6 — U1Circuit and time evolution**：implement a TensorCircuit `U1Circuit`-compatible fixed-particle-number circuit workflow covering state preparation、number-conserving gates、time-independent/time-dependent or Trotter evolution、observables and TensorCircuit differential tests。This phase starts after the Phase 5 multiword engine and must freeze its gate-tape/adapter、backend/JIT and gradient scope before implementation。
+- **Phase 7 — Qudit generalized Pauli/Weyl**：preserve the existing qudit word/operator/Hamiltonian compiler roadmap after the U1 engine and circuit semantics are stable；do not mix it into the current qubit Phase 2 remediation。
 
 ## Phase 1 completion record
 

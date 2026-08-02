@@ -19,6 +19,16 @@ pub enum PauliError {
     Overflow { context: &'static str },
     /// A requested allocation exceeds an explicit limit.
     MemoryLimit { requested: u128, limit: u128 },
+    /// A requested sector value is invalid.
+    InvalidSector { context: &'static str },
+    /// A Pauli operator does not preserve the requested sector.
+    SectorLeakage { input: usize, output: usize },
+    /// An observable is incompatible with the selected symmetry sector.
+    IncompatibleSymmetry,
+    /// A requested index or bitstring is outside the sector domain.
+    InvalidIndex { context: &'static str },
+    /// A Clifford operation is malformed.
+    InvalidClifford { context: &'static str },
 }
 
 impl fmt::Display for PauliError {
@@ -57,6 +67,21 @@ impl fmt::Display for PauliError {
                     formatter,
                     "requested {requested} bytes exceeds memory limit {limit}"
                 )
+            }
+            Self::InvalidSector { context } => write!(formatter, "invalid sector: {context}"),
+            Self::SectorLeakage { input, output } => write!(
+                formatter,
+                "U(1) sector leakage from basis state {input} to {output}"
+            ),
+            Self::IncompatibleSymmetry => {
+                write!(
+                    formatter,
+                    "operator does not commute with the selected symmetry"
+                )
+            }
+            Self::InvalidIndex { context } => write!(formatter, "invalid sector index: {context}"),
+            Self::InvalidClifford { context } => {
+                write!(formatter, "invalid Clifford plan: {context}")
             }
         }
     }

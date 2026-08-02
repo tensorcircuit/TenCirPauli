@@ -38,6 +38,7 @@ bindings = "pyo3"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["performance_large: release-mode workloads that allocate large statevectors"]
 
 [tool.black]
 line-length = 88

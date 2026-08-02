@@ -21,6 +21,13 @@ from .pauli import (
     PauliTerm,
     PauliWord,
 )
+from .symmetry import (
+    U1MvpPlan,
+    U1RestrictedOperator,
+    U1Sector,
+    Z2SymmetryAnalysis,
+    Z2TaperingPlan,
+)
 
 
 __all__ = [
@@ -38,5 +45,10 @@ __all__ = [
     "PauliTerm",
     "PauliWord",
     "QWCGroupingResult",
+    "U1MvpPlan",
+    "U1RestrictedOperator",
+    "U1Sector",
+    "Z2SymmetryAnalysis",
+    "Z2TaperingPlan",
     "__version__",
 ]

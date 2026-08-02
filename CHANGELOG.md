@@ -6,6 +6,8 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
+- Implement Phase 2 Pauli Z2 symmetry analysis, reusable Clifford tapering plans, explicit U(1) fixed-particle sectors, restricted MVP/CSR operators, public typed APIs, and deterministic setup/apply benchmark workloads.
+- Add symmetry-aware JAX reduced-space baselines with matched U(1) transition aggregation and Z2 tapered TFIM semantics, including setup, steady-state, first-JIT, and end-to-end measurements at larger qubit counts.
 - Close the Phase 1 acceptance blockers: make caller-owned MVP output overwrite-safe, enforce canonical packed words and finite/nonzero operator invariants, remove per-term PyO3 round trips and repeated canonicalization, release the GIL on long native paths, use zero-copy shared complex buffers, bound grouping/backend allocations, and accelerate deterministic canonicalization and QWC grouping. Add contiguous NumPy canonicalization APIs and matched Python performance baselines.
 - Optimize Rust matrix targets with precomputed packed phase masks, deterministic X-mask grouped COO aggregation, row-parallel sparse generation, direct singleton-X-mask COO/CSR output, direct CSR construction, parallel native MVP, and a reusable zero-copy NumPy/PyO3 native MVP plan. Add typed batch canonicalization mapping and exact phase metadata.
 - Add release-mode cross-implementation sparse benchmarks for TensorCircuit NumPy COO and JAX BCOO first/warm construction, duplicate canonicalization, storage, and warm matvec semantics.

@@ -80,19 +80,20 @@ def run_benchmarks(mode: str) -> None:
     if mode == "record":
         run([sys.executable, "benchmarks/run.py", "record"])
         return
-    run(
-        [
-            "cargo",
-            "bench",
-            "--locked",
-            "-p",
-            "tencir-pauli-core",
-            "--bench",
-            "pauli_word",
-            "--",
-            "--test",
-        ]
-    )
+    for bench in ("pauli_word", "symmetry"):
+        run(
+            [
+                "cargo",
+                "bench",
+                "--locked",
+                "-p",
+                "tencir-pauli-core",
+                "--bench",
+                bench,
+                "--",
+                "--test",
+            ]
+        )
     run(
         [
             sys.executable,
@@ -100,6 +101,8 @@ def run_benchmarks(mode: str) -> None:
             "pytest",
             "benchmarks/python",
             "--benchmark-disable",
+            "-m",
+            "not performance_large",
         ]
     )
 

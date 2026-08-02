@@ -267,7 +267,7 @@ maturin --version
 - 所有长时间 Rust 计算释放 GIL。
 - Rayon thread count 可由显式 option 或专用环境变量控制，避免和 BLAS、JAX CPU thread pool 形成不可控 oversubscription。
 - plan 和 operator object 在并发读取时必须线程安全；带 mutable scratch buffer 的 engine 不允许无保护共享。
-- 所有目标分配在执行前估算 bytes，并提供 hard memory limit。
+- 对可廉价估算的主要目标输出和 workspace 提供 best-effort `max_bytes` guard，并始终 checked dimension/arithmetic overflow；不把该 guard 描述成包含 allocator overhead、FFI conversion 和所有 transient scratch 的精确 peak-RSS limit。
 - artifact serialization 使用版本化、确定性的格式；不序列化 Python object 地址、hash seed 或 backend device object。
 
 ## 14. 正确性与验证
@@ -337,7 +337,7 @@ Rust-native forward 的建议门槛是：相对非 JIT Python/NumPy 路径至少
 
 ### 阶段二：Symmetry 与 sector plan
 
-实现 Z2 generator analysis、sector validation、基础 tapering，以及显式 U(1) fixed-particle basis/restricted Hamiltonian plan。与 `U1Circuit` 对齐。
+实现 Z2 generator analysis、sector validation、基础 tapering，以及显式 U(1) fixed-particle basis/restricted Hamiltonian plan。该阶段的 native restricted Hamiltonian 使用单字 `usize` basis index，只覆盖 `nqubits < usize::BITS`；阶段二不包含 64+ qubit multiword restriction 或 circuit/time-evolution execution。
 
 ### 阶段三：Rust-native propagation
 
@@ -347,9 +347,21 @@ Rust-native forward 的建议门槛是：相对非 JIT Python/NumPy 路径至少
 
 为受支持 rotation gates 实现 analytic derivative、reverse mode 和 checkpointing；稳定后增加 `tc.pauli` adapter、文档、examples 和迁移指南。是否开发 JAX custom call 另行立项。
 
-### 阶段五：Qudit generalized Pauli/Weyl 与 Hamiltonian compiler
+### 阶段五：64+ qubit multiword U1 Hamiltonian engine
 
-在 qubit API 和语义稳定后，增加统一局域维数 `d>2` 的 generalized Pauli/Weyl 表示。每个 qudit site 用指数对 `(a,b)` 表示 `X^a Z^b`，其中 `a,b` 按 `d` 取模，`X|j⟩=|j+1 mod d⟩`，`Z|j⟩=ω^j|j⟩`，`ω=exp(2πi/d)`。第一版提供 `QuditPauliWord`、`QuditPauliOperator`、乘法相位、adjoint、commutation、canonicalization 和 deterministic aggregation，并让 Hamiltonian compiler 支持 `d**n` basis 上的 bounded dense、COO/CSR、native MVP 与 backend plan。
+在阶段二的 static restricted Hamiltonian 语义与阶段四的 Python/TensorCircuit integration boundary 稳定后，将 U1 basis index 从单字 `usize` 扩展为 packed multiword representation。实现 64+ qubit low-particle-number source/destination transitions、combinatorial rank/lookup、sector-preservation validation、restricted MVP 和 CSR，并保持现有 Python `U1Sector`/`U1RestrictedOperator` 语义兼容。
+
+该阶段以 64、65 和 128 qubits 的 low-k differential tests 为 correctness gate，并记录 term count、particle number、sector dimension、setup、steady MVP、CSR storage 和 scaling。它不包含 circuit execution 或 time evolution；这些属于阶段六。
+
+### 阶段六：U1Circuit 与含时演化
+
+在阶段四的 GateTape/adapter 边界和阶段五的 multiword U1 engine 完成后，实现与 TensorCircuit `U1Circuit` 语义对齐的完整 fixed-particle-number circuit workflow：state preparation、number-conserving gate/circuit execution、time-independent/time-dependent Hamiltonian evolution、Trotter schedule、observable evaluation，以及 Python/TensorCircuit differential tests。
+
+阶段六开始前必须冻结输入形态（专用 U1 gate tape、TensorCircuit circuit adapter 或 Hamiltonian evolution plan）、支持的 gate set、parameter handling、backend/JIT 和 gradient 范围。第一版必须对 non-number-conserving gates 明确失败，不静默投影，并分别验证 single-step gate action、multi-step circuit、time-evolution trajectory 和 observables。
+
+### 阶段七：Qudit generalized Pauli/Weyl 与 Hamiltonian compiler
+
+在 qubit API、U1 engine 和 circuit/integration 语义稳定后，增加统一局域维数 `d>2` 的 generalized Pauli/Weyl 表示。每个 qudit site 用指数对 `(a,b)` 表示 `X^a Z^b`，其中 `a,b` 按 `d` 取模，`X|j⟩=|j+1 mod d⟩`，`Z|j⟩=ω^j|j⟩`，`ω=exp(2πi/d)`。第一版提供 `QuditPauliWord`、`QuditPauliOperator`、乘法相位、adjoint、commutation、canonicalization 和 deterministic aggregation，并让 Hamiltonian compiler 支持 `d**n` basis 上的 bounded dense、COO/CSR、native MVP 与 backend plan。
 
 该阶段优先支持所有 sites 使用相同 local dimension 的模型，并保持 qudit 0 的 computational-basis ordering 与 TensorCircuit adapter 明确一致。Mixed local dimensions、任意 composite-d stabilizer/symmetry 算法和 qudit propagation 不自动包含在首个 qudit slice 中。Qudit Hamiltonian generation 在这里指从 generalized Pauli/Weyl sums 编译矩阵或 MVP，而不是内置生成特定物理模型；常见 clock/shift、Potts 或 Bose-Hubbard fixtures 可以作为 examples 和 benchmarks。
 
@@ -388,6 +400,8 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
 - Backend MVP plan 的 portable integer dtype 如何兼容 JAX 默认关闭 int64、TensorFlow 和 PyTorch。
 - Weight projection 的误差报告采用 discarded L1/L2 coefficient norm、observable-specific bound，还是同时提供多项指标。
+- 64+ qubit U1 restricted Hamiltonian 使用何种 packed multiword basis key、combinatorial rank/lookup 和 transition storage，并如何在 low-particle-number workload 上验证其相对 Python/TensorCircuit 的收益。
+- TensorCircuit-style `U1Circuit` 的第一版是接收专用 number-conserving gate tape、TensorCircuit circuit adapter，还是先只提供 Hamiltonian time-evolution plan；time-dependent parameters、Trotter schedule、backend/JIT 与 gradient 范围需在实现前冻结。
 - Qudit canonical basis 采用直接 `X^a Z^b` 还是带中心相位的 Weyl-normalized `τ^(ab)X^a Z^b`；该选择会影响 multiplication phase、adjoint、Hermiticity 和 `d=2` 与现有 `PauliWord` 的兼容方式，必须在实现前冻结。
 - 首个 qudit slice 是支持任意整数 `d>=2`，还是先限定 prime/prime-power dimension；GF(d) symmetry 方法不能在 composite `d` 上未经说明地复用。
 - Qudit 首版是否只支持 uniform local dimension，mixed-radix systems 后续再做；公开 serialization 必须无歧义记录每个 site 的 dimension 和 exponent ordering。
