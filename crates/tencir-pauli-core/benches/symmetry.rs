@@ -108,7 +108,7 @@ fn benchmark_u1(criterion: &mut Criterion) {
                 bencher.iter(|| black_box(plan_input.apply(state_input, u128::MAX).unwrap()));
             },
         );
-        if nqubits == 12 {
+        if nqubits == 12 || (nqubits == 128 && particle_number == 2) {
             group.bench_with_input(
                 BenchmarkId::new(
                     "csr_materialization",
@@ -119,6 +119,18 @@ fn benchmark_u1(criterion: &mut Criterion) {
                     bencher.iter(|| black_box(restricted_input.csr(u128::MAX).unwrap()));
                 },
             );
+            group.bench_with_input(
+                BenchmarkId::new(
+                    "coo_materialization",
+                    format!("{nqubits}q_k{particle_number}"),
+                ),
+                &restricted,
+                |bencher, restricted_input| {
+                    bencher.iter(|| black_box(restricted_input.coo(u128::MAX).unwrap()));
+                },
+            );
+        }
+        if nqubits == 12 {
             group.bench_with_input(
                 BenchmarkId::new(
                     "dense_materialization",

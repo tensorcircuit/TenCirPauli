@@ -108,6 +108,44 @@ def test_u1_restricted_coo(benchmark: BenchmarkFixture) -> None:
 
 
 @pytest.mark.performance_large
+@pytest.mark.parametrize("target", ["coo", "csr"])
+def test_phase5_128q_k2_sparse_materialization(
+    benchmark: BenchmarkFixture, target: str
+) -> None:
+    """Measure 128-qubit k=2 sparse output without allocating a dense target."""
+    operator = make_wide_hopping(128)
+    restricted = operator.restrict_u1(U1Sector(128, 2))
+    expected = getattr(restricted, target)()
+    result = benchmark.pedantic(
+        getattr(restricted, target), rounds=7, iterations=1, warmup_rounds=1
+    )
+    if target == "coo":
+        np.testing.assert_array_equal(result.row, expected.row)
+        np.testing.assert_array_equal(result.column, expected.column)
+        output_bytes = result.row.nbytes + result.column.nbytes + result.data.nbytes
+    else:
+        np.testing.assert_array_equal(result.indptr, expected.indptr)
+        np.testing.assert_array_equal(result.indices, expected.indices)
+        output_bytes = result.indptr.nbytes + result.indices.nbytes + result.data.nbytes
+    np.testing.assert_allclose(result.data, expected.data)
+    plan_bytes = (
+        (result.shape[0] + 1) * np.dtype(np.intp).itemsize
+        + result.data.size * np.dtype(np.intp).itemsize
+        + result.data.size * np.dtype(np.complex128).itemsize
+    )
+    benchmark.extra_info.update(
+        {
+            "target": target,
+            "dimension": result.shape[0],
+            "nnz": int(result.data.size),
+            "output_bytes": output_bytes,
+            "steady_plan_bytes": plan_bytes,
+            "steady_plan_plus_output_bytes": plan_bytes + output_bytes,
+        }
+    )
+
+
+@pytest.mark.performance_large
 @pytest.mark.parametrize(
     ("nqubits", "particle_number"),
     [
