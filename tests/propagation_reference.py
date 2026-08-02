@@ -117,6 +117,16 @@ def propagate_dense(
         ),
         np.zeros((1 << nqubits, 1 << nqubits), dtype=np.complex128),
     )
+    if max_weight is not None and max_weight < nqubits:
+        coefficients_by_word = pauli_decompose(matrix, nqubits)
+        matrix = sum(
+            (
+                coefficient * codes_to_dense(codes)
+                for codes, coefficient in coefficients_by_word.items()
+                if sum(code != 0 for code in codes) <= max_weight
+            ),
+            np.zeros_like(matrix),
+        )
     for operation in reversed(operations):
         unitary = gate_matrix(nqubits, operation)
         matrix = unitary.conj().T @ matrix @ unitary

@@ -15,6 +15,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 - [Phase 1 review notes](phase-1-review-notes.md): implementation gaps, performance findings, and owner decisions awaiting review.
 - [Phase 1 acceptance review, 2026-08-01](phase-1-acceptance-review-2026-08-01.md): archived initial acceptance findings, blocker remediation, and final local verification evidence.
 - [Phase 2 acceptance review, 2026-08-02](phase-2-acceptance-review-2026-08-02.md): archived review findings, owner scope decisions, row-sign blocker, remediation handoff, and final acceptance evidence.
+- [Phase 3 implementation review, 2026-08-02](phase-3-review-2026-08-02.md): archived review findings, focused remediation outcome, verification evidence, and explicitly deferred performance work.
 - [Release process](releasing.md): the separation between continuous integration, artifact builds, GitHub Releases, and PyPI publication.
 
 Add new design documents here with descriptive lowercase names. Update this index when adding, replacing, or retiring a document, and record the document status near its title when it is a proposal rather than an implemented contract.

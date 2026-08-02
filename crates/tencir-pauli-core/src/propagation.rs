@@ -91,7 +91,7 @@ impl PropagationEngine {
         let observable_bytes = observable
             .terms()
             .len()
-            .checked_mul(size_of::<PackedKey>() + size_of::<Complex64>())
+            .checked_mul(dynamic_term_storage_bytes(nqubits)?)
             .ok_or(PauliError::Overflow {
                 context: "estimating propagation observable storage",
             })?;
@@ -160,8 +160,8 @@ impl PropagationEngine {
         if !self.hermitian {
             return Err(PauliError::NonHermitianExpectation);
         }
-        let result = self.propagate(parameters)?;
-        Ok(expectation_from_terms(
+        let result = self.propagate_dynamic(parameters)?;
+        Ok(expectation_from_dynamic_terms(
             &result.terms,
             &self.initial_state,
             self.nqubits,
@@ -175,9 +175,41 @@ impl PropagationEngine {
 
     /// Propagate and return canonical public terms plus structural counters.
     pub fn propagate(&self, parameters: &[f64]) -> Result<PropagationResult, PauliError> {
+        let result = self.propagate_dynamic(parameters)?;
+        let mut public_terms = Vec::with_capacity(result.terms.len());
+        let mut final_weight_counts = vec![0usize; self.nqubits.saturating_add(1)];
+        for term in result.terms {
+            let word = term.key.to_word(self.nqubits)?;
+            let weight = word.weight() as usize;
+            if let Some(count) = final_weight_counts.get_mut(weight) {
+                *count += 1;
+            }
+            public_terms.push(PauliTerm {
+                word,
+                coefficient: term.coefficient,
+            });
+        }
+        public_terms.sort_unstable_by(|left, right| left.word.cmp(&right.word));
+        Ok(PropagationResult {
+            stats: PropagationStats {
+                gate_count: self.operations.len(),
+                initial_terms: result.initial_terms,
+                final_terms: public_terms.len(),
+                peak_terms: result.peak_terms,
+                estimated_peak_bytes: result.estimated_peak_bytes,
+                final_weight_counts,
+            },
+            terms: public_terms,
+        })
+    }
+
+    fn propagate_dynamic(
+        &self,
+        parameters: &[f64],
+    ) -> Result<DynamicPropagationResult, PauliError> {
         validate_parameters(parameters, self.nparameters)?;
         let exact = self.is_exact();
-        let cutoff = self.max_weight;
+        let cutoff = (!exact).then_some(self.max_weight).flatten();
         let mut terms =
             self.observable
                 .terms()
@@ -193,12 +225,11 @@ impl PropagationEngine {
                 .collect::<Vec<_>>();
         let initial_terms = terms.len();
         let mut peak_terms = initial_terms;
-        let mut estimated_peak_bytes =
-            initial_terms
-                .checked_mul(size_of::<DynamicTerm>())
-                .ok_or(PauliError::Overflow {
-                    context: "estimating initial propagation storage",
-                })?;
+        let mut estimated_peak_bytes = initial_terms
+            .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
+            .ok_or(PauliError::Overflow {
+                context: "estimating initial propagation storage",
+            })?;
         check_budget(
             estimated_peak_bytes,
             self.max_bytes,
@@ -215,7 +246,7 @@ impl PropagationEngine {
                         context: "estimating propagation contribution count",
                     })?;
             let candidate_bytes = candidate_count
-                .checked_mul(size_of::<DynamicTerm>())
+                .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
                 .ok_or(PauliError::Overflow {
                     context: "estimating propagation contribution storage",
                 })?;
@@ -227,42 +258,28 @@ impl PropagationEngine {
             )?;
             terms = apply_operation(self.nqubits, operation, terms, parameters, cutoff)?;
             peak_terms = peak_terms.max(terms.len());
-            let actual_bytes =
-                terms
-                    .len()
-                    .checked_mul(size_of::<DynamicTerm>())
-                    .ok_or(PauliError::Overflow {
-                        context: "estimating propagated term storage",
-                    })?;
+            let actual_bytes = terms
+                .len()
+                .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating propagated term storage",
+                })?;
             estimated_peak_bytes = estimated_peak_bytes.max(actual_bytes);
         }
-
-        let mut public_terms = Vec::with_capacity(terms.len());
-        let mut final_weight_counts = vec![0usize; self.nqubits.saturating_add(1)];
-        for term in terms {
-            let word = term.key.to_word(self.nqubits)?;
-            let weight = word.weight() as usize;
-            if let Some(count) = final_weight_counts.get_mut(weight) {
-                *count += 1;
-            }
-            public_terms.push(PauliTerm {
-                word,
-                coefficient: term.coefficient,
-            });
-        }
-        public_terms.sort_unstable_by(|left, right| left.word.cmp(&right.word));
-        Ok(PropagationResult {
-            stats: PropagationStats {
-                gate_count: self.operations.len(),
-                initial_terms,
-                final_terms: public_terms.len(),
-                peak_terms,
-                estimated_peak_bytes,
-                final_weight_counts,
-            },
-            terms: public_terms,
+        Ok(DynamicPropagationResult {
+            terms,
+            initial_terms,
+            peak_terms,
+            estimated_peak_bytes,
         })
     }
+}
+
+struct DynamicPropagationResult {
+    terms: Vec<DynamicTerm>,
+    initial_terms: usize,
+    peak_terms: usize,
+    estimated_peak_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -303,23 +320,6 @@ impl PackedKey {
                 nqubits,
                 x: word.x_words().to_vec(),
                 z: word.z_words().to_vec(),
-            }
-        }
-    }
-
-    fn identity(nqubits: usize) -> Self {
-        if nqubits <= 128 {
-            Self::Inline {
-                nqubits,
-                x: [0; 2],
-                z: [0; 2],
-            }
-        } else {
-            let words = packed_word_count(nqubits);
-            Self::Wide {
-                nqubits,
-                x: vec![0; words],
-                z: vec![0; words],
             }
         }
     }
@@ -375,45 +375,6 @@ impl PackedKey {
         }
     }
 
-    fn multiply(&self, other: &Self, nqubits: usize) -> (Self, PauliPhase) {
-        let result = match (self, other) {
-            (
-                Self::Inline { nqubits, x, z },
-                Self::Inline {
-                    x: other_x,
-                    z: other_z,
-                    ..
-                },
-            ) => Self::Inline {
-                nqubits: *nqubits,
-                x: [x[0] ^ other_x[0], x[1] ^ other_x[1]],
-                z: [z[0] ^ other_z[0], z[1] ^ other_z[1]],
-            },
-            _ => {
-                let x_values = masks_x(self, nqubits)
-                    .into_iter()
-                    .zip(masks_x(other, nqubits))
-                    .map(|(left, right)| left ^ right)
-                    .collect::<Vec<_>>();
-                let z_values = masks_z(self, nqubits)
-                    .into_iter()
-                    .zip(masks_z(other, nqubits))
-                    .map(|(left, right)| left ^ right)
-                    .collect::<Vec<_>>();
-                Self::Wide {
-                    nqubits,
-                    x: x_values,
-                    z: z_values,
-                }
-            }
-        };
-        let mut phase = PauliPhase::PlusOne;
-        for qubit in 0..nqubits {
-            phase = phase.multiply(local_phase(self.code_at(qubit), other.code_at(qubit)));
-        }
-        (result, phase)
-    }
-
     fn to_word(&self, nqubits: usize) -> Result<PauliWord, PauliError> {
         let x = masks_x(self, nqubits);
         let z = masks_z(self, nqubits);
@@ -458,28 +419,6 @@ fn masks_z(key: &PackedKey, nqubits: usize) -> Vec<u64> {
     match key {
         PackedKey::Inline { z, .. } => z[..packed_word_count(nqubits)].to_vec(),
         PackedKey::Wide { z, .. } => z.clone(),
-    }
-}
-
-fn local_phase(left: u8, right: u8) -> PauliPhase {
-    match (left, right) {
-        (1, 2) | (2, 3) | (3, 1) => PauliPhase::PlusI,
-        (2, 1) | (3, 2) | (1, 3) => PauliPhase::MinusI,
-        _ => PauliPhase::PlusOne,
-    }
-}
-
-fn phase_sign(phase: PauliPhase) -> f64 {
-    match phase {
-        PauliPhase::PlusOne => 1.0,
-        PauliPhase::MinusOne => -1.0,
-        PauliPhase::PlusI | PauliPhase::MinusI => {
-            debug_assert!(
-                false,
-                "anticommuting rotation products must have an imaginary phase"
-            );
-            0.0
-        }
     }
 }
 
@@ -541,6 +480,24 @@ fn operation_storage_bytes(operation: &GateOperation) -> usize {
     }
 }
 
+fn dynamic_term_storage_bytes(nqubits: usize) -> Result<usize, PauliError> {
+    let wide_payload = if nqubits > 128 {
+        packed_word_count(nqubits)
+            .checked_mul(2)
+            .and_then(|words| words.checked_mul(size_of::<u64>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating packed wide-key storage",
+            })?
+    } else {
+        0
+    };
+    size_of::<DynamicTerm>()
+        .checked_add(wide_payload)
+        .ok_or(PauliError::Overflow {
+            context: "estimating packed dynamic-term storage",
+        })
+}
+
 fn operation_branch_factor(operation: &GateOperation) -> usize {
     match &operation.kind {
         GateKind::Clifford1 { .. } | GateKind::Clifford2 { .. } => 1,
@@ -561,10 +518,10 @@ fn apply_operation(
     match &operation.kind {
         GateKind::Clifford1 { gate, wire } => {
             let mut result = Vec::with_capacity(terms.len());
-            for mut term in terms {
+            for (term_index, mut term) in terms.into_iter().enumerate() {
                 let (key, multiplier) = map_clifford1(&term.key, *gate, *wire);
                 term.key = key;
-                term.coefficient *= multiplier;
+                term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
                 {
@@ -575,10 +532,10 @@ fn apply_operation(
         }
         GateKind::Clifford2 { gate, wire0, wire1 } => {
             let mut result = Vec::with_capacity(terms.len());
-            for mut term in terms {
-                let (key, multiplier) = map_clifford2(nqubits, &term.key, *gate, *wire0, *wire1);
+            for (term_index, mut term) in terms.into_iter().enumerate() {
+                let (key, multiplier) = map_clifford2(&term.key, *gate, *wire0, *wire1);
                 term.key = key;
-                term.coefficient *= multiplier;
+                term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
                 {
@@ -594,16 +551,26 @@ fn apply_operation(
             parameter,
         } => {
             let (cosine, sine) = resolve_parameter(*parameter, parameters)?;
-            let generator = generator_key(nqubits, *axis, *wire0, *wire1);
             let mut contributions = Vec::with_capacity(terms.len().saturating_mul(2));
-            for term in terms {
-                let (product, phase) = generator.multiply(&term.key, nqubits);
+            let generator_code = rotation_code(*axis);
+            for (term_index, term) in terms.into_iter().enumerate() {
+                let (product, phase) =
+                    multiply_by_generator(&term.key, generator_code, *wire0, *wire1);
                 match phase {
                     PauliPhase::PlusI | PauliPhase::MinusI => {
-                        contributions.push((term.key.clone(), term.coefficient * cosine));
+                        contributions.push((
+                            term.key.clone(),
+                            checked_scale(term.coefficient, cosine, term_index)?,
+                        ));
                         if sine != 0.0 {
-                            contributions
-                                .push((product, term.coefficient * (sine * phase_sign_i(phase))));
+                            contributions.push((
+                                product,
+                                checked_scale(
+                                    term.coefficient,
+                                    sine * phase_sign_i(phase),
+                                    term_index,
+                                )?,
+                            ));
                         }
                     }
                     PauliPhase::PlusOne | PauliPhase::MinusOne => {
@@ -619,7 +586,7 @@ fn apply_operation(
             transitions,
         } => {
             let mut contributions = Vec::new();
-            for term in terms {
+            for (term_index, term) in terms.into_iter().enumerate() {
                 let input = local_index(&term.key, *wire0, *wire1);
                 for &(output, coefficient) in &transitions[input] {
                     let mut key = term.key.clone();
@@ -628,7 +595,10 @@ fn apply_operation(
                     if let Some(second_wire) = wire1 {
                         key.set_code(*second_wire, second);
                     }
-                    contributions.push((key, term.coefficient * coefficient));
+                    contributions.push((
+                        key,
+                        checked_scale(term.coefficient, coefficient, term_index)?,
+                    ));
                 }
             }
             aggregate(contributions, nqubits, cutoff)
@@ -651,23 +621,49 @@ fn aggregate(
                 index: values.len(),
             });
         }
-        values
-            .entry(key)
-            .and_modify(|current| *current += coefficient)
-            .or_insert(coefficient);
+        let index = values.len();
+        if let Some(current) = values.get_mut(&key) {
+            checked_add(current, coefficient, index)?;
+        } else {
+            values.insert(key, coefficient);
+        }
     }
     let mut ordered = values.into_iter().collect::<Vec<_>>();
     ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     Ok(ordered
         .into_iter()
         .filter_map(|(key, coefficient)| {
-            (coefficient.re.is_finite()
-                && coefficient.im.is_finite()
-                && !is_exact_zero(coefficient)
-                && cutoff.is_none_or(|limit| key.weight(nqubits) <= limit))
-            .then_some(DynamicTerm { key, coefficient })
+            (!is_exact_zero(coefficient) && cutoff.is_none_or(|limit| key.weight(nqubits) <= limit))
+                .then_some(DynamicTerm { key, coefficient })
         })
         .collect())
+}
+
+fn checked_add(
+    current: &mut Complex64,
+    incoming: Complex64,
+    index: usize,
+) -> Result<(), PauliError> {
+    current.re += incoming.re;
+    current.im += incoming.im;
+    if current.re.is_finite() && current.im.is_finite() {
+        Ok(())
+    } else {
+        Err(PauliError::NonFiniteCoefficient { index })
+    }
+}
+
+fn checked_scale(
+    coefficient: Complex64,
+    scale: f64,
+    index: usize,
+) -> Result<Complex64, PauliError> {
+    let scaled = Complex64::new(coefficient.re * scale, coefficient.im * scale);
+    if scaled.re.is_finite() && scaled.im.is_finite() {
+        Ok(scaled)
+    } else {
+        Err(PauliError::NonFiniteCoefficient { index })
+    }
 }
 
 fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f64) {
@@ -721,110 +717,116 @@ fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f
     (result, sign)
 }
 
-fn map_clifford2(
-    nqubits: usize,
-    key: &PackedKey,
-    gate: Clifford2,
-    wire0: usize,
-    wire1: usize,
-) -> (PackedKey, f64) {
+fn map_clifford2(key: &PackedKey, gate: Clifford2, wire0: usize, wire1: usize) -> (PackedKey, f64) {
     let first = key.code_at(wire0);
     let second = key.code_at(wire1);
-    let (mapped_first, mapped_second) = match gate {
-        Clifford2::Swap => (first, second),
-        Clifford2::Cnot => (map_cnot_control(first), map_cnot_target(second)),
-        Clifford2::Cz => (map_cz_first(first), map_cz_second(second)),
-    };
+    let (mapped_first, mapped_second, multiplier) = clifford2_local_map(gate, first, second);
     let mut result = key.clone();
-    result.set_code(wire0, 0);
-    result.set_code(wire1, 0);
-    let (first_key, first_sign) =
-        local_mapping_key(nqubits, wire0, wire1, mapped_first, gate, true);
-    let (second_key, second_sign) =
-        local_mapping_key(nqubits, wire0, wire1, mapped_second, gate, false);
-    let (result, phase) = result.multiply(&first_key, nqubits);
-    let (result, second_phase) = result.multiply(&second_key, nqubits);
-    let multiplier = first_sign * second_sign * phase_sign(phase) * phase_sign(second_phase);
+    result.set_code(wire0, mapped_first);
+    result.set_code(wire1, mapped_second);
     (result, multiplier)
 }
 
-fn local_mapping_key(
-    nqubits: usize,
-    wire0: usize,
-    wire1: usize,
-    code: u8,
-    gate: Clifford2,
-    first: bool,
-) -> (PackedKey, f64) {
-    let mut key = PackedKey::identity(nqubits);
-    let sign = 1.0;
+fn clifford2_local_map(gate: Clifford2, first: u8, second: u8) -> (u8, u8, f64) {
+    // Each entry is the conjugation of one local two-qubit Pauli word.  The
+    // index is `4 * first + second`, matching the public PTM wire order.
+    const CNOT: [(u8, u8, f64); 16] = [
+        (0, 0, 1.0),
+        (0, 1, 1.0),
+        (3, 2, 1.0),
+        (3, 3, 1.0),
+        (1, 1, 1.0),
+        (1, 0, 1.0),
+        (2, 3, 1.0),
+        (2, 2, -1.0),
+        (2, 1, 1.0),
+        (2, 0, 1.0),
+        (1, 3, -1.0),
+        (1, 2, 1.0),
+        (3, 0, 1.0),
+        (3, 1, 1.0),
+        (0, 2, 1.0),
+        (0, 3, 1.0),
+    ];
+    const CZ: [(u8, u8, f64); 16] = [
+        (0, 0, 1.0),
+        (3, 1, 1.0),
+        (3, 2, 1.0),
+        (0, 3, 1.0),
+        (1, 3, 1.0),
+        (2, 2, 1.0),
+        (2, 1, -1.0),
+        (1, 0, 1.0),
+        (2, 3, 1.0),
+        (1, 2, -1.0),
+        (1, 1, 1.0),
+        (2, 0, 1.0),
+        (3, 0, 1.0),
+        (0, 1, 1.0),
+        (0, 2, 1.0),
+        (3, 3, 1.0),
+    ];
+    const SWAP: [(u8, u8, f64); 16] = [
+        (0, 0, 1.0),
+        (1, 0, 1.0),
+        (2, 0, 1.0),
+        (3, 0, 1.0),
+        (0, 1, 1.0),
+        (1, 1, 1.0),
+        (2, 1, 1.0),
+        (3, 1, 1.0),
+        (0, 2, 1.0),
+        (1, 2, 1.0),
+        (2, 2, 1.0),
+        (3, 2, 1.0),
+        (0, 3, 1.0),
+        (1, 3, 1.0),
+        (2, 3, 1.0),
+        (3, 3, 1.0),
+    ];
     match gate {
-        Clifford2::Swap => key.set_code(if first { wire1 } else { wire0 }, code),
-        Clifford2::Cnot => {
-            if first {
-                key.set_code(wire0, code);
-                if code != 0 {
-                    key.set_code(wire1, if code == 3 { 0 } else { 1 });
-                }
-            } else {
-                key.set_code(wire1, code);
-                if code != 0 {
-                    key.set_code(wire0, if code == 1 { 0 } else { 3 });
-                }
-            }
-        }
-        Clifford2::Cz => {
-            if first {
-                key.set_code(wire0, code);
-                if code == 1 || code == 2 {
-                    key.set_code(wire1, 3);
-                }
-            } else {
-                key.set_code(wire1, code);
-                if code == 1 || code == 2 {
-                    key.set_code(wire0, 3);
-                }
-            }
-        }
+        Clifford2::Cnot => CNOT[4 * first as usize + second as usize],
+        Clifford2::Cz => CZ[4 * first as usize + second as usize],
+        Clifford2::Swap => SWAP[4 * first as usize + second as usize],
     }
-    // The compact local-code maps above are positive.  `sign` is retained in
-    // the return type so the kernel has one common shape for all Clifford maps.
-    (key, sign)
 }
 
-fn map_cnot_control(code: u8) -> u8 {
-    code
-}
-
-fn map_cnot_target(code: u8) -> u8 {
-    code
-}
-
-fn map_cz_first(code: u8) -> u8 {
-    code
-}
-
-fn map_cz_second(code: u8) -> u8 {
-    code
-}
-
-fn generator_key(
-    nqubits: usize,
-    axis: RotationAxis,
-    wire0: usize,
-    wire1: Option<usize>,
-) -> PackedKey {
-    let code = match axis {
+fn rotation_code(axis: RotationAxis) -> u8 {
+    match axis {
         RotationAxis::X => 1,
         RotationAxis::Y => 2,
         RotationAxis::Z => 3,
-    };
-    let mut key = PackedKey::identity(nqubits);
-    key.set_code(wire0, code);
-    if let Some(wire) = wire1 {
-        key.set_code(wire, code);
     }
-    key
+}
+
+fn multiply_by_generator(
+    key: &PackedKey,
+    generator_code: u8,
+    wire0: usize,
+    wire1: Option<usize>,
+) -> (PackedKey, PauliPhase) {
+    let mut result = key.clone();
+    let mut phase = PauliPhase::PlusOne;
+    for wire in [Some(wire0), wire1].into_iter().flatten() {
+        let (code, local_phase) = local_product(generator_code, key.code_at(wire));
+        result.set_code(wire, code);
+        phase = phase.multiply(local_phase);
+    }
+    (result, phase)
+}
+
+fn local_product(left: u8, right: u8) -> (u8, PauliPhase) {
+    match (left, right) {
+        (0, code) | (code, 0) => (code, PauliPhase::PlusOne),
+        (1, 1) | (2, 2) | (3, 3) => (0, PauliPhase::PlusOne),
+        (1, 2) => (3, PauliPhase::PlusI),
+        (2, 1) => (3, PauliPhase::MinusI),
+        (1, 3) => (2, PauliPhase::MinusI),
+        (3, 1) => (2, PauliPhase::PlusI),
+        (2, 3) => (1, PauliPhase::PlusI),
+        (3, 2) => (1, PauliPhase::MinusI),
+        _ => unreachable!("packed local Pauli codes are always in 0..4"),
+    }
 }
 
 fn resolve_parameter(
@@ -844,7 +846,7 @@ fn phase_sign_i(phase: PauliPhase) -> f64 {
     match phase {
         PauliPhase::PlusI => -1.0,
         PauliPhase::MinusI => 1.0,
-        _ => phase_sign(phase),
+        _ => unreachable!("rotation sine branch requires an anticommuting phase"),
     }
 }
 
@@ -868,33 +870,51 @@ fn expectation_from_terms(terms: &[PauliTerm], state: &ProductState, nqubits: us
         .iter()
         .map(|term| {
             let local = (0..nqubits).fold(1.0, |product, qubit| {
-                let code = term.word.code_at(qubit);
-                let component = match state {
-                    ProductState::Zero => match code {
-                        0 | 3 => 1.0,
-                        _ => 0.0,
-                    },
-                    ProductState::ComputationalBasis(bits) => match code {
-                        0 => 1.0,
-                        3 => {
-                            if bits[qubit] == 0 {
-                                1.0
-                            } else {
-                                -1.0
-                            }
-                        }
-                        _ => 0.0,
-                    },
-                    ProductState::Bloch(vectors) => match code {
-                        0 => 1.0,
-                        code => vectors[qubit][code as usize - 1],
-                    },
-                };
-                product * component
+                product * expectation_component(state, term.word.code_at(qubit), qubit)
             });
             term.coefficient.re * local
         })
         .sum()
+}
+
+fn expectation_from_dynamic_terms(
+    terms: &[DynamicTerm],
+    state: &ProductState,
+    nqubits: usize,
+) -> f64 {
+    terms
+        .iter()
+        .map(|term| {
+            let local = (0..nqubits).fold(1.0, |product, qubit| {
+                product * expectation_component(state, term.key.code_at(qubit), qubit)
+            });
+            term.coefficient.re * local
+        })
+        .sum()
+}
+
+fn expectation_component(state: &ProductState, code: u8, qubit: usize) -> f64 {
+    match state {
+        ProductState::Zero => match code {
+            0 | 3 => 1.0,
+            _ => 0.0,
+        },
+        ProductState::ComputationalBasis(bits) => match code {
+            0 => 1.0,
+            3 => {
+                if bits[qubit] == 0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            _ => 0.0,
+        },
+        ProductState::Bloch(vectors) => match code {
+            0 => 1.0,
+            code => vectors[qubit][code as usize - 1],
+        },
+    }
 }
 
 fn check_budget(
@@ -911,4 +931,42 @@ fn check_budget(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_rotation_products_match_pauli_phase_table() {
+        assert_eq!(local_product(1, 2), (3, PauliPhase::PlusI));
+        assert_eq!(local_product(2, 1), (3, PauliPhase::MinusI));
+        assert_eq!(local_product(2, 3), (1, PauliPhase::PlusI));
+        assert_eq!(local_product(3, 2), (1, PauliPhase::MinusI));
+    }
+
+    #[test]
+    fn two_qubit_local_table_carries_conjugation_signs() {
+        assert_eq!(clifford2_local_map(Clifford2::Cnot, 2, 2), (1, 3, -1.0));
+        assert_eq!(clifford2_local_map(Clifford2::Cz, 1, 2), (2, 1, -1.0));
+        assert_eq!(clifford2_local_map(Clifford2::Swap, 1, 3), (3, 1, 1.0));
+    }
+
+    #[test]
+    fn dynamic_aggregation_rejects_finite_input_overflow() {
+        let word = PauliWord::from_codes(1, &[1]).unwrap();
+        let key = PackedKey::from_word(&word);
+        let result = aggregate(
+            vec![
+                (key.clone(), Complex64::new(f64::MAX, 0.0)),
+                (key, Complex64::new(f64::MAX, 0.0)),
+            ],
+            1,
+            None,
+        );
+        assert!(matches!(
+            result,
+            Err(PauliError::NonFiniteCoefficient { index: 1 })
+        ));
+    }
 }

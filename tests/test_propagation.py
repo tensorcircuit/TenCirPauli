@@ -88,6 +88,11 @@ def test_reverse_heisenberg_order_and_parameter_slots() -> None:
 
 
 def test_projection_is_initial_and_per_gate_after_aggregation() -> None:
+    initial_only = tcp.PropagationEngine(
+        tcp.GateTape(1), tcp.PauliOperator(1, [((1,), 1.0)]), max_weight=0
+    ).propagate_operator([])
+    assert initial_only.terms == ()
+
     tape = tcp.GateTape(1)
     tape.rz(0, angle=np.pi / 3)
     observable = tcp.PauliOperator(1, [((1,), 1.0), ((2,), 1.0)])
@@ -103,6 +108,87 @@ def test_projection_is_initial_and_per_gate_after_aggregation() -> None:
         propagate_dense(1, ((1,), (2,)), (1.0, 1.0), (("rz", 0, np.pi / 3),)),
         abs=1e-12,
     )
+
+
+def test_aggregation_cancellation_and_overflow_are_reported() -> None:
+    collision = np.zeros((4, 4), dtype=np.float64)
+    collision[0, 1] = 1.0
+    collision[0, 2] = 1.0
+    tape = tcp.GateTape(1)
+    tape.ptm((0,), collision)
+    cancelling = tcp.PropagationEngine(
+        tape,
+        tcp.PauliOperator(1, [((1,), 1.0), ((2,), -1.0)]),
+        max_weight=0,
+    ).propagate_operator([])
+    assert cancelling.terms == ()
+
+    overflow = tcp.PropagationEngine(
+        tape,
+        tcp.PauliOperator(1, [((1,), 1e308), ((2,), 1e308)]),
+    )
+    with pytest.raises(ValueError, match="not finite"):
+        overflow.propagate_operator([])
+    with pytest.raises(ValueError, match="not finite"):
+        overflow.expectation([])
+    with pytest.raises(ValueError, match="not finite"):
+        overflow.profile([])
+
+    rotation = tcp.GateTape(1)
+    rotation.rz(0, angle=np.pi / 4)
+    rotation_overflow = tcp.PropagationEngine(
+        rotation,
+        tcp.PauliOperator(
+            1,
+            [
+                ((1,), np.finfo(np.float64).max),
+                ((2,), np.finfo(np.float64).max),
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="not finite"):
+        rotation_overflow.expectation([])
+
+
+def test_random_seeded_exact_and_projected_cases_match_dense_reference() -> None:
+    rng = np.random.default_rng(20260802)
+    for _ in range(8):
+        nqubits = 3
+        tape = tcp.GateTape(nqubits)
+        operations: list[tuple[object, ...]] = []
+        for _ in range(5):
+            kind = int(rng.integers(0, 6))
+            wire0 = int(rng.integers(0, nqubits))
+            if kind < 3:
+                name = ("h", "s", "sdg")[kind]
+                getattr(tape, name)(wire0)
+                operations.append((name, wire0))
+            elif kind == 3:
+                angle = float(rng.uniform(-0.7, 0.7))
+                tape.rz(wire0, angle=angle)
+                operations.append(("rz", wire0, angle))
+            else:
+                wire1 = (wire0 + int(rng.integers(1, nqubits))) % nqubits
+                name = "cnot" if kind == 4 else "cz"
+                getattr(tape, name)(wire0, wire1)
+                operations.append((name, wire0, wire1))
+        structures = [
+            [int(value) for value in rng.integers(0, 4, size=nqubits)] for _ in range(4)
+        ]
+        coefficients = [float(value) for value in rng.uniform(-1.0, 1.0, size=4)]
+        observable = tcp.PauliOperator(nqubits, list(zip(structures, coefficients)))
+        for max_weight in (None, int(rng.integers(0, nqubits + 1))):
+            result = tcp.PropagationEngine(
+                tape, observable, max_weight=max_weight
+            ).propagate_operator([])
+            expected = propagate_dense(
+                nqubits,
+                structures,
+                coefficients,
+                operations,
+                max_weight=max_weight,
+            )
+            assert _terms(result) == pytest.approx(expected, abs=1e-10)
 
 
 def test_finite_projection_matches_independent_every_gate_reference() -> None:
@@ -264,6 +350,16 @@ def test_zero_qubit_identity_and_inline_boundary_structures() -> None:
         observable = tcp.PauliOperator(nqubits, [(codes, 1.0)])
         result = tcp.PropagationEngine(tape, observable).propagate_operator([])
         assert result.terms[0].word.to_codes() == tuple(codes)
+
+
+def test_wide_key_payload_is_included_in_small_memory_guard() -> None:
+    nqubits = 10_000
+    with pytest.raises(MemoryError, match="memory limit"):
+        tcp.PropagationEngine(
+            tcp.GateTape(nqubits),
+            tcp.PauliOperator(nqubits, [([1] + [0] * (nqubits - 1), 1.0)]),
+            max_bytes=1_000,
+        )
 
 
 def test_engine_snapshots_tape_and_bloch_state_and_supports_concurrent_calls() -> None:
