@@ -155,7 +155,13 @@ Known boundary remains intentional: Phase 5.5 does not batch propagated-operator
 
 ## Next actions
 
-Phase 4 handoff, the Phase 5 review remediation, and Phase 5.5 are complete. Future performance work should keep the current correctness and benchmark gates, and only introduce further optimization when a representative release profile identifies a bottleneck; preserve the distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
+Phase 4 handoff, the Phase 5 review remediation, and Phase 5.5 are complete. Phase 6 has an implemented remediation checkpoint: M1 same-pair blocks, M2 diagonal lookup/static folding, M3 projected reducers and final-state cache, M4 in-place reverse, N1/N2 validation, N3 pair-map scratch reuse, and a release A/B workload are present. The phase remains under acceptance review until the complete P0–P4 concurrency, memory, matched-backend, and benchmark handoff matrix is recorded; future performance work should keep the current correctness and benchmark gates and only introduce further optimization when a representative release profile identifies a bottleneck.
+
+## Phase 6 remediation checkpoint
+
+The Phase 6 review findings are addressed in the Rust U1 compiler/executor, the private PyO3 final-state handle, and the Python facade. Consecutive same-unordered-pair SWAP/iSWAP gates compile into one local 2x2 block with exact prefix/suffix gradient contributions; consecutive diagonal runs evaluate each dynamic angle once and fold static same-support runs; reverse differentiation restores the pre-gate state in place; and observable terminals use a projected grouped reducer that skips leaking transitions without weakening strict `restrict_u1()` validation. Facade terminals share one exact IEEE-parameter final-state cache, while `state()` materializes a read-only NumPy copy only when requested.
+
+The reproducible local A/B driver is `benchmarks/phase6_ab.py`. After the parallel workload ended, two same-machine arm64/macOS release runs measured approximately 19.92 ms to 0.63–0.70 ms for 20q/k=10 repeated RZ, 4.38 ms to 0.91–0.97 ms for 40q/k=5 repeated same-pair iSWAP, and 2.71 ms to 1.23–1.29 ms for the representative gradient workload. The final-state cache case measured 2.72–2.74 ms versus 3.35–3.43 ms for its stateless control. The pair-map setup A/B measured 32.66–32.90 ms with a reused word scratch versus 33.88–34.32 ms with one allocation per enumerated pair, a stable approximately 3–4% improvement in the idle run. These are informational measurements; the benchmark source records logical/compiled counts and the complete phase is not marked complete until the remaining acceptance matrix and matched native/JAX record are added.
 
 ## Scheduled future phases
 

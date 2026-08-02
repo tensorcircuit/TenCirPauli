@@ -31,7 +31,7 @@ use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
     NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
 };
-use u1_circuit::{u1_circuit_plan, NativeU1CircuitPlan};
+use u1_circuit::{u1_circuit_plan, NativeU1CircuitPlan, NativeU1FinalState};
 use word::{
     pauli_batch_from_codes, pauli_codes, pauli_commutes, pauli_from_codes, pauli_multiply,
     pauli_support, pauli_symplectic_inner_product, pauli_weight,
@@ -45,6 +45,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;
     module.add_class::<NativeU1CircuitPlan>()?;
+    module.add_class::<NativeU1FinalState>()?;
     module.add_class::<NativePropagationEngine>()?;
     module.add_class::<NativePropagationBatch>()?;
     module.add_class::<NativeSPPSEngine>()?;

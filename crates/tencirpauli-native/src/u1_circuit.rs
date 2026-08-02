@@ -5,7 +5,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     CircuitGate, CircuitProgram, Complex64, ParameterExprNode, U1CircuitPlan, U1Sector,
-    CIRCUIT_SCHEMA_VERSION,
 };
 
 use crate::convert::{build_canonical_operator, map_error};
@@ -16,6 +15,13 @@ type NativeGate = (u8, usize, usize, usize, Vec<usize>, Vec<f64>, Vec<f64>);
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeU1CircuitPlan {
     plan: U1CircuitPlan,
+}
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativeU1FinalState {
+    plan: U1CircuitPlan,
+    state: Vec<Complex64>,
+    parameters: Vec<f64>,
 }
 
 #[pymethods]
@@ -61,6 +67,31 @@ impl NativeU1CircuitPlan {
             .allow_threads(|| self.plan.run(initial, parameters))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, state))
+    }
+
+    fn run_cached<'py>(
+        &self,
+        py: Python<'py>,
+        initial_state: PyReadonlyArray1<'py, NumpyComplex128>,
+        parameters: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Py<NativeU1FinalState>> {
+        let initial = initial_state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("initial_state must be C-contiguous"))?;
+        let parameters = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let state = py
+            .allow_threads(|| self.plan.run(initial, parameters))
+            .map_err(map_error)?;
+        Py::new(
+            py,
+            NativeU1FinalState {
+                plan: self.plan.clone(),
+                state,
+                parameters: parameters.to_vec(),
+            },
+        )
     }
 
     fn probability<'py>(
@@ -174,24 +205,92 @@ impl NativeU1CircuitPlan {
     }
 }
 
+#[pymethods]
+impl NativeU1FinalState {
+    fn state_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<NumpyComplex128>> {
+        let state = py.allow_threads(|| self.state.clone());
+        PyArray1::from_vec(py, state)
+    }
+
+    fn probability<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let probability = py
+            .allow_threads(|| self.plan.probability_from_state(&self.state))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, probability))
+    }
+
+    fn to_dense<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state = py
+            .allow_threads(|| self.plan.to_dense_from_state(&self.state))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, state))
+    }
+
+    fn probability_full<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let probability = py
+            .allow_threads(|| self.plan.probability_full_from_state(&self.state))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, probability))
+    }
+
+    #[pyo3(signature = (structures, coefficients_re, coefficients_im))]
+    fn expectation(
+        &self,
+        py: Python<'_>,
+        structures: Vec<Vec<u8>>,
+        coefficients_re: Vec<f64>,
+        coefficients_im: Vec<f64>,
+    ) -> PyResult<(f64, f64)> {
+        let observable = build_canonical_operator(
+            self.plan.nqubits(),
+            &structures,
+            &coefficients_re,
+            &coefficients_im,
+        )?;
+        let value = py
+            .allow_threads(|| self.plan.expectation_from_state(&self.state, &observable))
+            .map_err(map_error)?;
+        Ok((value.re, value.im))
+    }
+
+    #[pyo3(signature = (structures, coefficients_re, coefficients_im))]
+    fn value_and_grad<'py>(
+        &self,
+        py: Python<'py>,
+        structures: Vec<Vec<u8>>,
+        coefficients_re: Vec<f64>,
+        coefficients_im: Vec<f64>,
+    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+        let observable = build_canonical_operator(
+            self.plan.nqubits(),
+            &structures,
+            &coefficients_re,
+            &coefficients_im,
+        )?;
+        let (value, gradient) = py
+            .allow_threads(|| {
+                self.plan
+                    .value_and_grad_from_state(&self.state, &observable, &self.parameters)
+            })
+            .map_err(map_error)?;
+        Ok((value, PyArray1::from_vec(py, gradient)))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, particle_number, expression_nodes, gates, max_bytes))]
+#[pyo3(signature = (nqubits, particle_number, schema_version, nparameters, expression_nodes, gates, max_bytes))]
 pub(crate) fn u1_circuit_plan(
     py: Python<'_>,
     nqubits: usize,
     particle_number: usize,
+    schema_version: u32,
+    nparameters: usize,
     expression_nodes: Vec<NativeExpressionNode>,
     gates: Vec<NativeGate>,
     max_bytes: usize,
 ) -> PyResult<NativeU1CircuitPlan> {
     let plan = py.allow_threads(|| {
-        let nparameters = expression_nodes
-            .iter()
-            .filter(|(opcode, _, _, _)| *opcode == 1)
-            .map(|(_, slot, _, _)| *slot)
-            .max()
-            .map_or(0, |slot| slot + 1);
         let expressions = expression_nodes
             .into_iter()
             .map(|(opcode, left, right, constant)| match opcode {
@@ -250,7 +349,7 @@ pub(crate) fn u1_circuit_plan(
             )
             .collect::<PyResult<Vec<_>>>()?;
         let program = CircuitProgram::new(
-            CIRCUIT_SCHEMA_VERSION,
+            schema_version,
             nqubits,
             operations,
             expressions,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 import tencirpauli as tcp
+from tencirpauli import _native
 
 
 def test_parameter_expression_is_structural_and_reusable() -> None:
@@ -36,3 +37,18 @@ def test_expression_nodes_preserve_operand_order() -> None:
     right = p1 - p0
     assert left != right
     assert left.operands != right.operands
+
+
+def test_native_ir_rejects_schema_mismatch_and_parameter_holes() -> None:
+    with pytest.raises(ValueError, match="schema"):
+        _native.u1_circuit_plan(2, 1, 999, 0, [], [], 1 << 30)
+    with pytest.raises(ValueError, match="holes"):
+        _native.u1_circuit_plan(
+            2,
+            1,
+            1,
+            3,
+            [(1, 2, 0, 0.0)],
+            [(5, 0, 1, 0, [], [], [])],
+            1 << 30,
+        )

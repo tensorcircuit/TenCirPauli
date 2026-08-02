@@ -213,6 +213,7 @@ fn validate_parameter_program(
     nodes: &[ParameterExprNode],
     nparameters: usize,
 ) -> Result<(), PauliError> {
+    let mut observed_slots = vec![false; nparameters];
     for (index, node) in nodes.iter().enumerate() {
         let operands = match *node {
             ParameterExprNode::Constant(value) => {
@@ -229,6 +230,7 @@ fn validate_parameter_program(
                         context: "parameter slot is outside the declared range",
                     });
                 }
+                observed_slots[slot] = true;
                 None
             }
             ParameterExprNode::Neg(child) => Some([child, 0]),
@@ -249,6 +251,11 @@ fn validate_parameter_program(
                 });
             }
         }
+    }
+    if observed_slots.iter().any(|observed| !observed) {
+        return Err(PauliError::InvalidCircuit {
+            context: "parameter slots must cover 0..nparameters-1 without holes",
+        });
     }
     Ok(())
 }

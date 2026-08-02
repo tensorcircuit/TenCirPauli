@@ -135,6 +135,8 @@ def _pauli_codes(
     ps: Optional[Sequence[int]],
 ) -> tuple[int, ...]:
     if ps is not None:
+        if x is not None or y is not None or z is not None:
+            raise ValueError("ps cannot be combined with x, y, or z")
         codes = tuple(ps)
         if len(codes) != nqubits or any(
             not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
@@ -144,6 +146,7 @@ def _pauli_codes(
         return codes
     codes_list: list[int] = [0] * nqubits
     for code, indices in ((1, x or ()), (2, y or ()), (3, z or ())):
+        seen: set[int] = set()
         for index in indices:
             if (
                 not isinstance(index, int)
@@ -152,6 +155,9 @@ def _pauli_codes(
                 or index >= nqubits
             ):
                 raise ValueError(f"Pauli index {index!r} is outside the circuit")
+            if index in seen:
+                raise ValueError("Pauli index sequences must not contain duplicates")
+            seen.add(index)
             if codes_list[index] != 0 and codes_list[index] != code:
                 raise ValueError("Pauli x/y/z index sets overlap")
             codes_list[index] = code
@@ -185,6 +191,14 @@ class U1CircuitValueAndGradient:
 
     value: float
     gradient: np.ndarray[Any, Any]
+
+
+@dataclass
+class _FinalStateCache:
+    generation: int
+    parameter_bits: bytes
+    native: Any
+    state: Optional[np.ndarray[Any, Any]] = None
 
 
 @dataclass(frozen=True, init=False)
@@ -339,7 +353,7 @@ class U1Circuit:
         self._initial_state = initial
         self._program = _CircuitProgram(nqubits)
         self._native_plan: Optional[U1CircuitPlan] = None
-        self._state_cache: Optional[tuple[int, bytes, np.ndarray[Any, Any]]] = None
+        self._state_cache: Optional[_FinalStateCache] = None
         self._generation = 0
 
     @classmethod
@@ -410,6 +424,8 @@ class U1Circuit:
             native = _native.u1_circuit_plan(
                 self.nqubits,
                 self.k,
+                1,
+                self.nparameters,
                 expression_nodes,
                 gates,
                 _effective_max_bytes(self.max_bytes),
@@ -417,36 +433,51 @@ class U1Circuit:
             self._native_plan = U1CircuitPlan(self.sector, native)
         return self._native_plan
 
+    def _cached_final(
+        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
+    ) -> _FinalStateCache:
+        values = _parameter_array(parameters, self.nparameters)
+        parameter_bits = values.tobytes()
+        cache = self._state_cache
+        if (
+            cache is None
+            or cache.generation != self._generation
+            or cache.parameter_bits != parameter_bits
+        ):
+            native = self.compile()._native.run_cached(self._initial_state, values)
+            cache = _FinalStateCache(self._generation, parameter_bits, native)
+            self._state_cache = cache
+        return cache
+
     def state(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        values = _parameter_array(parameters, self.nparameters)
-        key = (self._generation, values.tobytes())
-        if self._state_cache is not None and self._state_cache[:2] == key:
-            return self._state_cache[2]
-        state = self.compile().run(self._initial_state, values)
-        self._state_cache = (self._generation, values.tobytes(), state)
-        return state
+        cache = self._cached_final(parameters)
+        if cache.state is None:
+            cache.state = _readonly(
+                np.asarray(cache.native.state_array(), dtype=np.complex128)
+            )
+        return cache.state
 
     wavefunction = state
 
     def probability(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        return _readonly(np.abs(self.state(parameters)) ** 2)
+        return _readonly(
+            np.asarray(self._cached_final(parameters).native.probability())
+        )
 
     def to_dense(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        return self.compile().to_dense(
-            self._initial_state, _parameter_array(parameters, self.nparameters)
-        )
+        return _readonly(np.asarray(self._cached_final(parameters).native.to_dense()))
 
     def probability_full(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        return self.compile().probability_full(
-            self._initial_state, _parameter_array(parameters, self.nparameters)
+        return _readonly(
+            np.asarray(self._cached_final(parameters).native.probability_full())
         )
 
     def expectation_z(
@@ -469,11 +500,10 @@ class U1Circuit:
     ) -> complex:
         codes = _pauli_codes(self.nqubits, x, y, z, ps)
         observable = PauliOperator(self.nqubits, [(codes, 1.0)])
-        return self.compile().expectation(
-            self._initial_state,
-            observable,
-            _parameter_array(parameters, self.nparameters),
+        real, imaginary = self._cached_final(parameters).native.expectation(
+            *observable._arrays()
         )
+        return complex(float(real), float(imaginary))
 
     def expectation_pss(
         self,
@@ -489,11 +519,10 @@ class U1Circuit:
         if not np.isfinite(values).all():
             raise ValueError("coefficients must be finite")
         observable = PauliOperator(self.nqubits, list(zip(normalized, values.tolist())))
-        return self.compile().expectation(
-            self._initial_state,
-            observable,
-            _parameter_array(parameters, self.nparameters),
+        real, imaginary = self._cached_final(parameters).native.expectation(
+            *observable._arrays()
         )
+        return complex(float(real), float(imaginary))
 
     def value_and_grad(
         self,
@@ -501,10 +530,13 @@ class U1Circuit:
         *,
         parameters: Sequence[float] | np.ndarray[Any, Any],
     ) -> U1CircuitValueAndGradient:
-        return self.compile().value_and_grad(
-            self._initial_state,
-            observable,
-            _parameter_array(parameters, self.nparameters),
+        if not isinstance(observable, PauliOperator):
+            raise TypeError("observable must be a PauliOperator")
+        value, gradient = self._cached_final(parameters).native.value_and_grad(
+            *observable._arrays()
+        )
+        return U1CircuitValueAndGradient(
+            float(value), _readonly(np.asarray(gradient, dtype=np.float64))
         )
 
     def bind_parameters(self, values: Mapping[int, float]) -> "U1Circuit":

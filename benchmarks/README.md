@@ -2,6 +2,8 @@
 
 TenCirPauli benchmarks are intentionally local and informational. They do not run as CI performance gates. The committed benchmark code defines stable workloads, while machine-specific measurements live under the ignored `.benchmarks/` directory.
 
+Phase 6 optimization A/B cases are defined in `benchmarks/phase6_ab.py`. Run `conda run -p .conda python benchmarks/phase6_ab.py --output /private/tmp/phase6_ab.json` after a release extension build; it covers repeated same-pair blocks, diagonal-heavy static runs, adjoint gradients, facade cache versus stateless terminals, and grouped projected observables. Keep before/after outputs on the same machine and compare numerical metadata alongside medians.
+
 ## Setup
 
 Install the benchmark extra in the active development environment, then make sure Rust, Cargo, and maturin come from the same selected toolchain:

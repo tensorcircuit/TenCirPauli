@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 
 import numpy as np
@@ -147,6 +148,28 @@ def test_adjoint_gradient_matches_finite_difference_and_expression_chain_rule() 
     assert result.gradient[0] == pytest.approx(finite_difference, abs=1e-8)
 
 
+def test_all_parameterized_gate_gradients_match_finite_difference() -> None:
+    parameters = np.asarray([0.17, -0.23, 0.31, 0.11])
+    circuit = tcp.U1Circuit(3, k=1, filled=[0])
+    circuit.rz(0, theta=tcp.Parameter(0))
+    circuit.rzz(0, 1, theta=tcp.Parameter(1))
+    circuit.cphase(1, 2, theta=tcp.Parameter(2))
+    circuit.iswap(0, 1, theta=tcp.Parameter(3))
+    observable = tcp.PauliOperator(3, [([3, 0, 0], 1.0)])
+    result = circuit.value_and_grad(observable, parameters=parameters)
+    for index in range(parameters.size):
+        epsilon = 1.0e-6
+        plus = parameters.copy()
+        minus = parameters.copy()
+        plus[index] += epsilon
+        minus[index] -= epsilon
+        finite_difference = (
+            circuit.value_and_grad(observable, parameters=plus).value
+            - circuit.value_and_grad(observable, parameters=minus).value
+        ) / (2.0 * epsilon)
+        assert result.gradient[index] == pytest.approx(finite_difference, abs=1e-7)
+
+
 def test_lazy_compile_cache_and_parameter_transforms() -> None:
     p0 = tcp.Parameter(0)
     circuit = tcp.U1Circuit(2, k=1, filled=[0])
@@ -175,11 +198,97 @@ def test_wide_low_particle_circuit_does_not_use_single_word_state() -> None:
     assert np.isclose(np.linalg.norm(state), 1.0)
 
 
+@pytest.mark.parametrize("nqubits", [63, 64, 65, 127, 128, 129, 256])
+def test_width_acceptance_matrix_for_low_particle_sector(nqubits: int) -> None:
+    circuit = tcp.U1Circuit(nqubits, k=1, filled=[nqubits - 1])
+    circuit.iswap(0, nqubits - 1, theta=0.25)
+    state = circuit.state()
+    assert state.shape == (nqubits,)
+    assert np.isclose(np.linalg.norm(state), 1.0)
+
+
+@pytest.mark.parametrize("k", [0, 4])
+def test_empty_and_full_particle_sectors_are_valid(k: int) -> None:
+    circuit = tcp.U1Circuit(4, k=k, filled=list(range(k)))
+    circuit.rz(0, theta=0.25)
+    state = circuit.state()
+    assert state.shape == (1,)
+    assert np.isclose(np.linalg.norm(state), 1.0)
+
+
+def test_immutable_plan_supports_concurrent_runs() -> None:
+    circuit = tcp.U1Circuit(8, k=2, filled=[0, 1])
+    circuit.iswap(0, 7, theta=0.23)
+    circuit.rzz(2, 6, theta=-0.17)
+    plan = circuit.compile()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        states = list(
+            executor.map(
+                lambda _: plan.run(circuit._initial_state, ()),
+                range(4),
+            )
+        )
+    for state in states[1:]:
+        np.testing.assert_array_equal(state, states[0])
+
+
 def test_large_pair_kernel_round_trip() -> None:
     circuit = tcp.U1Circuit(40, k=5, filled=list(range(5)))
     circuit.iswap(0, 1, theta=0.37)
     circuit.iswap(0, 1, theta=-0.37)
     np.testing.assert_allclose(circuit.state(), circuit._initial_state, atol=1e-12)
+
+
+def test_repeated_pair_run_is_fused_without_crossing_diagonal_barrier() -> None:
+    circuit = tcp.U1Circuit(4, k=1, filled=[0])
+    for _ in range(4):
+        circuit.iswap(0, 1, theta=0.1)
+    circuit.rz(0, theta=0.0)
+    circuit.iswap(0, 1, theta=0.1)
+    assert circuit.compile()._native.gate_count == 3
+
+
+def test_facade_terminals_share_cached_final_state() -> None:
+    parameter = tcp.Parameter(0)
+    circuit = tcp.U1Circuit(3, k=1, filled=[0])
+    circuit.iswap(0, 1, theta=parameter)
+    values = np.asarray([0.23])
+    state = circuit.state(values)
+    probability = circuit.probability(values)
+    dense = circuit.to_dense(values)
+    expectation = circuit.expectation_z(0, parameters=values)
+    np.testing.assert_allclose(probability, np.abs(state) ** 2)
+    basis = [circuit.sector.unrank(index) for index in range(circuit.dimension)]
+    np.testing.assert_allclose(dense[basis], state)
+    expected = sum(
+        probability[index] * (1.0 if not (basis[index] & 0b100) else -1.0)
+        for index in range(circuit.dimension)
+    )
+    assert expectation == pytest.approx(float(expected))
+    assert circuit.state(values) is state
+    np.testing.assert_allclose(
+        circuit.state(np.asarray([-0.23])), circuit.state([-0.23])
+    )
+
+
+def test_facade_cache_invalidates_on_append_and_preserves_signed_zero_key() -> None:
+    parameter = tcp.Parameter(0)
+    circuit = tcp.U1Circuit(2, k=1, filled=[0])
+    circuit.iswap(0, 1, theta=parameter)
+    positive = circuit.state([0.0])
+    negative = circuit.state([-0.0])
+    assert positive is not negative
+    circuit.rz(0, theta=0.2)
+    appended = circuit.state([0.0])
+    assert appended is not positive
+
+
+def test_expectation_ps_rejects_ambiguous_and_duplicate_inputs() -> None:
+    circuit = tcp.U1Circuit(2, k=1)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        circuit.expectation_ps(x=[0], ps=[0, 0])
+    with pytest.raises(ValueError, match="duplicates"):
+        circuit.expectation_ps(x=[0, 0])
 
 
 def test_129_qubit_k2_cross_limb_execution() -> None:

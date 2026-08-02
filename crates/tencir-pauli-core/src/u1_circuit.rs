@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::circuit_ir::{CircuitGate, CircuitProgram};
+use crate::circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode};
 use crate::error::PauliError;
 use crate::operator::PauliOperator;
-use crate::scalar::Complex64;
+use crate::scalar::{is_exact_zero, Complex64};
 use crate::sector::U1Sector;
 
 const U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD: usize = 1 << 14;
@@ -49,6 +49,23 @@ enum DiagonalOp {
     },
 }
 
+#[derive(Clone, Debug)]
+enum EvaluatedDiagonalOp {
+    OneWire {
+        wire: usize,
+        phase: [Complex64; 2],
+    },
+    TwoWire {
+        wire0: usize,
+        wire1: usize,
+        phase: [Complex64; 4],
+    },
+    General {
+        wires: Arc<[usize]>,
+        phase: Arc<[Complex64]>,
+    },
+}
+
 impl DiagonalOp {
     fn is_sparse(&self) -> bool {
         matches!(self, Self::Cz { .. } | Self::Cphase { .. })
@@ -56,17 +73,231 @@ impl DiagonalOp {
 }
 
 #[derive(Clone, Debug)]
+enum PairMicroOp {
+    Swap,
+    Iswap { angle: usize },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Matrix2 {
+    values: [[Complex64; 2]; 2],
+}
+
+impl Matrix2 {
+    fn identity() -> Self {
+        Self {
+            values: [
+                [Complex64::new(1.0, 0.0), Complex64::default()],
+                [Complex64::default(), Complex64::new(1.0, 0.0)],
+            ],
+        }
+    }
+
+    fn multiply(self, right: Self) -> Self {
+        let mut values = [[Complex64::default(); 2]; 2];
+        for (row, output_row) in values.iter_mut().enumerate() {
+            for (column, output) in output_row.iter_mut().enumerate() {
+                *output = self.values[row][0] * right.values[0][column]
+                    + self.values[row][1] * right.values[1][column];
+            }
+        }
+        Self { values }
+    }
+
+    fn adjoint(self) -> Self {
+        Self {
+            values: [
+                [self.values[0][0].conj(), self.values[1][0].conj()],
+                [self.values[0][1].conj(), self.values[1][1].conj()],
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PairBlock {
+    pairs: Arc<[PairIndex]>,
+    operations: Arc<[PairMicroOp]>,
+    static_matrix: Option<Matrix2>,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedObservableTerm {
+    z_words: Arc<[u64]>,
+    coefficient: Complex64,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedObservableGroup {
+    x_words: Arc<[u64]>,
+    x_weight: usize,
+    terms: Arc<[ProjectedObservableTerm]>,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedObservablePlan {
+    groups: Arc<[ProjectedObservableGroup]>,
+}
+
+impl ProjectedObservablePlan {
+    fn new(observable: &PauliOperator) -> Result<Self, PauliError> {
+        let mut lookup = HashMap::<Vec<u64>, usize>::with_capacity(observable.terms().len());
+        let mut groups: Vec<(Arc<[u64]>, Vec<ProjectedObservableTerm>)> = Vec::new();
+        for term in observable.terms() {
+            let x_words = term.word.x_words();
+            let group_index = if let Some(index) = lookup.get(x_words) {
+                *index
+            } else {
+                let index = groups.len();
+                lookup.insert(x_words.to_vec(), index);
+                groups.push((Arc::from(x_words.to_vec().into_boxed_slice()), Vec::new()));
+                index
+            };
+            let y_count = term
+                .word
+                .x_words()
+                .iter()
+                .zip(term.word.z_words())
+                .map(|(x, z)| (x & z).count_ones() as usize)
+                .sum::<usize>();
+            let y_phase = match y_count % 4 {
+                0 => Complex64::new(1.0, 0.0),
+                1 => Complex64::new(0.0, 1.0),
+                2 => Complex64::new(-1.0, 0.0),
+                _ => Complex64::new(0.0, -1.0),
+            };
+            let coefficient = term.coefficient * y_phase;
+            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index: group_index });
+            }
+            groups[group_index].1.push(ProjectedObservableTerm {
+                z_words: Arc::from(term.word.z_words().to_vec().into_boxed_slice()),
+                coefficient,
+            });
+        }
+        let groups = groups
+            .into_iter()
+            .map(|(x_words, terms)| ProjectedObservableGroup {
+                x_weight: x_words.iter().map(|word| word.count_ones() as usize).sum(),
+                x_words,
+                terms: Arc::from(terms.into_boxed_slice()),
+            })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            groups: Arc::from(groups.into_boxed_slice()),
+        })
+    }
+
+    fn for_each_transition(
+        &self,
+        state: &[Complex64],
+        basis_words: &[u64],
+        word_count: usize,
+        sector: &U1Sector,
+        mut callback: impl FnMut(usize, Complex64),
+    ) -> Result<(), PauliError> {
+        let mut destination_words = vec![0_u64; word_count];
+        for (source, source_amplitude) in state.iter().copied().enumerate() {
+            let source_words = &basis_words[source * word_count..(source + 1) * word_count];
+            for group in self.groups.iter() {
+                let intersection = group
+                    .x_words
+                    .iter()
+                    .zip(source_words)
+                    .map(|(x, source)| (x & source).count_ones() as usize)
+                    .sum::<usize>();
+                let destination_weight = sector
+                    .particle_number()
+                    .checked_add(group.x_weight)
+                    .and_then(|weight| weight.checked_sub(intersection.checked_mul(2)?))
+                    .ok_or(PauliError::Overflow {
+                        context: "computing projected observable destination weight",
+                    })?;
+                if destination_weight != sector.particle_number() {
+                    continue;
+                }
+                let destination = if group.x_weight == 0 {
+                    source
+                } else {
+                    for (destination, (source, x)) in destination_words
+                        .iter_mut()
+                        .zip(source_words.iter().zip(group.x_words.iter()))
+                    {
+                        *destination = *source ^ *x;
+                    }
+                    usize::try_from(sector.rank_words(&destination_words)?).map_err(|_| {
+                        PauliError::Overflow {
+                            context: "converting projected observable destination index",
+                        }
+                    })?
+                };
+                let mut value = Complex64::default();
+                for term in group.terms.iter() {
+                    let parity = term
+                        .z_words
+                        .iter()
+                        .zip(source_words)
+                        .map(|(z, source)| (z & source).count_ones())
+                        .sum::<u32>();
+                    if parity & 1 == 0 {
+                        value += term.coefficient;
+                    } else {
+                        value -= term.coefficient;
+                    }
+                }
+                if !is_exact_zero(value) {
+                    callback(destination, value * source_amplitude);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        basis_words: &[u64],
+        word_count: usize,
+        sector: &U1Sector,
+    ) -> Result<(), PauliError> {
+        output.fill(Complex64::default());
+        self.for_each_transition(
+            state,
+            basis_words,
+            word_count,
+            sector,
+            |destination, value| {
+                output[destination] += value;
+            },
+        )
+    }
+
+    fn expectation(
+        &self,
+        state: &[Complex64],
+        basis_words: &[u64],
+        word_count: usize,
+        sector: &U1Sector,
+    ) -> Result<Complex64, PauliError> {
+        let mut value = Complex64::default();
+        self.for_each_transition(
+            state,
+            basis_words,
+            word_count,
+            sector,
+            |destination, term| {
+                value += state[destination].conj() * term;
+            },
+        )?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug)]
 enum CompiledU1Gate {
-    Swap {
-        pairs: Arc<[PairIndex]>,
-    },
-    Iswap {
-        angle: usize,
-        pairs: Arc<[PairIndex]>,
-    },
-    DiagonalBlock {
-        operations: Arc<[DiagonalOp]>,
-    },
+    PairBlock(PairBlock),
+    DiagonalBlock { operations: Arc<[DiagonalOp]> },
 }
 
 /// Immutable compiled U(1) circuit plan.
@@ -117,6 +348,7 @@ impl U1CircuitPlan {
         let mut pair_maps = HashMap::<(usize, usize), Arc<[PairIndex]>>::new();
         let mut diagonal_indices = HashMap::<(usize, usize), Arc<[usize]>>::new();
         let mut gates = Vec::with_capacity(program.operations().len());
+        let static_values = static_expression_values(&program);
         let mut operation_index = 0;
         while operation_index < program.operations().len() {
             if let Some(first) = diagonal_op(
@@ -144,17 +376,48 @@ impl U1CircuitPlan {
                         break;
                     }
                 }
+                let operations = fold_static_diagonal_operations(operations, &static_values);
                 gates.push(CompiledU1Gate::DiagonalBlock {
                     operations: Arc::from(operations.into_boxed_slice()),
                 });
             } else {
-                gates.push(compile_non_diagonal_gate(
-                    &program.operations()[operation_index],
-                    &sector,
-                    &mut pair_maps,
-                    max_bytes,
-                )?);
-                operation_index += 1;
+                let (wire0, wire1) = non_diagonal_pair(&program.operations()[operation_index])
+                    .ok_or(PauliError::InvalidCircuit {
+                        context: "unsupported non-diagonal gate",
+                    })?;
+                let key = if wire0 < wire1 {
+                    (wire0, wire1)
+                } else {
+                    (wire1, wire0)
+                };
+                let mut micro_operations = Vec::new();
+                while operation_index < program.operations().len() {
+                    let operation = &program.operations()[operation_index];
+                    let Some((next_wire0, next_wire1)) = non_diagonal_pair(operation) else {
+                        break;
+                    };
+                    let next_key = if next_wire0 < next_wire1 {
+                        (next_wire0, next_wire1)
+                    } else {
+                        (next_wire1, next_wire0)
+                    };
+                    if next_key != key {
+                        break;
+                    }
+                    micro_operations.push(pair_micro_operation(operation).ok_or(
+                        PauliError::InvalidCircuit {
+                            context: "unsupported non-diagonal gate",
+                        },
+                    )?);
+                    operation_index += 1;
+                }
+                let pairs = pair_map(&sector, wire0, wire1, &mut pair_maps, max_bytes)?;
+                let static_matrix = compose_static_pair_matrix(&micro_operations, &static_values);
+                gates.push(CompiledU1Gate::PairBlock(PairBlock {
+                    pairs,
+                    operations: Arc::from(micro_operations.into_boxed_slice()),
+                    static_matrix,
+                }));
             }
         }
         let pair_bytes = pair_maps.values().try_fold(0_u128, |sum, pairs| {
@@ -237,6 +500,11 @@ impl U1CircuitPlan {
         parameters: &[f64],
     ) -> Result<Vec<f64>, PauliError> {
         let state = self.run(initial_state, parameters)?;
+        self.probability_from_state(&state)
+    }
+
+    pub fn probability_from_state(&self, state: &[Complex64]) -> Result<Vec<f64>, PauliError> {
+        self.validate_state(state)?;
         Ok(state.iter().map(|value| value.norm_sqr()).collect())
     }
 
@@ -246,9 +514,14 @@ impl U1CircuitPlan {
         parameters: &[f64],
     ) -> Result<Vec<Complex64>, PauliError> {
         let state = self.run(initial_state, parameters)?;
+        self.to_dense_from_state(&state)
+    }
+
+    pub fn to_dense_from_state(&self, state: &[Complex64]) -> Result<Vec<Complex64>, PauliError> {
+        self.validate_state(state)?;
         let full_dimension = checked_full_dimension(self.nqubits(), self.max_bytes)?;
         let mut output = vec![Complex64::default(); full_dimension];
-        for (index, amplitude) in state.into_iter().enumerate() {
+        for (index, amplitude) in state.iter().copied().enumerate() {
             let basis = self.basis_integer(index)?;
             output[basis] = amplitude;
         }
@@ -261,9 +534,14 @@ impl U1CircuitPlan {
         parameters: &[f64],
     ) -> Result<Vec<f64>, PauliError> {
         let state = self.run(initial_state, parameters)?;
+        self.probability_full_from_state(&state)
+    }
+
+    pub fn probability_full_from_state(&self, state: &[Complex64]) -> Result<Vec<f64>, PauliError> {
+        self.validate_state(state)?;
         let full_dimension = checked_full_dimension(self.nqubits(), self.max_bytes)?;
         let mut output = vec![0.0; full_dimension];
-        for (index, amplitude) in state.into_iter().enumerate() {
+        for (index, amplitude) in state.iter().copied().enumerate() {
             let basis = self.basis_integer(index)?;
             output[basis] = amplitude.norm_sqr();
         }
@@ -283,8 +561,23 @@ impl U1CircuitPlan {
             });
         }
         let state = self.run(initial_state, parameters)?;
-        let applied = self.apply_observable(&state, observable)?;
-        Ok(inner_product(&state, &applied))
+        self.expectation_from_state(&state, observable)
+    }
+
+    pub fn expectation_from_state(
+        &self,
+        state: &[Complex64],
+        observable: &PauliOperator,
+    ) -> Result<Complex64, PauliError> {
+        if observable.nqubits() != self.nqubits() {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: observable.nqubits(),
+                right: self.nqubits(),
+            });
+        }
+        self.validate_state(state)?;
+        let projected = ProjectedObservablePlan::new(observable)?;
+        projected.expectation(state, &self.basis_words, self.word_count, &self.sector)
     }
 
     pub fn value_and_grad(
@@ -308,29 +601,64 @@ impl U1CircuitPlan {
         for gate in self.gates.iter() {
             self.apply_gate(&mut state, gate, &values, false)?;
         }
-        let value_state = self.apply_observable(&state, observable)?;
-        let value = inner_product(&state, &value_state).re;
+        self.value_and_grad_from_final_state_with_values(&state, observable, &values)
+    }
+
+    pub fn value_and_grad_from_state(
+        &self,
+        state: &[Complex64],
+        observable: &PauliOperator,
+        parameters: &[f64],
+    ) -> Result<(f64, Vec<f64>), PauliError> {
+        if observable.nqubits() != self.nqubits() {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: observable.nqubits(),
+                right: self.nqubits(),
+            });
+        }
+        if !observable.is_hermitian(0.0) {
+            return Err(PauliError::NonHermitianExpectation);
+        }
+        self.validate_state(state)?;
+        let values = self.program.evaluate_parameters(parameters)?;
+        self.value_and_grad_from_final_state_with_values(state, observable, &values)
+    }
+
+    fn value_and_grad_from_final_state_with_values(
+        &self,
+        state: &[Complex64],
+        observable: &PauliOperator,
+        values: &[f64],
+    ) -> Result<(f64, Vec<f64>), PauliError> {
+        let projected = ProjectedObservablePlan::new(observable)?;
+        let mut value_state = vec![Complex64::default(); state.len()];
+        projected.apply_into(
+            state,
+            &mut value_state,
+            &self.basis_words,
+            self.word_count,
+            &self.sector,
+        )?;
+        let value = inner_product(state, &value_state).re;
         let mut lambda = value_state;
         let mut node_adjoint = vec![0.0; self.program.parameter_program().len()];
+        let mut state = state.to_vec();
         for gate in self.gates.iter().rev() {
-            let mut before = state.clone();
-            self.apply_inverse_gate(&mut before, gate, &values)?;
+            self.apply_inverse_gate(&mut state, gate, values)?;
             accumulate_gate_derivative(
                 &state,
-                &before,
                 &lambda,
                 gate,
-                &values,
+                values,
                 &mut node_adjoint,
                 self.word_count,
                 &self.basis_words,
             )?;
-            self.apply_inverse_gate(&mut lambda, gate, &values)?;
-            state = before;
+            self.apply_inverse_gate(&mut lambda, gate, values)?;
         }
         let gradient = self
             .program
-            .reverse_parameter_program(&values, &node_adjoint)?;
+            .reverse_parameter_program(values, &node_adjoint)?;
         if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
             return Err(PauliError::InvalidCircuit {
                 context: "circuit value or gradient is non-finite",
@@ -417,103 +745,29 @@ impl U1CircuitPlan {
                     }
                     return Ok(());
                 }
+                let evaluated = operations
+                    .iter()
+                    .map(|operation| evaluate_diagonal_operation(operation, values, inverse))
+                    .collect::<Vec<_>>();
                 for (index, value) in state.iter_mut().enumerate() {
                     let mut phase = Complex64::new(1.0, 0.0);
-                    for operation in operations.iter() {
-                        phase *= self.diagonal_phase(index, operation, values);
+                    for operation in &evaluated {
+                        phase *= evaluated_diagonal_phase(
+                            index,
+                            operation,
+                            &self.basis_words,
+                            self.word_count,
+                        );
                     }
-                    *value *= if inverse { phase.conj() } else { phase };
+                    *value *= phase;
                 }
             }
-            CompiledU1Gate::Swap { pairs } => {
-                for pair in pairs.iter() {
-                    state.swap(pair.zero_one, pair.one_zero);
-                }
-            }
-            CompiledU1Gate::Iswap { angle, pairs } => {
-                let theta = values[*angle] * PI / 2.0 * if inverse { -1.0 } else { 1.0 };
-                let cosine = theta.cos();
-                let sine = Complex64::new(0.0, theta.sin());
-                if pairs.len() >= U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD {
-                    // Pair construction emits disjoint endpoints: every sector basis
-                    // state with one occupied wire in this pair appears exactly once.
-                    // The raw pointer permits Rayon to update those disjoint pairs in
-                    // place without allocating a full second state vector.
-                    let state_ptr = state.as_mut_ptr() as usize;
-                    pairs.par_iter().for_each(|pair| unsafe {
-                        let state_ptr = state_ptr as *mut Complex64;
-                        let left = *state_ptr.add(pair.zero_one);
-                        let right = *state_ptr.add(pair.one_zero);
-                        *state_ptr.add(pair.zero_one) = cosine * left + sine * right;
-                        *state_ptr.add(pair.one_zero) = cosine * right + sine * left;
-                    });
-                } else {
-                    for pair in pairs.iter() {
-                        let left = state[pair.zero_one];
-                        let right = state[pair.one_zero];
-                        state[pair.zero_one] = cosine * left + sine * right;
-                        state[pair.one_zero] = cosine * right + sine * left;
-                    }
-                }
+            CompiledU1Gate::PairBlock(block) => {
+                let matrix = pair_block_matrix(block, values, inverse);
+                apply_pair_matrix(state, &block.pairs, matrix);
             }
         }
         Ok(())
-    }
-
-    fn diagonal_phase(&self, index: usize, operation: &DiagonalOp, values: &[f64]) -> Complex64 {
-        match operation {
-            DiagonalOp::Rz { wire, angle } => {
-                let z = if self.bit(index, *wire) == 0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                Complex64::from_polar(1.0, -0.5 * values[*angle] * z)
-            }
-            DiagonalOp::Rzz {
-                wire0,
-                wire1,
-                angle,
-            } => {
-                let z0 = if self.bit(index, *wire0) == 0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let z1 = if self.bit(index, *wire1) == 0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                Complex64::from_polar(1.0, -0.5 * values[*angle] * z0 * z1)
-            }
-            DiagonalOp::Cz { wire0, wire1, .. } => {
-                if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
-                    Complex64::new(-1.0, 0.0)
-                } else {
-                    Complex64::new(1.0, 0.0)
-                }
-            }
-            DiagonalOp::Cphase {
-                wire0,
-                wire1,
-                angle,
-                ..
-            } => {
-                if self.bit(index, *wire0) != 0 && self.bit(index, *wire1) != 0 {
-                    Complex64::from_polar(1.0, values[*angle])
-                } else {
-                    Complex64::new(1.0, 0.0)
-                }
-            }
-            DiagonalOp::Static { wires, payload } => {
-                let mut local = 0usize;
-                for wire in wires.iter().copied() {
-                    local = (local << 1) | self.bit(index, wire) as usize;
-                }
-                payload[local]
-            }
-        }
     }
 
     fn apply_inverse_gate(
@@ -524,54 +778,10 @@ impl U1CircuitPlan {
     ) -> Result<(), PauliError> {
         self.apply_gate(state, gate, values, true)
     }
-
-    fn apply_observable(
-        &self,
-        state: &[Complex64],
-        observable: &PauliOperator,
-    ) -> Result<Vec<Complex64>, PauliError> {
-        let mut output = vec![Complex64::default(); state.len()];
-        let word_count = self.word_count;
-        let mut destination_words = vec![0_u64; word_count];
-        for term in observable.terms() {
-            let word = &term.word;
-            let mut y_phase = Complex64::new(1.0, 0.0);
-            let y_count = (0..self.nqubits())
-                .filter(|wire| word.code_at(*wire) == 2)
-                .count();
-            for _ in 0..y_count {
-                y_phase *= Complex64::new(0.0, 1.0);
-            }
-            for (source, source_amplitude) in state.iter().enumerate() {
-                let source_words =
-                    &self.basis_words[source * word_count..(source + 1) * word_count];
-                for limb in 0..word_count {
-                    destination_words[limb] = source_words[limb] ^ word.x_words()[limb];
-                }
-                let destination = match self.sector.rank_words(&destination_words) {
-                    Ok(rank) => usize::try_from(rank).map_err(|_| PauliError::Overflow {
-                        context: "converting U1 observable destination index",
-                    })?,
-                    Err(PauliError::InvalidIndex { .. }) => continue,
-                    Err(error) => return Err(error),
-                };
-                let parity = word
-                    .z_words()
-                    .iter()
-                    .zip(source_words)
-                    .map(|(left, right)| (left & right).count_ones())
-                    .sum::<u32>();
-                let phase = if parity % 2 == 0 { y_phase } else { -y_phase };
-                output[destination] += term.coefficient * phase * *source_amplitude;
-            }
-        }
-        Ok(output)
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn accumulate_gate_derivative(
-    after: &[Complex64],
     before: &[Complex64],
     lambda: &[Complex64],
     gate: &CompiledU1Gate,
@@ -580,98 +790,477 @@ fn accumulate_gate_derivative(
     word_count: usize,
     basis_words: &[u64],
 ) -> Result<(), PauliError> {
-    let contribution = match gate {
+    match gate {
         CompiledU1Gate::DiagonalBlock { operations } => {
-            for operation in operations.iter() {
-                let (angle, result) = match operation {
-                    DiagonalOp::Rz { wire, angle } => {
-                        let mut result = 0.0;
-                        for index in 0..after.len() {
-                            let z = if bit_from_basis(basis_words, word_count, index, *wire) == 0 {
-                                1.0
-                            } else {
-                                -1.0
-                            };
-                            let derivative = Complex64::new(0.0, -0.5 * z) * after[index];
-                            result += 2.0 * (lambda[index].conj() * derivative).re;
-                        }
-                        (*angle, result)
-                    }
-                    DiagonalOp::Rzz {
-                        wire0,
-                        wire1,
-                        angle,
-                    } => {
-                        let mut result = 0.0;
-                        for index in 0..after.len() {
-                            let z0 = if bit_from_basis(basis_words, word_count, index, *wire0) == 0
-                            {
-                                1.0
-                            } else {
-                                -1.0
-                            };
-                            let z1 = if bit_from_basis(basis_words, word_count, index, *wire1) == 0
-                            {
-                                1.0
-                            } else {
-                                -1.0
-                            };
-                            let derivative = Complex64::new(0.0, -0.5 * z0 * z1) * after[index];
-                            result += 2.0 * (lambda[index].conj() * derivative).re;
-                        }
-                        (*angle, result)
-                    }
-                    DiagonalOp::Cphase {
-                        wire0,
-                        wire1,
-                        angle,
-                        ..
-                    } => {
-                        let mut result = 0.0;
-                        for index in 0..after.len() {
-                            if bit_from_basis(basis_words, word_count, index, *wire0) != 0
-                                && bit_from_basis(basis_words, word_count, index, *wire1) != 0
-                            {
-                                let derivative = Complex64::new(0.0, 1.0) * after[index];
-                                result += 2.0 * (lambda[index].conj() * derivative).re;
-                            }
-                        }
-                        (*angle, result)
-                    }
-                    DiagonalOp::Cz { .. } | DiagonalOp::Static { .. } => continue,
+            let evaluated = operations
+                .iter()
+                .map(|operation| evaluate_diagonal_operation(operation, values, false))
+                .collect::<Vec<_>>();
+            for index in 0..before.len() {
+                let mut total_phase = Complex64::new(1.0, 0.0);
+                for operation in &evaluated {
+                    total_phase *=
+                        evaluated_diagonal_phase(index, operation, basis_words, word_count);
+                }
+                let after = total_phase * before[index];
+                for operation in operations.iter() {
+                    let Some((angle, generator)) =
+                        diagonal_generator(operation, index, basis_words, word_count)
+                    else {
+                        continue;
+                    };
+                    node_adjoint[angle] += 2.0 * (lambda[index].conj() * generator * after).re;
+                }
+            }
+        }
+        CompiledU1Gate::PairBlock(block) => {
+            let matrices = block
+                .operations
+                .iter()
+                .map(|operation| pair_micro_matrix(operation, values))
+                .collect::<Vec<_>>();
+            let mut prefix = vec![Matrix2::identity(); matrices.len() + 1];
+            for (index, matrix) in matrices.iter().enumerate() {
+                prefix[index + 1] = matrix.multiply(prefix[index]);
+            }
+            let mut suffix = vec![Matrix2::identity(); matrices.len() + 1];
+            for index in (0..matrices.len()).rev() {
+                suffix[index] = suffix[index + 1].multiply(matrices[index]);
+            }
+            for (index, operation) in block.operations.iter().enumerate() {
+                let PairMicroOp::Iswap { angle } = operation else {
+                    continue;
                 };
-                node_adjoint[angle] += result;
+                let theta = values[*angle] * PI / 2.0;
+                let derivative = Matrix2 {
+                    values: [
+                        [
+                            Complex64::new(-PI / 2.0 * theta.sin(), 0.0),
+                            Complex64::new(0.0, PI / 2.0 * theta.cos()),
+                        ],
+                        [
+                            Complex64::new(0.0, PI / 2.0 * theta.cos()),
+                            Complex64::new(-PI / 2.0 * theta.sin(), 0.0),
+                        ],
+                    ],
+                };
+                let derivative = suffix[index + 1]
+                    .multiply(derivative)
+                    .multiply(prefix[index]);
+                let mut result = 0.0;
+                for pair in block.pairs.iter() {
+                    let left = before[pair.zero_one];
+                    let right = before[pair.one_zero];
+                    let dleft = derivative.values[0][0] * left + derivative.values[0][1] * right;
+                    let dright = derivative.values[1][0] * left + derivative.values[1][1] * right;
+                    result += 2.0
+                        * (lambda[pair.zero_one].conj() * dleft
+                            + lambda[pair.one_zero].conj() * dright)
+                            .re;
+                }
+                node_adjoint[*angle] += result;
             }
-            None
         }
-        CompiledU1Gate::Iswap { angle, pairs } => {
-            let theta = values[*angle] * PI / 2.0;
-            let cosine = theta.cos();
-            let sine = theta.sin();
-            let alpha = PI / 2.0;
-            let mut result = 0.0;
-            for pair in pairs.iter() {
-                let left = before[pair.zero_one];
-                let right = before[pair.one_zero];
-                let dleft = -alpha * sine * left + Complex64::new(0.0, alpha * cosine) * right;
-                let dright = -alpha * sine * right + Complex64::new(0.0, alpha * cosine) * left;
-                result += 2.0
-                    * (lambda[pair.zero_one].conj() * dleft
-                        + lambda[pair.one_zero].conj() * dright)
-                        .re;
-            }
-            Some((*angle, result))
-        }
-        CompiledU1Gate::Swap { .. } => None,
-    };
-    if let Some((angle, value)) = contribution {
-        node_adjoint[angle] += value;
     }
     Ok(())
 }
 
 fn bit_from_basis(basis_words: &[u64], word_count: usize, index: usize, wire: usize) -> u8 {
     ((basis_words[index * word_count + wire / 64] >> (wire % 64)) & 1) as u8
+}
+
+fn non_diagonal_pair(gate: &CircuitGate) -> Option<(usize, usize)> {
+    match gate {
+        CircuitGate::Swap { wire0, wire1 } | CircuitGate::Iswap { wire0, wire1, .. } => {
+            Some((*wire0, *wire1))
+        }
+        CircuitGate::Rz { .. }
+        | CircuitGate::Rzz { .. }
+        | CircuitGate::Cz { .. }
+        | CircuitGate::Cphase { .. }
+        | CircuitGate::Diagonal { .. } => None,
+    }
+}
+
+fn pair_micro_operation(gate: &CircuitGate) -> Option<PairMicroOp> {
+    match gate {
+        CircuitGate::Swap { .. } => Some(PairMicroOp::Swap),
+        CircuitGate::Iswap { angle, .. } => Some(PairMicroOp::Iswap { angle: *angle }),
+        _ => None,
+    }
+}
+
+fn static_expression_values(program: &CircuitProgram) -> Vec<Option<f64>> {
+    let mut values: Vec<Option<f64>> = Vec::with_capacity(program.parameter_program().len());
+    for node in program.parameter_program() {
+        let value = match *node {
+            ParameterExprNode::Constant(value) => Some(value),
+            ParameterExprNode::Slot(_) => None,
+            ParameterExprNode::Neg(child) => values[child].map(|value| -value),
+            ParameterExprNode::Add(left, right) => values[left]
+                .zip(values[right])
+                .map(|(left, right)| left + right),
+            ParameterExprNode::Sub(left, right) => values[left]
+                .zip(values[right])
+                .map(|(left, right)| left - right),
+            ParameterExprNode::Mul(left, right) => values[left]
+                .zip(values[right])
+                .map(|(left, right)| left * right),
+            ParameterExprNode::Div(left, right) => values[left]
+                .zip(values[right])
+                .and_then(|(left, right)| (right != 0.0).then_some(left / right)),
+        };
+        values.push(value.filter(|value| value.is_finite()));
+    }
+    values
+}
+
+fn static_diagonal_payload(
+    operation: &DiagonalOp,
+    static_values: &[Option<f64>],
+) -> Option<(Arc<[usize]>, Vec<Complex64>)> {
+    match operation {
+        DiagonalOp::Rz { wire, angle } => {
+            let value = static_values.get(*angle)?.as_ref()?;
+            Some((
+                Arc::from(vec![*wire].into_boxed_slice()),
+                vec![
+                    Complex64::from_polar(1.0, -0.5 * value),
+                    Complex64::from_polar(1.0, 0.5 * value),
+                ],
+            ))
+        }
+        DiagonalOp::Rzz {
+            wire0,
+            wire1,
+            angle,
+        } => {
+            let value = static_values.get(*angle)?.as_ref()?;
+            let phases =
+                [1.0, -1.0, -1.0, 1.0].map(|sign| Complex64::from_polar(1.0, -0.5 * value * sign));
+            Some((
+                Arc::from(vec![*wire0, *wire1].into_boxed_slice()),
+                phases.into(),
+            ))
+        }
+        DiagonalOp::Cz { wire0, wire1, .. } => Some((
+            Arc::from(vec![*wire0, *wire1].into_boxed_slice()),
+            vec![
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(-1.0, 0.0),
+            ],
+        )),
+        DiagonalOp::Cphase {
+            wire0,
+            wire1,
+            angle,
+            ..
+        } => {
+            let value = static_values.get(*angle)?.as_ref()?;
+            Some((
+                Arc::from(vec![*wire0, *wire1].into_boxed_slice()),
+                vec![
+                    Complex64::new(1.0, 0.0),
+                    Complex64::new(1.0, 0.0),
+                    Complex64::new(1.0, 0.0),
+                    Complex64::from_polar(1.0, *value),
+                ],
+            ))
+        }
+        DiagonalOp::Static { wires, payload } => Some((wires.clone(), payload.to_vec())),
+    }
+}
+
+fn fold_static_diagonal_operations(
+    operations: Vec<DiagonalOp>,
+    static_values: &[Option<f64>],
+) -> Vec<DiagonalOp> {
+    let mut folded = Vec::with_capacity(operations.len());
+    let mut index = 0;
+    while index < operations.len() {
+        if operations[index].is_sparse() {
+            folded.push(operations[index].clone());
+            index += 1;
+            continue;
+        }
+        let Some((wires, mut payload)) = static_diagonal_payload(&operations[index], static_values)
+        else {
+            folded.push(operations[index].clone());
+            index += 1;
+            continue;
+        };
+        let mut end = index + 1;
+        while end < operations.len() {
+            if operations[end].is_sparse() {
+                break;
+            }
+            let Some((next_wires, next_payload)) =
+                static_diagonal_payload(&operations[end], static_values)
+            else {
+                break;
+            };
+            if next_wires.as_ref() != wires.as_ref() || next_payload.len() != payload.len() {
+                break;
+            }
+            for (left, right) in payload.iter_mut().zip(next_payload) {
+                *left *= right;
+            }
+            end += 1;
+        }
+        if end > index + 1 || !matches!(operations[index], DiagonalOp::Static { .. }) {
+            folded.push(DiagonalOp::Static {
+                wires,
+                payload: Arc::from(payload.into_boxed_slice()),
+            });
+        } else {
+            folded.push(operations[index].clone());
+        }
+        index = end;
+    }
+    folded
+}
+
+fn pair_micro_matrix(operation: &PairMicroOp, values: &[f64]) -> Matrix2 {
+    match operation {
+        PairMicroOp::Swap => Matrix2 {
+            values: [
+                [Complex64::default(), Complex64::new(1.0, 0.0)],
+                [Complex64::new(1.0, 0.0), Complex64::default()],
+            ],
+        },
+        PairMicroOp::Iswap { angle } => iswap_matrix(values[*angle]),
+    }
+}
+
+fn iswap_matrix(value: f64) -> Matrix2 {
+    let theta = value * PI / 2.0;
+    Matrix2 {
+        values: [
+            [
+                Complex64::new(theta.cos(), 0.0),
+                Complex64::new(0.0, theta.sin()),
+            ],
+            [
+                Complex64::new(0.0, theta.sin()),
+                Complex64::new(theta.cos(), 0.0),
+            ],
+        ],
+    }
+}
+
+fn compose_static_pair_matrix(
+    operations: &[PairMicroOp],
+    static_values: &[Option<f64>],
+) -> Option<Matrix2> {
+    let mut matrix = Matrix2::identity();
+    for operation in operations {
+        if let PairMicroOp::Iswap { angle } = operation {
+            static_values.get(*angle)?.as_ref()?;
+        }
+        let operation_matrix = match operation {
+            PairMicroOp::Swap => pair_micro_matrix(operation, &[]),
+            PairMicroOp::Iswap { angle } => {
+                iswap_matrix(static_values.get(*angle)?.as_ref().copied()?)
+            }
+        };
+        matrix = operation_matrix.multiply(matrix);
+    }
+    Some(matrix)
+}
+
+fn pair_block_matrix(block: &PairBlock, values: &[f64], inverse: bool) -> Matrix2 {
+    let matrix = block.static_matrix.unwrap_or_else(|| {
+        block
+            .operations
+            .iter()
+            .fold(Matrix2::identity(), |total, operation| {
+                pair_micro_matrix(operation, values).multiply(total)
+            })
+    });
+    if inverse {
+        matrix.adjoint()
+    } else {
+        matrix
+    }
+}
+
+fn apply_pair_matrix(state: &mut [Complex64], pairs: &[PairIndex], matrix: Matrix2) {
+    if pairs.len() >= U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD {
+        // Pair construction emits disjoint endpoints: every sector basis state
+        // with one occupied wire in this pair appears exactly once.
+        let state_ptr = state.as_mut_ptr() as usize;
+        pairs.par_iter().for_each(|pair| unsafe {
+            let state_ptr = state_ptr as *mut Complex64;
+            let left = *state_ptr.add(pair.zero_one);
+            let right = *state_ptr.add(pair.one_zero);
+            *state_ptr.add(pair.zero_one) =
+                matrix.values[0][0] * left + matrix.values[0][1] * right;
+            *state_ptr.add(pair.one_zero) =
+                matrix.values[1][0] * left + matrix.values[1][1] * right;
+        });
+    } else {
+        for pair in pairs {
+            let left = state[pair.zero_one];
+            let right = state[pair.one_zero];
+            state[pair.zero_one] = matrix.values[0][0] * left + matrix.values[0][1] * right;
+            state[pair.one_zero] = matrix.values[1][0] * left + matrix.values[1][1] * right;
+        }
+    }
+}
+
+fn evaluate_diagonal_operation(
+    operation: &DiagonalOp,
+    values: &[f64],
+    inverse: bool,
+) -> EvaluatedDiagonalOp {
+    let phase = |angle: f64| {
+        let value = Complex64::from_polar(1.0, angle);
+        if inverse {
+            value.conj()
+        } else {
+            value
+        }
+    };
+    match operation {
+        DiagonalOp::Rz { wire, angle } => EvaluatedDiagonalOp::OneWire {
+            wire: *wire,
+            phase: [phase(-0.5 * values[*angle]), phase(0.5 * values[*angle])],
+        },
+        DiagonalOp::Rzz {
+            wire0,
+            wire1,
+            angle,
+        } => EvaluatedDiagonalOp::TwoWire {
+            wire0: *wire0,
+            wire1: *wire1,
+            phase: [
+                phase(-0.5 * values[*angle]),
+                phase(0.5 * values[*angle]),
+                phase(0.5 * values[*angle]),
+                phase(-0.5 * values[*angle]),
+            ],
+        },
+        DiagonalOp::Cz { wire0, wire1, .. } => EvaluatedDiagonalOp::TwoWire {
+            wire0: *wire0,
+            wire1: *wire1,
+            phase: [
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(-1.0, 0.0),
+            ],
+        },
+        DiagonalOp::Cphase {
+            wire0,
+            wire1,
+            angle,
+            ..
+        } => EvaluatedDiagonalOp::TwoWire {
+            wire0: *wire0,
+            wire1: *wire1,
+            phase: [
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                phase(values[*angle]),
+            ],
+        },
+        DiagonalOp::Static { wires, payload } => {
+            let phase = if inverse {
+                Arc::from(
+                    payload
+                        .iter()
+                        .map(|value| value.conj())
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                )
+            } else {
+                payload.clone()
+            };
+            EvaluatedDiagonalOp::General {
+                wires: wires.clone(),
+                phase,
+            }
+        }
+    }
+}
+
+fn evaluated_diagonal_phase(
+    index: usize,
+    operation: &EvaluatedDiagonalOp,
+    basis_words: &[u64],
+    word_count: usize,
+) -> Complex64 {
+    match operation {
+        EvaluatedDiagonalOp::OneWire { wire, phase } => {
+            phase[bit_from_basis(basis_words, word_count, index, *wire) as usize]
+        }
+        EvaluatedDiagonalOp::TwoWire {
+            wire0,
+            wire1,
+            phase,
+        } => {
+            let local = (bit_from_basis(basis_words, word_count, index, *wire0) as usize) * 2
+                + bit_from_basis(basis_words, word_count, index, *wire1) as usize;
+            phase[local]
+        }
+        EvaluatedDiagonalOp::General { wires, phase } => {
+            let mut local = 0usize;
+            for wire in wires.iter().copied() {
+                local =
+                    (local << 1) | bit_from_basis(basis_words, word_count, index, wire) as usize;
+            }
+            phase[local]
+        }
+    }
+}
+
+fn diagonal_generator(
+    operation: &DiagonalOp,
+    index: usize,
+    basis_words: &[u64],
+    word_count: usize,
+) -> Option<(usize, Complex64)> {
+    match operation {
+        DiagonalOp::Rz { wire, angle } => {
+            let z = if bit_from_basis(basis_words, word_count, index, *wire) == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            Some((*angle, Complex64::new(0.0, -0.5 * z)))
+        }
+        DiagonalOp::Rzz {
+            wire0,
+            wire1,
+            angle,
+        } => {
+            let z0 = if bit_from_basis(basis_words, word_count, index, *wire0) == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            let z1 = if bit_from_basis(basis_words, word_count, index, *wire1) == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            Some((*angle, Complex64::new(0.0, -0.5 * z0 * z1)))
+        }
+        DiagonalOp::Cphase {
+            wire0,
+            wire1,
+            angle,
+            ..
+        } if bit_from_basis(basis_words, word_count, index, *wire0) != 0
+            && bit_from_basis(basis_words, word_count, index, *wire1) != 0 =>
+        {
+            Some((*angle, Complex64::new(0.0, 1.0)))
+        }
+        DiagonalOp::Cz { .. } | DiagonalOp::Cphase { .. } | DiagonalOp::Static { .. } => None,
+    }
 }
 
 fn inner_product(left: &[Complex64], right: &[Complex64]) -> Complex64 {
@@ -778,34 +1367,6 @@ fn diagonal_index_map(
     Ok(result)
 }
 
-fn compile_non_diagonal_gate(
-    gate: &CircuitGate,
-    sector: &U1Sector,
-    pair_maps: &mut HashMap<(usize, usize), Arc<[PairIndex]>>,
-    max_bytes: Option<u128>,
-) -> Result<CompiledU1Gate, PauliError> {
-    match gate {
-        CircuitGate::Swap { wire0, wire1 } => Ok(CompiledU1Gate::Swap {
-            pairs: pair_map(sector, *wire0, *wire1, pair_maps, max_bytes)?,
-        }),
-        CircuitGate::Iswap {
-            wire0,
-            wire1,
-            angle,
-        } => Ok(CompiledU1Gate::Iswap {
-            angle: *angle,
-            pairs: pair_map(sector, *wire0, *wire1, pair_maps, max_bytes)?,
-        }),
-        CircuitGate::Rz { .. }
-        | CircuitGate::Rzz { .. }
-        | CircuitGate::Cz { .. }
-        | CircuitGate::Cphase { .. }
-        | CircuitGate::Diagonal { .. } => Err(PauliError::InvalidCircuit {
-            context: "diagonal gate was not compiled into a diagonal block",
-        }),
-    }
-}
-
 fn pair_map(
     sector: &U1Sector,
     wire0: usize,
@@ -847,8 +1408,9 @@ fn pair_map(
     check_budget(bytes, max_bytes)?;
     let mut pairs = Vec::with_capacity(pair_count);
     let mut selected = Vec::with_capacity(choose);
+    let mut words = vec![0_u64; word_count];
     enumerate_combinations(&remaining, choose, 0, &mut selected, &mut |chosen| {
-        let mut words = vec![0_u64; word_count];
+        words.fill(0);
         set_bit(&mut words, wire1, true);
         if enumerate_holes {
             for wire in remaining.iter().copied() {

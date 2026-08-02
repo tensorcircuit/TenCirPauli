@@ -41,11 +41,23 @@ def make_native(workload: U1Workload = WORKLOADS[0]) -> tcp.U1Circuit:
         k=workload.particles,
         filled=list(range(workload.particles)),
     )
+    layer_parameters = [tcp.Parameter(index) for index in range(workload.layers)]
     for layer in range(workload.layers):
         for wire in range(0, workload.nqubits - 1, 2):
-            circuit.iswap(wire, wire + 1, theta=0.17 + 0.01 * layer)
-            circuit.cphase(wire, wire + 1, theta=-0.11)
+            circuit.iswap(wire, wire + 1, theta=layer_parameters[layer])
+            circuit.cphase(
+                wire,
+                wire + 1,
+                theta=-0.11 + 0.0 * layer_parameters[layer],
+            )
     return circuit
+
+
+def native_parameters(workload: U1Workload) -> np.ndarray[Any, Any]:
+    return np.asarray(
+        [0.17 + 0.01 * layer for layer in range(workload.layers)],
+        dtype=np.float64,
+    )
 
 
 def _initial_state(workload: U1Workload) -> np.ndarray[Any, Any]:
@@ -74,10 +86,7 @@ def _jax_runner(
     tc.set_dtype("complex128")
     tc.set_backend("jax")
     initial = _initial_state(workload)
-    angles = np.asarray(
-        [0.17 + 0.01 * layer for layer in range(workload.layers)] + [-0.11],
-        dtype=np.float64,
-    )
+    angles = native_parameters(workload)
 
     def run(state: Any, parameters: Any) -> Any:
         circuit = tc.U1Circuit(
@@ -89,7 +98,11 @@ def _jax_runner(
         for layer in range(workload.layers):
             for wire in range(0, workload.nqubits - 1, 2):
                 circuit.iswap(wire, wire + 1, theta=parameters[layer])
-                circuit.cphase(wire, wire + 1, theta=parameters[-1])
+                circuit.cphase(
+                    wire,
+                    wire + 1,
+                    theta=-0.11 + 0.0 * parameters[layer],
+                )
         return circuit.state()
 
     import jax
@@ -165,8 +178,11 @@ def test_native_u1_steady_state(
 ) -> None:
     circuit = make_native(workload)
     plan = circuit.compile()
-    expected = circuit.state()
-    result = benchmark.pedantic(plan.run, args=(circuit._initial_state, ()), rounds=5)
+    parameters = native_parameters(workload)
+    expected = circuit.state(parameters)
+    result = benchmark.pedantic(
+        plan.run, args=(circuit._initial_state, parameters), rounds=5
+    )
     np.testing.assert_allclose(result, expected, atol=1e-12, rtol=1e-12)
     benchmark.extra_info.update(_metadata(circuit, "tencirpauli-rust", workload))
 
@@ -176,10 +192,11 @@ def test_native_u1_steady_state(
 def test_native_u1_end_to_end(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
-    expected = make_native(workload).state()
+    parameters = native_parameters(workload)
+    expected = make_native(workload).state(parameters)
 
     def run() -> np.ndarray[Any, Any]:
-        return make_native(workload).state()
+        return make_native(workload).state(parameters)
 
     result = benchmark.pedantic(run, rounds=5)
     np.testing.assert_allclose(result, expected, atol=1e-12, rtol=1e-12)
@@ -194,7 +211,7 @@ def test_tensorcircuit_jax_jit_first_call(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
     runner, initial, angles = _jax_runner(workload)
-    expected = make_native(workload).state()
+    expected = make_native(workload).state(native_parameters(workload))
 
     def run() -> Any:
         return _block_until_ready(runner(initial, angles))
@@ -227,7 +244,7 @@ def test_tensorcircuit_jax_jit_steady_state(
 def test_tensorcircuit_jax_jit_end_to_end(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
-    expected = make_native(workload).state()
+    expected = make_native(workload).state(native_parameters(workload))
 
     def run() -> np.ndarray[Any, Any]:
         runner, initial, angles = _jax_runner(workload)

@@ -70,6 +70,9 @@ class NativeU1CircuitPlan:
     @property
     def gate_count(self) -> int: ...
     def run(self, initial_state: object, parameters: object) -> object: ...
+    def run_cached(
+        self, initial_state: object, parameters: object
+    ) -> NativeU1FinalState: ...
     def probability(self, initial_state: object, parameters: object) -> object: ...
     def to_dense(self, initial_state: object, parameters: object) -> object: ...
     def probability_full(self, initial_state: object, parameters: object) -> object: ...
@@ -88,6 +91,24 @@ class NativeU1CircuitPlan:
         coefficients_re: object,
         coefficients_im: object,
         parameters: object,
+    ) -> tuple[float, object]: ...
+
+class NativeU1FinalState:
+    def state_array(self) -> object: ...
+    def probability(self) -> object: ...
+    def to_dense(self) -> object: ...
+    def probability_full(self) -> object: ...
+    def expectation(
+        self,
+        structures: object,
+        coefficients_re: object,
+        coefficients_im: object,
+    ) -> tuple[float, float]: ...
+    def value_and_grad(
+        self,
+        structures: object,
+        coefficients_re: object,
+        coefficients_im: object,
     ) -> tuple[float, object]: ...
 
 class NativePropagationEngine:
@@ -384,6 +405,8 @@ def u1_basis_words(
 def u1_circuit_plan(
     nqubits: int,
     particle_number: int,
+    schema_version: int,
+    nparameters: int,
     expression_nodes: object,
     gates: object,
     max_bytes: int,

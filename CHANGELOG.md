@@ -6,6 +6,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
+- Complete the Phase 6 performance remediation checkpoint: fuse consecutive same-pair SWAP/iSWAP blocks, precompute diagonal phase lookups and static runs, reuse in-place adjoint state storage, add projected U1 observable reduction, and share one exact-parameter native final-state cache across facade terminals. Add fail-fast IR/input validation, width acceptance cases, and release-mode Phase 6 A/B workloads.
 - Add `PropagationBatch` for deterministic multi-observable expectations and row-wise frozen-support gradients with shared compiled programs and observable-level parallelism.
 - Implement Phase 5 arbitrary-width packed-`u64` U1 restricted sectors, including checked combinatorial rank/unrank, wide native basis materialization, aggregated leakage validation, deterministic restricted MVP/COO/CSR plans, and 63/64/65, 127/128/129, and 256-qubit coverage.
 - Add Phase 4 Rust-native frozen-support reverse gradients with analytic local VJPs, shared parameter slots, checkpoint replay, static PTM transpose action, typed Python results, and deterministic differential tests.
