@@ -114,7 +114,7 @@ restricted_csr = restricted.csr()
 
 ## Development checks
 
-Run `python scripts/check.py --fix --benchmark smoke` while editing and `python scripts/check.py` before a local commit. The repository also records release-mode Rust Criterion and Python pytest-benchmark results under the ignored `.benchmarks/` directory; use `python benchmarks/run.py compare <baseline-label>` for same-machine comparisons.
+Run `python scripts/check.py --fix --benchmark smoke` while editing. The repository hook uses this fast smoke mode by default: it runs the full correctness/quality checks, compiles all Rust benchmark targets, and runs only Python benchmark cases outside the `performance_large` marker. The complete release benchmark record is intentionally opt-in; run `python scripts/check.py --benchmark record` or use `TENCIRPAULI_PRE_COMMIT_BENCHMARK=record git commit ...` when a performance checkpoint is needed. `--benchmark skip` is available for code-only iteration after the regular smoke gate. Results are stored under the ignored `.benchmarks/` directory; use `python benchmarks/run.py compare <baseline-label>` for same-machine comparisons.
 
 The independent dense NumPy oracle and fixed P0 regression vectors are documented in [`docs/vibe/reference-vectors.md`](docs/vibe/reference-vectors.md). The durable implementation evidence and next milestone are tracked in [`docs/vibe/implementation-status.md`](docs/vibe/implementation-status.md).
 

@@ -12,4 +12,13 @@ else
     exit 1
 fi
 
-exec "$python" "$root/scripts/check.py" --benchmark record
+benchmark_mode=${TENCIRPAULI_PRE_COMMIT_BENCHMARK:-smoke}
+case "$benchmark_mode" in
+    smoke|record|skip) ;;
+    *)
+        echo "TenCirPauli pre-commit: TENCIRPAULI_PRE_COMMIT_BENCHMARK must be smoke, record, or skip." >&2
+        exit 1
+        ;;
+esac
+
+exec "$python" "$root/scripts/check.py" --benchmark "$benchmark_mode"

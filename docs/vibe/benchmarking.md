@@ -12,6 +12,8 @@ Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `Paul
 
 `python benchmarks/run.py record` 为每次运行生成唯一 label，并保存 Git commit、dirty 状态、UTC 时间、平台与工具版本。Criterion baseline、pytest-benchmark JSON 和 manifest 使用同一 label；`python benchmarks/run.py compare <label>` 在当前代码上重新测量并分别输出 Rust 与 Python 的历史对比。
 
+提交 hook 默认调用 `python scripts/check.py --benchmark smoke`：Rust benchmark 只执行 `cargo bench -- --test` 的 harness/build 检查，Python benchmark 排除 `performance_large` 标记，因此不会在每次 commit 中重复完整 release measurement。完整 release record 是显式的性能检查，使用 `python scripts/check.py --benchmark record`；若希望某一次 commit 同时执行，可使用 `TENCIRPAULI_PRE_COMMIT_BENCHMARK=record git commit ...`。`TENCIRPAULI_PRE_COMMIT_BENCHMARK=skip` 或 `scripts/check.py --benchmark skip` 仅跳过 benchmark，不跳过格式、lint、typing、Rust/Python tests 和 release extension build；hook 只接受 `smoke`、`record`、`skip` 三种值。
+
 结果默认不提交，因为不同机器、温度、功耗模式和后台负载不能形成可移植基线。需要长期保留时，应备份整个 `.benchmarks/`，并始终在相同机器上比较。性能结论必须结合统计区间、绝对时间、吞吐量、峰值内存和等价数值精度，不能只看单次百分比。
 
 ## Workload 规则
