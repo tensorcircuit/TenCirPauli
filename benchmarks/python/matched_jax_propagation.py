@@ -208,6 +208,8 @@ class MatchedJaxPropagation:
             [all(code in (0, 3) for code in codes) for codes in basis], dtype=np.float64
         )
         import jax
+
+        jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
 
         static_transitions = tuple(

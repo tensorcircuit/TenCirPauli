@@ -11,7 +11,7 @@ from pytest_benchmark.fixture import BenchmarkFixture
 from tencirpauli import PauliOperator, U1Sector
 
 
-MAX_BYTES = 4 * 1024**3
+MAX_BYTES = 16 * 1024**3
 
 
 def make_hopping(nqubits: int = 26) -> PauliOperator:

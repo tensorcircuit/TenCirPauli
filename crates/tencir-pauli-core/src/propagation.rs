@@ -867,14 +867,14 @@ fn expectation_from_terms(terms: &[PauliTerm], state: &ProductState, nqubits: us
     terms
         .iter()
         .map(|term| {
-            let codes = term.word.codes();
             let local = (0..nqubits).fold(1.0, |product, qubit| {
+                let code = term.word.code_at(qubit);
                 let component = match state {
-                    ProductState::Zero => match codes[qubit] {
+                    ProductState::Zero => match code {
                         0 | 3 => 1.0,
                         _ => 0.0,
                     },
-                    ProductState::ComputationalBasis(bits) => match codes[qubit] {
+                    ProductState::ComputationalBasis(bits) => match code {
                         0 => 1.0,
                         3 => {
                             if bits[qubit] == 0 {
@@ -885,7 +885,7 @@ fn expectation_from_terms(terms: &[PauliTerm], state: &ProductState, nqubits: us
                         }
                         _ => 0.0,
                     },
-                    ProductState::Bloch(vectors) => match codes[qubit] {
+                    ProductState::Bloch(vectors) => match code {
                         0 => 1.0,
                         code => vectors[qubit][code as usize - 1],
                     },

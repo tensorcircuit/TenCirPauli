@@ -143,11 +143,11 @@ def _assert_jax_sparse_shape(
 
 
 @pytest.mark.parametrize("target", ("coo", "csr"))
-def test_native_22q_sparse_memory_guard(
+def test_native_24q_sparse_memory_guard(
     benchmark: BenchmarkFixture, target: str
 ) -> None:
-    """Measure explicit refusal of a matrix target above the 4 GiB default."""
-    operator, _, _, _ = make_operator(22, 64, 20260820)
+    """Measure explicit refusal of a matrix target above the 16 GiB default."""
+    operator, _, _, _ = make_operator(24, 64, 20260820)
     compile_target = getattr(operator, target)
 
     def reject_oversized_target() -> str:
@@ -155,7 +155,7 @@ def test_native_22q_sparse_memory_guard(
             compile_target()
         except MemoryError as error:
             return str(error)
-        raise AssertionError(f"22q/64-term {target} target unexpectedly succeeded")
+        raise AssertionError(f"24q/64-term {target} target unexpectedly succeeded")
 
     message = benchmark(reject_oversized_target)
     assert "exceeds memory limit" in message
@@ -231,7 +231,7 @@ def test_native_16q_heisenberg_sparse_warm(
 def test_native_20q_heisenberg_sparse_with_default_budget(
     benchmark: BenchmarkFixture, target: str, next_nearest: bool
 ) -> None:
-    """Measure local 20-qubit sparse construction under the 4 GiB default."""
+    """Measure local 20-qubit sparse construction under the 16 GiB default."""
     operator, _, _, _ = make_heisenberg_chain(20, next_nearest=next_nearest)
     compile_target = getattr(operator, target)
     expected = compile_target()

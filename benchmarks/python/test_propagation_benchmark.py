@@ -58,6 +58,15 @@ def test_propagation_expectation_first_and_steady(benchmark: BenchmarkFixture) -
     assert result == pytest.approx(expected)
 
 
+def test_propagation_expectation_first_execution(benchmark: BenchmarkFixture) -> None:
+    tape, observable, params, _ = workload_12q()
+    engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+    result = benchmark.pedantic(
+        engine.expectation, args=(params,), rounds=1, iterations=1, warmup_rounds=0
+    )
+    assert np.isfinite(result)
+
+
 def test_propagation_operator_materialization(benchmark: BenchmarkFixture) -> None:
     tape, observable, params, _reference_operations = workload_12q()
     engine = tcp.PropagationEngine(tape, observable, max_weight=2)
@@ -68,6 +77,7 @@ def test_propagation_operator_materialization(benchmark: BenchmarkFixture) -> No
 
 
 def test_matched_jax_reference_warm(benchmark: BenchmarkFixture) -> None:
+    pytest.importorskip("jax")
     tape, observable, params, reference_operations = workload_12q()
     native = tcp.PropagationEngine(tape, observable, max_weight=3)
     reference = MatchedJaxPropagation.build(
@@ -106,3 +116,64 @@ def test_clifford_heavy_100q_scalar(benchmark: BenchmarkFixture) -> None:
     assert result == pytest.approx(expected)
     benchmark.extra_info["nqubits"] = 100
     benchmark.extra_info["final_terms"] = len(engine.propagate_operator([]).terms)
+
+
+@pytest.mark.performance_large
+def test_near_clifford_rotation_100q_scalar(benchmark: BenchmarkFixture) -> None:
+    tape = tcp.GateTape(100)
+    for wire in range(0, 100, 2):
+        tape.h(wire)
+        tape.cnot(wire, wire + 1)
+    for wire in (0, 17, 34, 51, 68, 85):
+        tape.rz(wire, parameter=wire % 2)
+    codes = [0] * 100
+    codes[0] = 1
+    codes[63] = 3
+    engine = tcp.PropagationEngine(
+        tape, tcp.PauliOperator.from_terms(100, [(codes, 1.0)]), max_weight=4
+    )
+    params = np.array([0.031, -0.047])
+    expected = engine.expectation(params)
+    result = benchmark(engine.expectation, params)
+    assert result == pytest.approx(expected)
+
+
+@pytest.mark.performance_large
+def test_2d_heisenberg_rotation_workload(benchmark: BenchmarkFixture) -> None:
+    nqubits = 16
+    tape = tcp.GateTape(nqubits)
+    for layer in range(2):
+        for row in range(4):
+            for column in range(4):
+                wire = 4 * row + column
+                if column < 3:
+                    tape.rxx(wire, wire + 1, angle=0.11 + layer * 0.01)
+                    tape.ryy(wire, wire + 1, angle=-0.07)
+                    tape.rzz(wire, wire + 1, angle=0.05)
+                if row < 3:
+                    tape.rxx(wire, wire + 4, angle=0.09)
+                    tape.ryy(wire, wire + 4, angle=-0.06)
+                    tape.rzz(wire, wire + 4, angle=0.04)
+    codes = [0] * nqubits
+    codes[0] = codes[5] = 1
+    observable = tcp.PauliOperator.from_terms(nqubits, [(codes, 1.0)])
+    engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+    expected = engine.expectation([])
+    result = benchmark(engine.expectation, [])
+    assert result == pytest.approx(expected)
+    benchmark.extra_info["final_terms"] = len(engine.propagate_operator([]).terms)
+
+
+@pytest.mark.performance_large
+def test_custom_ptm_sparse_and_dense_setup(benchmark: BenchmarkFixture) -> None:
+    tape = tcp.GateTape(8)
+    matrix = np.eye(16, dtype=np.float64)
+    matrix[1, 1] = -1.0
+    matrix[6, 6] = 0.5
+    matrix[9, 2] = -0.25
+    tape.ptm((2, 5), matrix, name="dense_2q")
+    codes = [0] * 8
+    codes[2] = codes[5] = 1
+    observable = tcp.PauliOperator.from_terms(8, [(codes, 1.0)])
+    result = benchmark(tcp.PropagationEngine, tape, observable, max_weight=4)
+    assert result.nqubits == 8

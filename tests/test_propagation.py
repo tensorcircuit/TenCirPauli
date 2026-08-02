@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from itertools import product
 
 import numpy as np
 import pytest
 from propagation_reference import product_expectation, propagate_dense
-from reference import codes_to_dense
+from reference import PAULI_MATRICES, codes_to_dense
 
 import tencirpauli as tcp
 
@@ -104,6 +105,29 @@ def test_projection_is_initial_and_per_gate_after_aggregation() -> None:
     )
 
 
+def test_finite_projection_matches_independent_every_gate_reference() -> None:
+    tape = tcp.GateTape(3)
+    tape.rz(0, angle=np.pi / 4)
+    tape.cnot(0, 1)
+    tape.ry(2, angle=-np.pi / 5)
+    operations = (("rz", 0, np.pi / 4), ("cnot", 0, 1), ("ry", 2, -np.pi / 5))
+    observable = tcp.PauliOperator(
+        3,
+        [((1, 1, 1), 0.7), ((3, 0, 3), -0.2), ((0, 2, 0), 0.4)],
+    )
+    result = tcp.PropagationEngine(tape, observable, max_weight=1).propagate_operator(
+        []
+    )
+    expected = propagate_dense(
+        3,
+        ((1, 1, 1), (3, 0, 3), (0, 2, 0)),
+        (0.7, -0.2, 0.4),
+        operations,
+        max_weight=1,
+    )
+    assert _terms(result) == pytest.approx(expected, abs=1e-12)
+
+
 def test_none_nqubits_and_larger_cutoffs_are_exactly_equal() -> None:
     tape = tcp.GateTape(2)
     tape.rx(0, parameter=0)
@@ -170,6 +194,33 @@ def test_custom_ptm_orientation_negative_entries_and_wire_order() -> None:
     assert _terms(result) == {(2, 1): -2.5}
 
 
+def test_random_unitary_derived_ptm_matches_local_reference() -> None:
+    rng = np.random.default_rng(20260802)
+    raw = rng.normal(size=(2, 2)) + 1j * rng.normal(size=(2, 2))
+    unitary, _ = np.linalg.qr(raw)
+    ptm = np.zeros((4, 4), dtype=np.float64)
+    # Build the PTM directly from the independent public matrices; no native
+    # transition compiler participates in this oracle.
+    for output in range(4):
+        for input_code in range(4):
+            transformed = unitary.conj().T @ PAULI_MATRICES[input_code] @ unitary
+            ptm[output, input_code] = float(
+                np.trace(PAULI_MATRICES[output] @ transformed).real / 2.0
+            )
+    tape = tcp.GateTape(1)
+    tape.ptm((0,), ptm)
+    for input_code in range(4):
+        result = tcp.PropagationEngine(
+            tape, tcp.PauliOperator(1, [((input_code,), 1.0)])
+        ).propagate_operator([])
+        expected = {
+            (output,): ptm[output, input_code]
+            for output in range(4)
+            if ptm[output, input_code] != 0.0
+        }
+        assert _terms(result) == pytest.approx(expected, abs=1e-12)
+
+
 def test_invalid_tape_state_parameter_and_ptm_inputs_fail_explicitly() -> None:
     tape = tcp.GateTape(2)
     with pytest.raises(ValueError):
@@ -205,7 +256,7 @@ def test_zero_qubit_identity_and_inline_boundary_structures() -> None:
     engine = tcp.PropagationEngine(tape, tcp.PauliOperator(0, [((), 1.0)]))
     assert engine.expectation([]) == 1.0
     assert _terms(engine.propagate_operator([])) == {(): 1.0}
-    for nqubits in (64, 65, 100, 128):
+    for nqubits in (64, 65, 100, 128, 129):
         tape = tcp.GateTape(nqubits)
         tape.x(nqubits - 1)
         codes = [0] * nqubits
@@ -213,3 +264,19 @@ def test_zero_qubit_identity_and_inline_boundary_structures() -> None:
         observable = tcp.PauliOperator(nqubits, [(codes, 1.0)])
         result = tcp.PropagationEngine(tape, observable).propagate_operator([])
         assert result.terms[0].word.to_codes() == tuple(codes)
+
+
+def test_engine_snapshots_tape_and_bloch_state_and_supports_concurrent_calls() -> None:
+    tape = tcp.GateTape(1)
+    tape.rz(0, parameter=0)
+    bloch = np.array([[0.2, 0.3, 0.4]], dtype=np.float64)
+    state = tcp.ProductBlochState(bloch)
+    engine = tcp.PropagationEngine(
+        tape, tcp.PauliOperator(1, [((1,), 1.0)]), initial_state=state
+    )
+    bloch[0, 0] = 0.9
+    tape.x(0)
+    expected = engine.expectation([0.25])
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        values = list(pool.map(lambda _: engine.expectation([0.25]), range(8)))
+    assert values == pytest.approx([expected] * 8)
