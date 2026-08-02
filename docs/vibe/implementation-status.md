@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–3 已完成，Phase 4 的 deterministic frozen-support reverse、SPPS fixed/adaptive engines、release benchmark/profile 和 optional TensorCircuit adapter 已贯通。当前工作是完成最终 full benchmark record/compare、审计内存与可选依赖证据，并保持 Phase 1–4 regression；项目暂不增加 MSRV 1.85 CI job。
+Phase 1–4 已完成：deterministic frozen-support reverse、SPPS fixed/adaptive engines、release benchmark/profile 和 optional TensorCircuit adapter 已贯通。最终 full benchmark record/compare、内存与可选依赖审计及 Phase 1–4 regression 已完成；项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -62,10 +62,10 @@ Phase 4 owner decisions recorded on 2026-08-02：both deterministic frozen-suppo
 - P3–P4 SPPS slice：`SPPSEngine` 独立于 deterministic recurrence，支持 Clifford 与六种 Pauli rotations、positive smoothing、importance-reweighted value、zero-factor-safe prefix/suffix PAD、fixed budget、term-wise adaptive A/B doubling、counter-derived seed replay 和 fixed-order Rayon chunks；custom PTM、`max_weight` 与 unsupported inputs construction-time fail。
 - P5 public/integration slice：顶层导出 `PropagationValueAndGradient`、`SPPSEngine`、`SPPSEstimate`；新增 numeric/direct-symbol TensorCircuit QIR adapter，保持 lazy optional dependency 与 integration-module 边界。TensorCircuit source 本身未修改。
 - Correctness evidence：`conda run -p .conda cargo test --locked --workspace` 为 15 passed；`conda run -p .conda pytest -q` 为 105 passed, 4 skipped；独立 dense finite-difference、exact legal-path enumerator、zero-factor PAD、seed replay、adaptive metadata、PTM、checkpoint 和 adapter tests 已加入。
-- Release benchmark evidence：Phase 4 Python native median on this arm64/macOS host is approximately deterministic 12q projected gradient `0.45 ms` at checkpoint 1 and `0.76 ms` at interval 4, SPPS 12q/12-term `0.10 ms` at 128 paths/term and `0.68 ms` at 1024 paths/term, and 100q near-Clifford SPPS `0.14 ms` at 640 total paths. Rust Criterion covers local VJP/tape/checkpoint/SPPS cases. Results are informational, not wall-time gates.
+- Release benchmark evidence：Phase 4 Python native median on this arm64/macOS host is approximately deterministic 12q projected gradient `0.45 ms` at checkpoint 1 and `0.76 ms` at interval 4, SPPS 12q/12-term `0.10 ms` at 128 paths/term and `0.68 ms` at 1024 paths/term, and 100q near-Clifford SPPS `0.14 ms` at 640 total paths. Rust Criterion covers local VJP/tape/checkpoint/SPPS cases. The full local record `20260802T050154Z_f6ff7d7eae22-dirty` completed 88 benchmark cases with 41 optional skips during commit `cb5823b`; results are informational, not wall-time gates.
 - TensorCircuit end-to-end comparison：using the local `examples/spps_pauli_path_vqe.py` workload at 12q/2 layers, 23 TFIM terms and 256 paths/term, Rust deterministic value+gradient is approximately `1.45 ms` versus TensorCircuit `PauliPropagationEngine` + JAX `value_and_grad` approximately `15.97 ms` warm. Rust SPPS is approximately `3.64 ms` versus the example's JAX-vmap SPPS approximately `3.50 ms`; both are complete Python-call boundaries with synchronization, and the SPPS numbers are not a claim of lower variance or identical random paths.
 - Profile evidence：direct macOS `/usr/bin/sample` on release Python calls shows deterministic reverse dominated by existing `aggregate` FxHashMap/PackedKey sorting plus replay/edge lookup; SPPS initially spent about 43% of sampled native stack in unconditional `multiply_by_generator`. The implemented optimizations are checkpoint-1 no-replay, generator-phase-only SPPS branching, and fixed-order Rayon batch execution. The raw profiles are preserved only under `/private/tmp/tencirpauli-phase4-*.sample` and are not tracked.
-- Known limits：the public API does not expose thread-count controls or raw path/profile counters; adaptive proxies are empirical stopping statistics, not confidence intervals; TensorCircuit/JAX comparison is optional and requires the local TensorCircuit source plus JAX. Full all-suite benchmark recording remains the final handoff step.
+- Known limits：the public API does not expose thread-count controls or raw path/profile counters; adaptive proxies are empirical stopping statistics, not confidence intervals; TensorCircuit/JAX comparison is optional and requires the local TensorCircuit source plus JAX. The benchmark record's `-dirty` suffix reflects the commit-hook recording context; `.benchmarks/` and raw profiles remain untracked.
 
 长期 roadmap 已记录 qudit generalized Pauli/Weyl 支持：以每个 site 的 `X^a Z^b` 指数对构造 `QuditPauliWord`/`QuditPauliOperator`，并编译 qudit dense、COO/CSR、native MVP 和 backend plan。该方向位于现有 qubit symmetry、propagation 与 gradient 路线之后；phase convention、支持的 local dimension 范围和 uniform/mixed-radix 边界必须在实现前单独冻结，当前 Phase 2 不越界实现。
 
@@ -124,10 +124,7 @@ A native-only regression workload now extends the coverage to 128 qubits and 12 
 
 ## Next actions
 
-1. Run the full `python scripts/check.py --benchmark smoke` gate after the final Rust/Python edits and repeat the optional read-only TensorCircuit/JAX comparison.
-2. Record a named release benchmark label with `python benchmarks/run.py record --suite all`, then compare the Phase 4 workload against that label on the same machine; keep `.benchmarks/` and raw profiles untracked.
-3. Audit the final public docs/typing/packaging surface and preserve the explicit distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
-4. Keep Phase 1–4 regression and benchmark workload definitions stable; any further optimization must be profile-backed and correctness-gated.
+Phase 4 handoff is complete. Future performance work should keep the current correctness and benchmark gates, and only introduce further optimization when a representative release profile identifies a bottleneck; preserve the distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
 
 ## Scheduled future phases
 
