@@ -21,8 +21,8 @@ pub use grouping::{
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
 pub use propagation::{
-    ProductState, PropagationEngine, PropagationResult, PropagationStats,
-    PropagationValueAndGradient,
+    ProductState, PropagationBatch, PropagationBatchValueAndGradient, PropagationEngine,
+    PropagationResult, PropagationStats, PropagationValueAndGradient,
 };
 pub use scalar::Complex64;
 pub use sector::{

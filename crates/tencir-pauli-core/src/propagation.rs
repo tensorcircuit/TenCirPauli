@@ -7,7 +7,9 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::mem::size_of;
+use std::sync::Arc;
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::error::PauliError;
@@ -53,17 +55,37 @@ pub struct PropagationValueAndGradient {
     pub gradient: Vec<f64>,
 }
 
-/// An immutable compiled propagation engine.
+/// Values and row-wise frozen-support gradients for independent observables.
 #[derive(Clone, Debug)]
-pub struct PropagationEngine {
+pub struct PropagationBatchValueAndGradient {
+    pub values: Vec<f64>,
+    pub gradients: Vec<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct CompiledPropagationProgram {
     nqubits: usize,
-    operations: Vec<GateOperation>,
-    observable: PauliOperator,
+    operations: Arc<[GateOperation]>,
     initial_state: ProductState,
     max_weight: Option<usize>,
     max_bytes: Option<u128>,
     nparameters: usize,
+    transition_bytes: usize,
+}
+
+/// An immutable compiled propagation engine.
+#[derive(Clone, Debug)]
+pub struct PropagationEngine {
+    program: Arc<CompiledPropagationProgram>,
+    observable: PauliOperator,
     hermitian: bool,
+}
+
+/// Independent observable propagation sharing one immutable compiled program.
+#[derive(Clone, Debug)]
+pub struct PropagationBatch {
+    program: Arc<CompiledPropagationProgram>,
+    engines: Vec<PropagationEngine>,
 }
 
 impl PropagationEngine {
@@ -76,86 +98,69 @@ impl PropagationEngine {
         max_weight: Option<usize>,
         max_bytes: Option<u128>,
     ) -> Result<Self, PauliError> {
-        if observable.nqubits() != nqubits {
+        let program = compile_program(nqubits, operations, initial_state, max_weight, max_bytes)?;
+        Self::from_program(program, observable)
+    }
+
+    fn from_program(
+        program: Arc<CompiledPropagationProgram>,
+        observable: PauliOperator,
+    ) -> Result<Self, PauliError> {
+        if observable.nqubits() != program.nqubits {
             return Err(PauliError::IncompatibleQubitCounts {
                 left: observable.nqubits(),
-                right: nqubits,
-            });
-        }
-        validate_state(nqubits, &initial_state)?;
-        let mut slots = HashSet::new();
-        for operation in &operations {
-            if let Some(slot) = operation.parameter_slot() {
-                slots.insert(slot);
-            }
-        }
-        let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
-        if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
-            return Err(PauliError::InvalidClifford {
-                context: "parameter slots must cover 0..nparameters-1 without holes",
+                right: program.nqubits,
             });
         }
         let observable_bytes = observable
             .terms()
             .len()
-            .checked_mul(dynamic_term_storage_bytes(nqubits)?)
+            .checked_mul(dynamic_term_storage_bytes(program.nqubits)?)
             .ok_or(PauliError::Overflow {
                 context: "estimating propagation observable storage",
             })?;
         check_budget(
             observable_bytes,
-            max_bytes,
+            program.max_bytes,
             "propagation observable storage",
         )?;
-        let transition_bytes =
-            operations
-                .iter()
-                .map(operation_storage_bytes)
-                .try_fold(0usize, |sum, value| {
-                    sum.checked_add(value).ok_or(PauliError::Overflow {
-                        context: "estimating propagation transition storage",
-                    })
-                })?;
         check_budget(
             observable_bytes
-                .checked_add(transition_bytes)
+                .checked_add(program.transition_bytes)
                 .ok_or(PauliError::Overflow {
                     context: "estimating propagation engine storage",
                 })?,
-            max_bytes,
+            program.max_bytes,
             "propagation engine storage",
         )?;
         let hermitian = observable.is_hermitian(0.0);
         Ok(Self {
-            nqubits,
-            operations,
+            program,
             observable,
-            initial_state,
-            max_weight,
-            max_bytes,
-            nparameters,
             hermitian,
         })
     }
 
     pub fn nqubits(&self) -> usize {
-        self.nqubits
+        self.program.nqubits
     }
 
     pub fn nparameters(&self) -> usize {
-        self.nparameters
+        self.program.nparameters
     }
 
     pub fn gate_count(&self) -> usize {
-        self.operations.len()
+        self.program.operations.len()
     }
 
     pub fn max_weight(&self) -> Option<usize> {
-        self.max_weight
+        self.program.max_weight
     }
 
     pub fn is_exact(&self) -> bool {
-        self.max_weight.is_none_or(|cutoff| cutoff >= self.nqubits)
+        self.program
+            .max_weight
+            .is_none_or(|cutoff| cutoff >= self.program.nqubits)
     }
 
     pub fn is_hermitian_observable(&self) -> bool {
@@ -170,8 +175,8 @@ impl PropagationEngine {
         let result = self.propagate_dynamic(parameters)?;
         Ok(expectation_from_dynamic_terms(
             &result.terms,
-            &self.initial_state,
-            self.nqubits,
+            &self.program.initial_state,
+            self.program.nqubits,
         ))
     }
 
@@ -184,9 +189,9 @@ impl PropagationEngine {
         if !self.hermitian {
             return Err(PauliError::NonHermitianExpectation);
         }
-        validate_parameters(parameters, self.nparameters)?;
+        validate_parameters(parameters, self.program.nparameters)?;
         let interval = checkpoint_interval.unwrap_or_else(|| {
-            let gates = self.operations.len().saturating_add(1);
+            let gates = self.program.operations.len().saturating_add(1);
             (gates as f64).sqrt().ceil() as usize
         });
         if interval == 0 {
@@ -197,54 +202,67 @@ impl PropagationEngine {
             .is_exact()
             .then_some(None)
             .flatten()
-            .or(self.max_weight);
-        let initial = initial_dynamic_terms(self.nqubits, &self.observable, cutoff);
+            .or(self.program.max_weight);
+        let initial = initial_dynamic_terms(self.program.nqubits, &self.observable, cutoff);
         let mut checkpoints = vec![(0usize, initial)];
         let mut current = checkpoints[0].1.clone();
-        let mut checkpoint_bytes = dynamic_terms_storage_bytes(&current, self.nqubits)?;
+        let mut checkpoint_bytes = dynamic_terms_storage_bytes(&current, self.program.nqubits)?;
         check_budget(
             checkpoint_bytes,
-            self.max_bytes,
+            self.program.max_bytes,
             "reverse checkpoint storage",
         )?;
-        for (step, operation) in self.operations.iter().rev().enumerate() {
-            current = apply_operation(self.nqubits, operation, current, parameters, cutoff)?;
+        for (step, operation) in self.program.operations.iter().rev().enumerate() {
+            current =
+                apply_operation(self.program.nqubits, operation, current, parameters, cutoff)?;
             let boundary = step + 1;
-            if boundary % interval == 0 || boundary == self.operations.len() {
+            if boundary % interval == 0 || boundary == self.program.operations.len() {
                 checkpoint_bytes = checkpoint_bytes
-                    .checked_add(dynamic_terms_storage_bytes(&current, self.nqubits)?)
+                    .checked_add(dynamic_terms_storage_bytes(&current, self.program.nqubits)?)
                     .ok_or(PauliError::Overflow {
                         context: "estimating reverse checkpoint storage",
                     })?;
                 check_budget(
                     checkpoint_bytes,
-                    self.max_bytes,
+                    self.program.max_bytes,
                     "reverse checkpoint storage",
                 )?;
                 checkpoints.push((boundary, current.clone()));
             }
         }
-        let value = expectation_from_dynamic_terms(&current, &self.initial_state, self.nqubits);
+        let value = expectation_from_dynamic_terms(
+            &current,
+            &self.program.initial_state,
+            self.program.nqubits,
+        );
         let mut lambda = current
             .iter()
-            .map(|term| expectation_of_key(&term.key, &self.initial_state, self.nqubits))
+            .map(|term| {
+                expectation_of_key(&term.key, &self.program.initial_state, self.program.nqubits)
+            })
             .collect::<Vec<_>>();
-        let gradient_bytes =
-            self.nparameters
-                .checked_mul(size_of::<f64>())
-                .ok_or(PauliError::Overflow {
-                    context: "estimating reverse gradient storage",
-                })?;
-        check_budget(gradient_bytes, self.max_bytes, "reverse gradient storage")?;
-        let mut gradient = vec![0.0; self.nparameters];
+        let gradient_bytes = self
+            .program
+            .nparameters
+            .checked_mul(size_of::<f64>())
+            .ok_or(PauliError::Overflow {
+                context: "estimating reverse gradient storage",
+            })?;
+        check_budget(
+            gradient_bytes,
+            self.program.max_bytes,
+            "reverse gradient storage",
+        )?;
+        let mut gradient = vec![0.0; self.program.nparameters];
 
         for checkpoint_index in (0..checkpoints.len().saturating_sub(1)).rev() {
             let (start, block_start) = &checkpoints[checkpoint_index];
             let (end, _) = &checkpoints[checkpoint_index + 1];
             if *end - *start == 1 {
-                let operation = &self.operations[self.operations.len() - 1 - *start];
+                let operation =
+                    &self.program.operations[self.program.operations.len() - 1 - *start];
                 lambda = reverse_frame(
-                    self.nqubits,
+                    self.program.nqubits,
                     operation,
                     block_start,
                     &checkpoints[checkpoint_index + 1].1,
@@ -257,32 +275,37 @@ impl PropagationEngine {
             }
             let mut block_states = Vec::with_capacity(end - start + 1);
             block_states.push(block_start.clone());
-            let mut block_bytes = dynamic_terms_storage_bytes(block_start, self.nqubits)?;
+            let mut block_bytes = dynamic_terms_storage_bytes(block_start, self.program.nqubits)?;
             let mut state = block_start.clone();
             for step in *start..*end {
                 state = apply_operation(
-                    self.nqubits,
-                    &self.operations[self.operations.len() - 1 - step],
+                    self.program.nqubits,
+                    &self.program.operations[self.program.operations.len() - 1 - step],
                     state,
                     parameters,
                     cutoff,
                 )?;
                 block_bytes = block_bytes
-                    .checked_add(dynamic_terms_storage_bytes(&state, self.nqubits)?)
+                    .checked_add(dynamic_terms_storage_bytes(&state, self.program.nqubits)?)
                     .ok_or(PauliError::Overflow {
                         context: "estimating reverse replay storage",
                     })?;
-                check_budget(block_bytes, self.max_bytes, "reverse replay storage")?;
+                check_budget(
+                    block_bytes,
+                    self.program.max_bytes,
+                    "reverse replay storage",
+                )?;
                 block_states.push(state.clone());
             }
 
             for local_step in (0..(*end - *start)).rev() {
                 let global_step = *start + local_step;
-                let operation = &self.operations[self.operations.len() - 1 - global_step];
+                let operation =
+                    &self.program.operations[self.program.operations.len() - 1 - global_step];
                 let input = &block_states[local_step];
                 let output = &block_states[local_step + 1];
                 lambda = reverse_frame(
-                    self.nqubits,
+                    self.program.nqubits,
                     operation,
                     input,
                     output,
@@ -301,16 +324,16 @@ impl PropagationEngine {
 
     /// Evaluate already propagated terms against the compiled product state.
     pub fn expectation_of_terms(&self, terms: &[PauliTerm]) -> f64 {
-        expectation_from_terms(terms, &self.initial_state, self.nqubits)
+        expectation_from_terms(terms, &self.program.initial_state, self.program.nqubits)
     }
 
     /// Propagate and return canonical public terms plus structural counters.
     pub fn propagate(&self, parameters: &[f64]) -> Result<PropagationResult, PauliError> {
         let result = self.propagate_dynamic(parameters)?;
         let mut public_terms = Vec::with_capacity(result.terms.len());
-        let mut final_weight_counts = vec![0usize; self.nqubits.saturating_add(1)];
+        let mut final_weight_counts = vec![0usize; self.program.nqubits.saturating_add(1)];
         for term in result.terms {
-            let word = term.key.to_word(self.nqubits)?;
+            let word = term.key.to_word(self.program.nqubits)?;
             let weight = word.weight() as usize;
             if let Some(count) = final_weight_counts.get_mut(weight) {
                 *count += 1;
@@ -323,7 +346,7 @@ impl PropagationEngine {
         public_terms.sort_unstable_by(|left, right| left.word.cmp(&right.word));
         Ok(PropagationResult {
             stats: PropagationStats {
-                gate_count: self.operations.len(),
+                gate_count: self.program.operations.len(),
                 initial_terms: result.initial_terms,
                 final_terms: public_terms.len(),
                 peak_terms: result.peak_terms,
@@ -338,36 +361,36 @@ impl PropagationEngine {
         &self,
         parameters: &[f64],
     ) -> Result<DynamicPropagationResult, PauliError> {
-        validate_parameters(parameters, self.nparameters)?;
+        validate_parameters(parameters, self.program.nparameters)?;
         let exact = self.is_exact();
-        let cutoff = (!exact).then_some(self.max_weight).flatten();
-        let mut terms =
-            self.observable
-                .terms()
-                .iter()
-                .filter_map(|term| {
-                    let key = PackedKey::from_word(&term.word);
-                    (exact || cutoff.is_none_or(|limit| key.weight(self.nqubits) <= limit))
-                        .then_some(DynamicTerm {
-                            key,
-                            coefficient: term.coefficient,
-                        })
-                })
-                .collect::<Vec<_>>();
+        let cutoff = (!exact).then_some(self.program.max_weight).flatten();
+        let mut terms = self
+            .observable
+            .terms()
+            .iter()
+            .filter_map(|term| {
+                let key = PackedKey::from_word(&term.word);
+                (exact || cutoff.is_none_or(|limit| key.weight(self.program.nqubits) <= limit))
+                    .then_some(DynamicTerm {
+                        key,
+                        coefficient: term.coefficient,
+                    })
+            })
+            .collect::<Vec<_>>();
         let initial_terms = terms.len();
         let mut peak_terms = initial_terms;
         let mut estimated_peak_bytes = initial_terms
-            .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
+            .checked_mul(dynamic_term_storage_bytes(self.program.nqubits)?)
             .ok_or(PauliError::Overflow {
                 context: "estimating initial propagation storage",
             })?;
         check_budget(
             estimated_peak_bytes,
-            self.max_bytes,
+            self.program.max_bytes,
             "initial propagation storage",
         )?;
 
-        for operation in self.operations.iter().rev() {
+        for operation in self.program.operations.iter().rev() {
             let branch_factor = operation_branch_factor(operation);
             let candidate_count =
                 terms
@@ -377,21 +400,21 @@ impl PropagationEngine {
                         context: "estimating propagation contribution count",
                     })?;
             let candidate_bytes = candidate_count
-                .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
+                .checked_mul(dynamic_term_storage_bytes(self.program.nqubits)?)
                 .ok_or(PauliError::Overflow {
                     context: "estimating propagation contribution storage",
                 })?;
             estimated_peak_bytes = estimated_peak_bytes.max(candidate_bytes);
             check_budget(
                 candidate_bytes,
-                self.max_bytes,
+                self.program.max_bytes,
                 "propagation contribution storage",
             )?;
-            terms = apply_operation(self.nqubits, operation, terms, parameters, cutoff)?;
+            terms = apply_operation(self.program.nqubits, operation, terms, parameters, cutoff)?;
             peak_terms = peak_terms.max(terms.len());
             let actual_bytes = terms
                 .len()
-                .checked_mul(dynamic_term_storage_bytes(self.nqubits)?)
+                .checked_mul(dynamic_term_storage_bytes(self.program.nqubits)?)
                 .ok_or(PauliError::Overflow {
                     context: "estimating propagated term storage",
                 })?;
@@ -404,6 +427,233 @@ impl PropagationEngine {
             estimated_peak_bytes,
         })
     }
+}
+
+fn compile_program(
+    nqubits: usize,
+    operations: Vec<GateOperation>,
+    initial_state: ProductState,
+    max_weight: Option<usize>,
+    max_bytes: Option<u128>,
+) -> Result<Arc<CompiledPropagationProgram>, PauliError> {
+    validate_state(nqubits, &initial_state)?;
+    let mut slots = HashSet::new();
+    for operation in &operations {
+        if let Some(slot) = operation.parameter_slot() {
+            slots.insert(slot);
+        }
+    }
+    let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
+    if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
+        return Err(PauliError::InvalidClifford {
+            context: "parameter slots must cover 0..nparameters-1 without holes",
+        });
+    }
+    let transition_bytes =
+        operations
+            .iter()
+            .map(operation_storage_bytes)
+            .try_fold(0usize, |sum, value| {
+                sum.checked_add(value).ok_or(PauliError::Overflow {
+                    context: "estimating propagation transition storage",
+                })
+            })?;
+    check_budget(
+        transition_bytes,
+        max_bytes,
+        "propagation transition storage",
+    )?;
+    Ok(Arc::new(CompiledPropagationProgram {
+        nqubits,
+        operations: Arc::from(operations.into_boxed_slice()),
+        initial_state,
+        max_weight,
+        max_bytes,
+        nparameters,
+        transition_bytes,
+    }))
+}
+
+impl PropagationBatch {
+    /// Compile independent observables over one shared tape/state program.
+    pub fn new(
+        nqubits: usize,
+        operations: Vec<GateOperation>,
+        observables: Vec<PauliOperator>,
+        initial_state: ProductState,
+        max_weight: Option<usize>,
+        max_bytes: Option<u128>,
+    ) -> Result<Self, PauliError> {
+        let program = compile_program(nqubits, operations, initial_state, max_weight, max_bytes)?;
+        let observable_bytes = observables.iter().try_fold(0usize, |sum, observable| {
+            if observable.nqubits() != program.nqubits {
+                return Err(PauliError::IncompatibleQubitCounts {
+                    left: observable.nqubits(),
+                    right: program.nqubits,
+                });
+            }
+            let bytes = observable
+                .terms()
+                .len()
+                .checked_mul(dynamic_term_storage_bytes(program.nqubits)?)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating propagation batch observable storage",
+                })?;
+            sum.checked_add(bytes).ok_or(PauliError::Overflow {
+                context: "estimating propagation batch observable storage",
+            })
+        })?;
+        let output_bytes = observables
+            .len()
+            .checked_mul(size_of::<f64>())
+            .and_then(|values| {
+                observables
+                    .len()
+                    .checked_mul(program.nparameters)
+                    .and_then(|entries| entries.checked_mul(size_of::<f64>()))
+                    .and_then(|gradients| values.checked_add(gradients))
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch output storage",
+            })?;
+        let maximum_terms = observables
+            .iter()
+            .map(|observable| observable.terms().len())
+            .max()
+            .unwrap_or(0);
+        let work = observables
+            .len()
+            .saturating_mul(program.operations.len().max(1))
+            .saturating_mul(maximum_terms.max(1));
+        let active_workers = if observables.len() > 1 && work >= 64 {
+            observables.len().min(rayon::current_num_threads())
+        } else {
+            usize::from(!observables.is_empty())
+        };
+        let per_worker_bytes = maximum_terms
+            .checked_mul(dynamic_term_storage_bytes(program.nqubits)?)
+            .and_then(|terms| terms.checked_mul(2))
+            .and_then(|terms| {
+                program
+                    .nparameters
+                    .checked_mul(size_of::<f64>())
+                    .and_then(|gradient| gradient.checked_mul(2))
+                    .and_then(|gradient| terms.checked_add(gradient))
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch worker storage",
+            })?;
+        let worker_bytes =
+            active_workers
+                .checked_mul(per_worker_bytes)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating propagation batch worker storage",
+                })?;
+        let shared_bytes = observable_bytes
+            .checked_add(program.transition_bytes)
+            .and_then(|bytes| bytes.checked_add(output_bytes))
+            .and_then(|bytes| bytes.checked_add(worker_bytes))
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch storage",
+            })?;
+        check_budget(shared_bytes, program.max_bytes, "propagation batch storage")?;
+
+        let mut engines = Vec::with_capacity(observables.len());
+        for observable in observables {
+            engines.push(PropagationEngine::from_program(
+                program.clone(),
+                observable,
+            )?);
+        }
+        Ok(Self { program, engines })
+    }
+
+    pub fn nqubits(&self) -> usize {
+        self.program.nqubits
+    }
+
+    pub fn nparameters(&self) -> usize {
+        self.program.nparameters
+    }
+
+    pub fn gate_count(&self) -> usize {
+        self.program.operations.len()
+    }
+
+    pub fn observable_count(&self) -> usize {
+        self.engines.len()
+    }
+
+    pub fn max_weight(&self) -> Option<usize> {
+        self.program.max_weight
+    }
+
+    pub fn expectations(&self, parameters: &[f64]) -> Result<Vec<f64>, PauliError> {
+        if self.engines.iter().any(|engine| !engine.hermitian) {
+            return Err(PauliError::NonHermitianExpectation);
+        }
+        validate_parameters(parameters, self.program.nparameters)?;
+        let results = self.map_observables(|engine| engine.expectation(parameters));
+        collect_batch_values(results)
+    }
+
+    pub fn values_and_gradients(
+        &self,
+        parameters: &[f64],
+        checkpoint_interval: Option<usize>,
+    ) -> Result<PropagationBatchValueAndGradient, PauliError> {
+        if self.engines.iter().any(|engine| !engine.hermitian) {
+            return Err(PauliError::NonHermitianExpectation);
+        }
+        validate_parameters(parameters, self.program.nparameters)?;
+        if checkpoint_interval == Some(0) {
+            return Err(PauliError::InvalidCheckpointInterval);
+        }
+        let results =
+            self.map_observables(|engine| engine.value_and_grad(parameters, checkpoint_interval));
+        let mut values = Vec::with_capacity(self.engines.len());
+        let gradient_len = self
+            .engines
+            .len()
+            .checked_mul(self.program.nparameters)
+            .ok_or(PauliError::Overflow {
+                context: "sizing propagation batch gradients",
+            })?;
+        let mut gradients = Vec::with_capacity(gradient_len);
+        for result in results {
+            let result = result?;
+            values.push(result.value);
+            gradients.extend(result.gradient);
+        }
+        Ok(PropagationBatchValueAndGradient { values, gradients })
+    }
+
+    fn map_observables<T, F>(&self, function: F) -> Vec<Result<T, PauliError>>
+    where
+        T: Send,
+        F: Fn(&PropagationEngine) -> Result<T, PauliError> + Sync + Send,
+    {
+        let work = self
+            .engines
+            .len()
+            .saturating_mul(self.program.operations.len().max(1))
+            .saturating_mul(
+                self.engines
+                    .iter()
+                    .map(|engine| engine.observable.terms().len().max(1))
+                    .max()
+                    .unwrap_or(1),
+            );
+        if self.engines.len() > 1 && work >= 64 && rayon::current_num_threads() > 1 {
+            self.engines.par_iter().map(function).collect()
+        } else {
+            self.engines.iter().map(function).collect()
+        }
+    }
+}
+
+fn collect_batch_values(results: Vec<Result<f64, PauliError>>) -> Result<Vec<f64>, PauliError> {
+    results.into_iter().collect()
 }
 
 struct DynamicPropagationResult {

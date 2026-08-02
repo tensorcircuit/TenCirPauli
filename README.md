@@ -91,6 +91,8 @@ The default `expectation(parameters)` path stays in Rust and returns one scalar 
 
 `PropagationEngine.value_and_grad()` returns a read-only `float64` gradient for the executed sparse trace. Its zero-branch, duplicate-aggregation, and `max_weight` support decisions are frozen to that forward call; it is not a dense/fixed-basis derivative at support-change points. `SPPSEngine.value_and_grad()` provides seeded fixed-budget stochastic value-and-gradient estimates with positive smoothing, stable PAD, and per-term sample budgets; `value_and_grad_adaptive()` adds the two-replicate empirical stopping proxy. Both calls are coarse-grained native operations and release the GIL.
 
+Use `PropagationBatch(tape, observables)` when independent observable rows must be retained. It shares the immutable compiled tape/state program, returns `(B,)` expectations or `(B, nparameters)` frozen-support gradients, and parallelizes only sufficiently heavy observable batches while preserving input-row order and deterministic per-row results.
+
 ## Symmetry and restricted sectors
 
 Z2 analysis is exposed as `analysis = h.find_z2_symmetries(max_bytes=...)`. It returns `analysis.generators`, `analysis.rank`, and `analysis.constraint_rank`; select a sector with `plan = analysis.tapering_plan((+1, -1, ...))`, then call `plan.transform_operator(h)` or reuse the same plan for compatible observables. The transformed result is an ordinary smaller `PauliOperator`, so its existing `.dense()`, `.coo()`, `.csr()`, `.mvp()`, `.native_mvp_plan()`, and `.backend_mvp_plan()` targets remain available. `h.taper_z2(sector=...)` is the one-shot convenience form.

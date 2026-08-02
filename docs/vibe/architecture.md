@@ -363,6 +363,12 @@ maturin --version
 
 该阶段以63/64/65、127/128/129和256 qubits的low-k/low-hole differential tests为correctness gate，并记录word count、term/X-group count、particle number、sector dimension、setup、steady MVP、CSR storage和scaling。它不包含circuit execution或time evolution；这些属于阶段六。完整冻结合同见`phase-5-spec.md`。
 
+### 阶段五点五：多 Observable deterministic propagation（已实现）
+
+在不改变现有单个`PauliOperator` sum expectation/frozen-support gradient语义的前提下，可增加一个独立`PropagationBatch`。多个observables共享immutable compiled GateTape、state和parameter metadata，但每个observable完整复用现有forward/reverse内核，并只在observable维度由Rayon并行；不同observables不共享aggregation、projection或frozen support。
+
+该阶段已按 spec 完成：`PropagationBatch` 共享一个 immutable compiled program，执行空/单/多 observable 的 expectations 与 row-wise frozen-support values/gradients，并在工作量达到 private threshold 时只沿 observable 维度使用 Rayon；小 workload 走串行路径。coefficient-batched keys、Clifford frame、inner term parallelism和batch SPPS均不属于本阶段。完整合同与验证证据见`phase-5.5-spec.md`与`implementation-status.md`。
+
 ### 阶段六：U1Circuit 与含时演化
 
 在阶段四的 GateTape/adapter 边界和阶段五的 multiword U1 engine 完成后，实现与 TensorCircuit `U1Circuit` 语义对齐的完整 fixed-particle-number circuit workflow：state preparation、number-conserving gate/circuit execution、time-independent/time-dependent Hamiltonian evolution、Trotter schedule、observable evaluation，以及 Python/TensorCircuit differential tests。

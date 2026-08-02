@@ -143,13 +143,22 @@ The remediation profile is reproducible at the release boundary: the Rust Criter
 
 Known boundary remains intentional: Phase 5 does not materialize full-space `2**n` targets and does not implement U1Circuit, number-conserving circuit execution, time evolution, Trotterization, backend/JIT execution, or gradients; those remain Phase 6 scope.
 
+## Phase 5.5 completion checkpoint
+
+Phase 5.5 P0–P4 is implemented. `PropagationBatch` constructs one shared immutable `Arc` program for the GateTape operations, product-state descriptor, parameter slots, cutoff and memory policy, then keeps one independent canonical observable engine per input row. Expectations and frozen-support values/gradients reuse the existing scalar recurrence, reverse checkpoints, aggregation and weight projection without cross-observable reduction; sufficiently heavy batches use Rayon only across observable rows, while small batches remain serial.
+
+The public API is exported as `PropagationBatch` and `PropagationBatchValueAndGradient`. Construction uses one flattened offsets/structures/coefficient native call; expectations return contiguous read-only `float64[B]`, and values/gradients return contiguous read-only `float64[B]` and `float64[B, P]`. Empty batches, batch size one, repeated rows, product states, static/parameterized gates, custom PTMs, exact/finite projection, checkpoint intervals, deterministic parallel repeats, non-Hermitian rows, invalid parameters, and batch memory guards are covered by `tests/test_propagation_batch.py`.
+
+Release benchmark coverage is in `benchmarks/python/test_propagation_batch_benchmark.py`, with batch sizes 1/4/16/64, construction, expectations, gradients, and serial B-engine controls. On the local arm64/macOS release run, B=16 batch expectations and gradients were approximately 0.59 ms and 1.24 ms versus 2.56 ms and 6.36 ms for serial scalar engines; B=64 was approximately 1.27 ms and 3.09 ms versus 10.74 ms and 26.44 ms. The full benchmark records construction, output bytes, checkpoint interval, thread count and numerical error. These are informational measurements and do not claim unconditional speedup; batch size one and light rows retain the serial path.
+
+Known boundary remains intentional: Phase 5.5 does not batch propagated-operator materialization, SPPS, JAX custom VJP/vmap, coefficient lanes, inner-term parallelism, or shared aggregation state. The existing `PropagationEngine` remains the authority for a single Pauli sum and is unchanged at the public API boundary.
+
 ## Next actions
 
-Phase 4 handoff and the 2026-08-02 acceptance remediation are complete. Future performance work should keep the current correctness and benchmark gates, and only introduce further optimization when a representative release profile identifies a bottleneck; preserve the distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
+Phase 4 handoff, the Phase 5 review remediation, and Phase 5.5 are complete. Future performance work should keep the current correctness and benchmark gates, and only introduce further optimization when a representative release profile identifies a bottleneck; preserve the distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
 
 ## Scheduled future phases
 
-- **Phase 5.5 — optional multiple-observable deterministic propagation**：technical selection is frozen in `phase-5.5-spec.md`, but implementation is deferred until a real workload requires separate observable rows and demonstrates material serial multi-engine cost. The allowed design shares one immutable compiled program and parallelizes only across observables; the existing Pauli-sum engine remains unchanged, and coefficient-batched propagation is excluded.
 - **Phase 6 — U1Circuit and time evolution**：implement a TensorCircuit `U1Circuit`-compatible fixed-particle-number circuit workflow covering state preparation、number-conserving gates、time-independent/time-dependent or Trotter evolution、observables and TensorCircuit differential tests。This phase starts after the Phase 5 multiword engine and must freeze its gate-tape/adapter、backend/JIT and gradient scope before implementation。
 - **Phase 7 — Qudit generalized Pauli/Weyl**：preserve the existing qudit word/operator/Hamiltonian compiler roadmap after the U1 engine and circuit semantics are stable；do not mix it into the current qubit Phase 2 remediation。
 

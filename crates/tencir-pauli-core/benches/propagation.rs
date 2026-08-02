@@ -3,7 +3,7 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tencir_pauli_core::{
     Clifford1, Clifford2, Complex64, GateOperation, ParameterRef, PauliOperator, ProductState,
-    PropagationEngine, RotationAxis, SPPSEngine,
+    PropagationBatch, PropagationEngine, RotationAxis, SPPSEngine,
 };
 
 fn observable(nqubits: usize, count: usize) -> PauliOperator {
@@ -210,12 +210,68 @@ fn benchmark_value_and_gradient(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_observable_batch(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("propagation/batch");
+    let mut operations = Vec::new();
+    for wire in 0..12 {
+        operations.push(
+            GateOperation::rotation(
+                12,
+                RotationAxis::Y,
+                wire,
+                None,
+                ParameterRef::Slot(wire % 2),
+            )
+            .unwrap(),
+        );
+    }
+    for wire in (0..11).step_by(2) {
+        operations.push(GateOperation::clifford2(12, Clifford2::Cnot, wire, wire + 1).unwrap());
+    }
+    for count in [1_usize, 4, 16, 64] {
+        let observables = (0..count).map(|_| observable(12, 4)).collect::<Vec<_>>();
+        let batch = PropagationBatch::new(
+            12,
+            operations.clone(),
+            observables,
+            ProductState::Zero,
+            Some(3),
+            None,
+        )
+        .unwrap();
+        let parameters = [0.13, -0.21];
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("expectations", format!("{count}observables")),
+            &batch,
+            |bencher, batch_input| {
+                bencher.iter(|| black_box(batch_input.expectations(&parameters).unwrap()))
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("values_and_gradients", format!("{count}observables")),
+            &batch,
+            |bencher, batch_input| {
+                bencher.iter(|| {
+                    black_box(
+                        batch_input
+                            .values_and_gradients(&parameters, Some(4))
+                            .unwrap(),
+                    )
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(300))
         .measurement_time(Duration::from_secs(1))
         .sample_size(30);
-    targets = benchmark_local_kernels, benchmark_tapes, benchmark_value_and_gradient
+    targets = benchmark_local_kernels, benchmark_tapes, benchmark_value_and_gradient,
+        benchmark_observable_batch
 }
 criterion_main!(benches);

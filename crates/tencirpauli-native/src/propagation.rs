@@ -1,20 +1,26 @@
 use std::time::Instant;
 
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    Clifford1, Clifford2, GateOperation, ParameterRef, ProductState, PropagationEngine,
-    PropagationStats, RotationAxis,
+    Clifford1, Clifford2, GateOperation, ParameterRef, ProductState, PropagationBatch,
+    PropagationEngine, PropagationStats, RotationAxis,
 };
 
 use crate::convert::{build_canonical_operator, map_error, CanonicalizeOutput};
 
 type ProfileOutput = (f64, usize, usize, usize, usize, Vec<usize>, f64);
+type BatchValueAndGradientOutput<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>);
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativePropagationEngine {
     engine: PropagationEngine,
+}
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativePropagationBatch {
+    batch: PropagationBatch,
 }
 
 #[pymethods]
@@ -117,6 +123,69 @@ impl NativePropagationEngine {
     }
 }
 
+#[pymethods]
+impl NativePropagationBatch {
+    #[getter]
+    fn nqubits(&self) -> usize {
+        self.batch.nqubits()
+    }
+
+    #[getter]
+    fn nparameters(&self) -> usize {
+        self.batch.nparameters()
+    }
+
+    #[getter]
+    fn gate_count(&self) -> usize {
+        self.batch.gate_count()
+    }
+
+    #[getter]
+    fn observable_count(&self) -> usize {
+        self.batch.observable_count()
+    }
+
+    #[getter]
+    fn max_weight(&self) -> Option<usize> {
+        self.batch.max_weight()
+    }
+
+    fn expectations<'py>(
+        &self,
+        py: Python<'py>,
+        parameters: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let values = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let result = py
+            .allow_threads(|| self.batch.expectations(values))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, result))
+    }
+
+    #[pyo3(signature = (parameters, checkpoint_interval=None))]
+    fn values_and_gradients<'py>(
+        &self,
+        py: Python<'py>,
+        parameters: PyReadonlyArray1<'py, f64>,
+        checkpoint_interval: Option<usize>,
+    ) -> PyResult<BatchValueAndGradientOutput<'py>> {
+        let values = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let result = py
+            .allow_threads(|| self.batch.values_and_gradients(values, checkpoint_interval))
+            .map_err(map_error)?;
+        let rows = self.batch.observable_count();
+        let columns = self.batch.nparameters();
+        let gradients = PyArray1::from_vec(py, result.gradients)
+            .reshape((rows, columns))
+            .map_err(|_| PyValueError::new_err("propagation batch gradient shape overflow"))?;
+        Ok((PyArray1::from_vec(py, result.values), gradients))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (nqubits, operations, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
@@ -154,6 +223,75 @@ pub(crate) fn pauli_propagation_engine(
         .map_err(map_error)
     })?;
     Ok(NativePropagationEngine { engine })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (nqubits, operations, observable_offsets, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
+pub(crate) fn pauli_propagation_batch(
+    py: Python<'_>,
+    nqubits: usize,
+    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    observable_offsets: Vec<usize>,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    state_kind: u8,
+    state_bits: Vec<u8>,
+    state_values: Vec<f64>,
+    max_weight: Option<usize>,
+    max_bytes: Option<usize>,
+) -> PyResult<NativePropagationBatch> {
+    let batch = py.allow_threads(|| {
+        if observable_offsets.is_empty() || observable_offsets[0] != 0 {
+            return Err(PyValueError::new_err(
+                "observable_offsets must start with zero",
+            ));
+        }
+        if observable_offsets
+            .windows(2)
+            .any(|window| window[0] > window[1])
+        {
+            return Err(PyValueError::new_err(
+                "observable_offsets must be monotonically non-decreasing",
+            ));
+        }
+        let term_count = structures.len();
+        if observable_offsets.last().copied() != Some(term_count)
+            || coefficients_re.len() != term_count
+            || coefficients_im.len() != term_count
+        {
+            return Err(PyValueError::new_err(
+                "observable offsets and flattened coefficient lengths do not match",
+            ));
+        }
+        let compiled = operations
+            .into_iter()
+            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
+                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut observables = Vec::with_capacity(observable_offsets.len() - 1);
+        for window in observable_offsets.windows(2) {
+            observables.push(build_canonical_operator(
+                nqubits,
+                &structures[window[0]..window[1]],
+                &coefficients_re[window[0]..window[1]],
+                &coefficients_im[window[0]..window[1]],
+            )?);
+        }
+        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
+        PropagationBatch::new(
+            nqubits,
+            compiled,
+            observables,
+            state,
+            max_weight,
+            max_bytes.map(|value| value as u128),
+        )
+        .map_err(map_error)
+    })?;
+    Ok(NativePropagationBatch { batch })
 }
 
 pub(crate) fn compile_operation(

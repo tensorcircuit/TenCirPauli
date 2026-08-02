@@ -6,6 +6,7 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
+- Add `PropagationBatch` for deterministic multi-observable expectations and row-wise frozen-support gradients with shared compiled programs and observable-level parallelism.
 - Implement Phase 5 arbitrary-width packed-`u64` U1 restricted sectors, including checked combinatorial rank/unrank, wide native basis materialization, aggregated leakage validation, deterministic restricted MVP/COO/CSR plans, and 63/64/65, 127/128/129, and 256-qubit coverage.
 - Add Phase 4 Rust-native frozen-support reverse gradients with analytic local VJPs, shared parameter slots, checkpoint replay, static PTM transpose action, typed Python results, and deterministic differential tests.
 - Add the independent Rust-native SPPS engine with smoothed importance sampling, stable prefix/suffix PAD, fixed and adaptive A/B budgets, counter-derived seeded replay, streamed fixed-chunk Rayon batching, typed estimates, and explicit unsupported-gate validation.

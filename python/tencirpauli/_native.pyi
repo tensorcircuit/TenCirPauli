@@ -80,6 +80,22 @@ class NativePropagationEngine:
         self, parameters: object
     ) -> tuple[float, int, int, int, int, Sequence[int], float]: ...
 
+class NativePropagationBatch:
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def nparameters(self) -> int: ...
+    @property
+    def gate_count(self) -> int: ...
+    @property
+    def observable_count(self) -> int: ...
+    @property
+    def max_weight(self) -> int | None: ...
+    def expectations(self, parameters: object) -> object: ...
+    def values_and_gradients(
+        self, parameters: object, checkpoint_interval: int | None = None
+    ) -> tuple[object, object]: ...
+
 class NativeSPPSEngine:
     @property
     def nqubits(self) -> int: ...
@@ -345,6 +361,19 @@ def pauli_propagation_engine(
     max_weight: int | None = ...,
     max_bytes: int | None = ...,
 ) -> NativePropagationEngine: ...
+def pauli_propagation_batch(
+    nqubits: int,
+    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+    observable_offsets: Sequence[int],
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    state_kind: int,
+    state_bits: Sequence[int],
+    state_values: Sequence[float],
+    max_weight: int | None = None,
+    max_bytes: int | None = None,
+) -> NativePropagationBatch: ...
 def pauli_spps_engine(
     nqubits: int,
     operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],

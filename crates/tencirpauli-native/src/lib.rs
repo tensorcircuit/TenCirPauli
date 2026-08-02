@@ -21,7 +21,10 @@ use operator::{
     pauli_canonicalize_batch_array, pauli_canonicalize_batch_numpy, pauli_operator_adjoint,
     pauli_operator_binary, pauli_operator_is_hermitian, pauli_operator_scale,
 };
-use propagation::{pauli_propagation_engine, NativePropagationEngine};
+use propagation::{
+    pauli_propagation_batch, pauli_propagation_engine, NativePropagationBatch,
+    NativePropagationEngine,
+};
 use spps::{pauli_spps_engine, NativeSPPSEngine};
 use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
@@ -40,6 +43,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;
     module.add_class::<NativePropagationEngine>()?;
+    module.add_class::<NativePropagationBatch>()?;
     module.add_class::<NativeSPPSEngine>()?;
     module.add_function(wrap_pyfunction!(pauli_weight, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_support, module)?)?;
@@ -75,6 +79,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_restrict_u1, module)?)?;
     module.add_function(wrap_pyfunction!(u1_basis_words, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_propagation_engine, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_propagation_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine, module)?)?;
     Ok(())
 }

@@ -309,6 +309,14 @@ class PropagationValueAndGradient:
     gradient: np.ndarray[Any, Any]
 
 
+@dataclass(frozen=True)
+class PropagationBatchValueAndGradient:
+    """Values and row-wise frozen-support gradients for independent observables."""
+
+    values: np.ndarray[Any, Any]
+    gradients: np.ndarray[Any, Any]
+
+
 class PropagationEngine:
     """Reusable Rust-native Heisenberg propagation handle."""
 
@@ -417,6 +425,114 @@ class PropagationEngine:
             kernel_seconds=float(seconds),
         )
         return ProfiledExpectation(float(value), profile)
+
+
+class PropagationBatch:
+    """Propagate independent observables over one shared immutable program."""
+
+    def __init__(
+        self,
+        tape: GateTape,
+        observables: Sequence[PauliOperator],
+        *,
+        initial_state: (
+            ZeroState | ComputationalBasisState | ProductBlochState | str
+        ) = _DEFAULT_ZERO_STATE,
+        max_weight: Optional[int] = None,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None:
+        if not isinstance(tape, GateTape):
+            raise TypeError("tape must be a GateTape")
+        normalized_observables = tuple(observables)
+        for observable in normalized_observables:
+            if not isinstance(observable, PauliOperator):
+                raise TypeError("observables must contain only PauliOperator values")
+            if observable.nqubits != tape.nqubits:
+                raise ValueError("tape and observables must use the same nqubits")
+        if max_weight is not None and (
+            not isinstance(max_weight, int)
+            or isinstance(max_weight, bool)
+            or max_weight < 0
+        ):
+            raise ValueError("max_weight must be a non-negative integer or None")
+        _validate_max_bytes(max_bytes)
+        kind, bits, values = _state_payload(initial_state, tape.nqubits)
+        offsets = [0]
+        structures: list[tuple[int, ...]] = []
+        coefficients_re: list[float] = []
+        coefficients_im: list[float] = []
+        for observable in normalized_observables:
+            observable_structures, real, imaginary = observable._arrays()
+            structures.extend(observable_structures)
+            coefficients_re.extend(real)
+            coefficients_im.extend(imaginary)
+            offsets.append(len(structures))
+        self._native = _native.pauli_propagation_batch(
+            tape.nqubits,
+            tape._native_operations(),
+            offsets,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            kind,
+            bits,
+            values,
+            max_weight,
+            max_bytes,
+        )
+        self.nqubits = int(self._native.nqubits)
+        self.nparameters = int(self._native.nparameters)
+        self.observable_count = int(self._native.observable_count)
+        self.max_weight = max_weight
+
+    def _parameters(
+        self, parameters: Sequence[float] | np.ndarray[Any, Any]
+    ) -> np.ndarray[Any, Any]:
+        values = np.asarray(parameters, dtype=np.float64)
+        if values.ndim != 1 or values.shape[0] != self.nparameters:
+            raise ValueError(
+                f"parameters must have shape ({self.nparameters},), got {values.shape}"
+            )
+        return cast(np.ndarray[Any, Any], np.ascontiguousarray(values))
+
+    def expectations(
+        self, parameters: Sequence[float] | np.ndarray[Any, Any]
+    ) -> np.ndarray[Any, Any]:
+        """Return one product-state expectation for each observable."""
+        result = np.asarray(
+            self._native.expectations(self._parameters(parameters)), dtype=np.float64
+        )
+        normalized = np.ascontiguousarray(result).reshape(self.observable_count)
+        normalized.flags.writeable = False
+        return cast(np.ndarray[Any, Any], normalized)
+
+    def values_and_gradients(
+        self,
+        parameters: Sequence[float] | np.ndarray[Any, Any],
+        *,
+        checkpoint_interval: Optional[int] = None,
+    ) -> PropagationBatchValueAndGradient:
+        """Return row-wise values and frozen-support reverse gradients."""
+        if checkpoint_interval is not None and (
+            not isinstance(checkpoint_interval, int)
+            or isinstance(checkpoint_interval, bool)
+            or checkpoint_interval <= 0
+        ):
+            raise ValueError("checkpoint_interval must be a positive integer or None")
+        values, gradients = self._native.values_and_gradients(
+            self._parameters(parameters), checkpoint_interval
+        )
+        normalized_values = np.ascontiguousarray(
+            np.asarray(values, dtype=np.float64).reshape(self.observable_count)
+        )
+        normalized_gradients = np.ascontiguousarray(
+            np.asarray(gradients, dtype=np.float64).reshape(
+                self.observable_count, self.nparameters
+            )
+        )
+        normalized_values.flags.writeable = False
+        normalized_gradients.flags.writeable = False
+        return PropagationBatchValueAndGradient(normalized_values, normalized_gradients)
 
 
 def _state_payload(
