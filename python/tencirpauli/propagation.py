@@ -301,6 +301,14 @@ class ProfiledExpectation:
     profile: PropagationProfile
 
 
+@dataclass(frozen=True)
+class PropagationValueAndGradient:
+    """A scalar expectation and its frozen-support reverse gradient."""
+
+    value: float
+    gradient: np.ndarray[Any, Any]
+
+
 class PropagationEngine:
     """Reusable Rust-native Heisenberg propagation handle."""
 
@@ -357,6 +365,33 @@ class PropagationEngine:
     def expectation(self, parameters: Sequence[float] | np.ndarray[Any, Any]) -> float:
         """Propagate and return a scalar product-state expectation."""
         return float(self._native.expectation(self._parameters(parameters)))
+
+    def value_and_grad(
+        self,
+        parameters: Sequence[float] | np.ndarray[Any, Any],
+        *,
+        checkpoint_interval: Optional[int] = None,
+    ) -> PropagationValueAndGradient:
+        """Return the value and analytic reverse on the executed sparse trace.
+
+        Support decisions, exact-zero branches and finite Pauli-weight
+        projection are frozen to this forward execution.  The returned array
+        is a read-only contiguous ``float64`` vector.
+        """
+        if checkpoint_interval is not None and (
+            not isinstance(checkpoint_interval, int)
+            or isinstance(checkpoint_interval, bool)
+            or checkpoint_interval <= 0
+        ):
+            raise ValueError("checkpoint_interval must be a positive integer or None")
+        value, gradient = self._native.value_and_grad(
+            self._parameters(parameters), checkpoint_interval
+        )
+        normalized = np.asarray(gradient, dtype=np.float64)
+        if not normalized.flags.c_contiguous:
+            normalized = np.ascontiguousarray(normalized)
+        normalized.flags.writeable = False
+        return PropagationValueAndGradient(float(value), normalized)
 
     def propagate_operator(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]

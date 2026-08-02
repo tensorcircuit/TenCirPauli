@@ -27,7 +27,7 @@ Phase 3 的完成定义包括本文所有 REQUIRED deliverables、独立 referen
 7. **Rust 内 expectation**：默认性能路径在 Rust 中完成传播与 expectation，只返回 `float64`；完整 operator 使用显式、单独计时的 materialization 路径。
 8. **统一 16 GiB 默认预算**：所有现有和新增 public `max_bytes` 默认改为 `16 * 1024**3`，语义是 major output/workspace 的 best-effort guard；调用者可提高或显式传 `None` 关闭，checked dimension/arithmetic overflow 始终保留，系统 OOM 仍可能发生。
 9. **持续性能优化**：主要对照是同步后的 JAX CPU warm-JIT steady runtime；cold compile、setup、first execution、memory 与 accuracy 另行报告。每个 material hot path 都保留 profile 和 release benchmark evidence。
-10. **后续梯度兼容性**：GateTape parameter slots、local analytic rules 和 native handle 需要同时支撑 projected-recurrence deterministic gradient 与 SPPS stochastic gradient 的后续实现。
+10. **后续梯度兼容性**：GateTape parameter slots、local analytic rules 和 native handle 需要支撑 Phase 4 已另行冻结的 deterministic frozen-support reverse 与 SPPS stochastic value-and-gradient。
 
 上述语义已冻结；实现细节根据 profile 选择，并保持这些公开合同不变。
 

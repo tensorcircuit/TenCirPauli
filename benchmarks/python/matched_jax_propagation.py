@@ -114,6 +114,7 @@ class MatchedJaxPropagation:
     initial: np.ndarray
     expectation_mask: np.ndarray
     function: object
+    gradient_function: object
 
     @classmethod
     def build(
@@ -245,8 +246,26 @@ class MatchedJaxPropagation:
             return jnp.real(jnp.sum(values * jnp.asarray(expectation_mask)))
 
         compiled = jax.jit(run)
-        return cls(basis, tuple(transitions), initial, expectation_mask, compiled)
+        compiled_gradient = jax.jit(jax.value_and_grad(run))
+        return cls(
+            basis,
+            tuple(transitions),
+            initial,
+            expectation_mask,
+            compiled,
+            compiled_gradient,
+        )
 
     def expectation(self, parameters: Sequence[float]) -> float:
         value = self.function(np.asarray(parameters, dtype=np.float64))
         return float(value.block_until_ready())
+
+    def value_and_gradient(
+        self, parameters: Sequence[float]
+    ) -> tuple[float, np.ndarray]:
+        value, gradient = self.gradient_function(
+            np.asarray(parameters, dtype=np.float64)
+        )
+        value = value.block_until_ready()
+        gradient = gradient.block_until_ready()
+        return float(value), np.asarray(gradient, dtype=np.float64)

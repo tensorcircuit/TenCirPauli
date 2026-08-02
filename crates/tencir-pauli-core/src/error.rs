@@ -45,6 +45,14 @@ pub enum PauliError {
     InvalidPtmShape { expected: usize, actual: usize },
     /// A custom PTM entry is not finite.
     NonFinitePtm { index: usize },
+    /// A reverse checkpoint interval is invalid.
+    InvalidCheckpointInterval,
+    /// An SPPS smoothing parameter is invalid.
+    InvalidSppsSmoothing,
+    /// An SPPS sample budget or tolerance is invalid.
+    InvalidSppsBudget { context: &'static str },
+    /// An operation is not supported by SPPS.
+    UnsupportedSppsGate,
 }
 
 impl fmt::Display for PauliError {
@@ -124,6 +132,22 @@ impl fmt::Display for PauliError {
             }
             Self::NonFinitePtm { index } => {
                 write!(formatter, "PTM entry at index {index} is not finite")
+            }
+            Self::InvalidCheckpointInterval => {
+                write!(
+                    formatter,
+                    "checkpoint_interval must be a positive integer or None"
+                )
+            }
+            Self::InvalidSppsSmoothing => {
+                write!(formatter, "SPPS smoothing must be a finite positive float")
+            }
+            Self::InvalidSppsBudget { context } => write!(formatter, "invalid SPPS {context}"),
+            Self::UnsupportedSppsGate => {
+                write!(
+                    formatter,
+                    "SPPS supports Clifford and Pauli rotation gates only"
+                )
             }
         }
     }

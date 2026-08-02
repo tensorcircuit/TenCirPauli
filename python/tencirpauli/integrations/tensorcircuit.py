@@ -7,6 +7,8 @@ Rust core and public top-level package remain independent of that dependency.
 from __future__ import annotations
 
 import importlib
+import math
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -17,6 +19,15 @@ from ..hamiltonian import (
     _check_allocation,
     _dimension,
 )
+from ..propagation import GateTape
+
+
+@dataclass(frozen=True)
+class TensorCircuitTapeConversion:
+    """A supported TensorCircuit QIR converted to a native ``GateTape``."""
+
+    tape: GateTape
+    parameters: tuple[Any, ...]
 
 
 def require_tensorcircuit() -> Any:
@@ -28,6 +39,103 @@ def require_tensorcircuit() -> Any:
             "TensorCircuit integration requires the optional 'tensorcircuit-ng' "
             "dependency; install tencirpauli[tensorcircuit]"
         ) from error
+
+
+def gate_tape_from_circuit(
+    circuit: Any,
+    *,
+    parameter_order: Optional[Sequence[Any]] = None,
+) -> TensorCircuitTapeConversion:
+    """Convert supported numeric/direct-symbol TensorCircuit QIR to a tape.
+
+    Only fixed Clifford gates and the six Pauli rotations with a direct
+    numeric angle or one direct SymPy symbol are accepted.  The adapter does
+    not connect the resulting tape to TensorCircuit autodiff or tracing.
+    """
+    require_tensorcircuit()
+    if not hasattr(circuit, "to_qir"):
+        raise TypeError("circuit must provide TensorCircuit to_qir()")
+    qir = circuit.to_qir()
+    nqubits = getattr(circuit, "_nqubits", getattr(circuit, "nqubits", None))
+    if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
+        raise ValueError("could not determine circuit qubit count")
+
+    try:
+        sympy_module: Any = importlib.import_module("sympy")
+    except ImportError:
+        sympy_module = None
+
+    def is_symbol(value: Any) -> bool:
+        return sympy_module is not None and isinstance(value, sympy_module.Symbol)
+
+    operations: list[tuple[str, tuple[int, ...], Any]] = []
+    symbols: list[Any] = []
+    fixed = {"x", "y", "z", "h", "s", "sdg", "cnot", "cz", "swap"}
+    rotations = {"rx", "ry", "rz", "rxx", "ryy", "rzz"}
+    for instruction in qir:
+        if not isinstance(instruction, dict):
+            raise ValueError("TensorCircuit QIR entries must be dictionaries")
+        name = str(instruction.get("name", "")).lower()
+        wires = tuple(instruction.get("index", ()))
+        if name in fixed:
+            if instruction.get("parameters"):
+                raise ValueError(f"unsupported parameters on TensorCircuit gate {name}")
+            operations.append((name, wires, None))
+            continue
+        if name not in rotations:
+            raise ValueError(f"unsupported TensorCircuit gate {name!r}")
+        parameters = instruction.get("parameters", {})
+        if not isinstance(parameters, dict) or set(parameters) != {"theta"}:
+            raise ValueError(f"{name} requires one direct theta parameter")
+        angle = parameters["theta"]
+        if is_symbol(angle):
+            if angle not in symbols:
+                symbols.append(angle)
+            operations.append((name, wires, angle))
+        else:
+            if isinstance(angle, (bool, np.bool_)):
+                raise TypeError("TensorCircuit angles must be finite real values")
+            try:
+                numeric_angle = float(angle)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "TensorCircuit angles must be numeric or direct SymPy symbols"
+                ) from error
+            if not math.isfinite(numeric_angle):
+                raise ValueError("TensorCircuit angles must be finite")
+            operations.append((name, wires, numeric_angle))
+
+    if parameter_order is None:
+        ordered_symbols = tuple(symbols)
+    else:
+        ordered_symbols = tuple(parameter_order)
+        if len(set(ordered_symbols)) != len(ordered_symbols):
+            raise ValueError("parameter_order must not contain duplicates")
+        if set(ordered_symbols) != set(symbols) or any(
+            not is_symbol(symbol) for symbol in ordered_symbols
+        ):
+            raise ValueError("parameter_order must exactly cover direct QIR symbols")
+    symbol_slots = {symbol: index for index, symbol in enumerate(ordered_symbols)}
+
+    tape = GateTape(nqubits)
+    for name, wires, angle in operations:
+        if name in fixed:
+            if name in {"x", "y", "z", "h", "s", "sdg"}:
+                getattr(tape, name)(wires[0])
+            else:
+                getattr(tape, name)(wires[0], wires[1])
+            continue
+        if name in {"rx", "ry", "rz"}:
+            append = getattr(tape, name)
+            wire_args: tuple[int, ...] = (wires[0],)
+        else:
+            append = getattr(tape, name)
+            wire_args = (wires[0], wires[1])
+        if is_symbol(angle):
+            append(*wire_args, parameter=symbol_slots[angle])
+        else:
+            append(*wire_args, angle=angle)
+    return TensorCircuitTapeConversion(tape=tape, parameters=ordered_symbols)
 
 
 def backend_mvp(

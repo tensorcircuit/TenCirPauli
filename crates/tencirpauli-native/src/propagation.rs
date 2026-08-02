@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use numpy::PyReadonlyArray1;
+use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
@@ -54,6 +54,22 @@ impl NativePropagationEngine {
             .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
         py.allow_threads(|| self.engine.expectation(values))
             .map_err(map_error)
+    }
+
+    #[pyo3(signature = (parameters, checkpoint_interval=None))]
+    fn value_and_grad<'py>(
+        &self,
+        py: Python<'py>,
+        parameters: PyReadonlyArray1<'py, f64>,
+        checkpoint_interval: Option<usize>,
+    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+        let values = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let result = py
+            .allow_threads(|| self.engine.value_and_grad(values, checkpoint_interval))
+            .map_err(map_error)?;
+        Ok((result.value, PyArray1::from_vec(py, result.gradient)))
     }
 
     fn propagate_operator(
@@ -140,7 +156,7 @@ pub(crate) fn pauli_propagation_engine(
     Ok(NativePropagationEngine { engine })
 }
 
-fn compile_operation(
+pub(crate) fn compile_operation(
     nqubits: usize,
     kind: u8,
     wire0: usize,
@@ -214,7 +230,7 @@ fn parameter_ref(parameter: i64, angle: f64) -> PyResult<ParameterRef> {
     }
 }
 
-fn compile_state(
+pub(crate) fn compile_state(
     nqubits: usize,
     kind: u8,
     bits: Vec<u8>,

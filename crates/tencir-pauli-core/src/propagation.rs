@@ -46,6 +46,13 @@ pub struct PropagationResult {
     pub stats: PropagationStats,
 }
 
+/// A deterministic value and frozen-support reverse gradient.
+#[derive(Clone, Debug)]
+pub struct PropagationValueAndGradient {
+    pub value: f64,
+    pub gradient: Vec<f64>,
+}
+
 /// An immutable compiled propagation engine.
 #[derive(Clone, Debug)]
 pub struct PropagationEngine {
@@ -168,6 +175,130 @@ impl PropagationEngine {
         ))
     }
 
+    /// Evaluate the executed sparse trace and reverse only its retained edges.
+    pub fn value_and_grad(
+        &self,
+        parameters: &[f64],
+        checkpoint_interval: Option<usize>,
+    ) -> Result<PropagationValueAndGradient, PauliError> {
+        if !self.hermitian {
+            return Err(PauliError::NonHermitianExpectation);
+        }
+        validate_parameters(parameters, self.nparameters)?;
+        let interval = checkpoint_interval.unwrap_or_else(|| {
+            let gates = self.operations.len().saturating_add(1);
+            (gates as f64).sqrt().ceil() as usize
+        });
+        if interval == 0 {
+            return Err(PauliError::InvalidCheckpointInterval);
+        }
+
+        let cutoff = self
+            .is_exact()
+            .then_some(None)
+            .flatten()
+            .or(self.max_weight);
+        let initial = initial_dynamic_terms(self.nqubits, &self.observable, cutoff);
+        let mut checkpoints = vec![(0usize, initial)];
+        let mut current = checkpoints[0].1.clone();
+        let mut checkpoint_bytes = dynamic_terms_storage_bytes(&current, self.nqubits)?;
+        check_budget(
+            checkpoint_bytes,
+            self.max_bytes,
+            "reverse checkpoint storage",
+        )?;
+        for (step, operation) in self.operations.iter().rev().enumerate() {
+            current = apply_operation(self.nqubits, operation, current, parameters, cutoff)?;
+            let boundary = step + 1;
+            if boundary % interval == 0 || boundary == self.operations.len() {
+                checkpoint_bytes = checkpoint_bytes
+                    .checked_add(dynamic_terms_storage_bytes(&current, self.nqubits)?)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating reverse checkpoint storage",
+                    })?;
+                check_budget(
+                    checkpoint_bytes,
+                    self.max_bytes,
+                    "reverse checkpoint storage",
+                )?;
+                checkpoints.push((boundary, current.clone()));
+            }
+        }
+        let value = expectation_from_dynamic_terms(&current, &self.initial_state, self.nqubits);
+        let mut lambda = current
+            .iter()
+            .map(|term| expectation_of_key(&term.key, &self.initial_state, self.nqubits))
+            .collect::<Vec<_>>();
+        let gradient_bytes =
+            self.nparameters
+                .checked_mul(size_of::<f64>())
+                .ok_or(PauliError::Overflow {
+                    context: "estimating reverse gradient storage",
+                })?;
+        check_budget(gradient_bytes, self.max_bytes, "reverse gradient storage")?;
+        let mut gradient = vec![0.0; self.nparameters];
+
+        for checkpoint_index in (0..checkpoints.len().saturating_sub(1)).rev() {
+            let (start, block_start) = &checkpoints[checkpoint_index];
+            let (end, _) = &checkpoints[checkpoint_index + 1];
+            if *end - *start == 1 {
+                let operation = &self.operations[self.operations.len() - 1 - *start];
+                lambda = reverse_frame(
+                    self.nqubits,
+                    operation,
+                    block_start,
+                    &checkpoints[checkpoint_index + 1].1,
+                    parameters,
+                    cutoff,
+                    &lambda,
+                    &mut gradient,
+                )?;
+                continue;
+            }
+            let mut block_states = Vec::with_capacity(end - start + 1);
+            block_states.push(block_start.clone());
+            let mut block_bytes = dynamic_terms_storage_bytes(block_start, self.nqubits)?;
+            let mut state = block_start.clone();
+            for step in *start..*end {
+                state = apply_operation(
+                    self.nqubits,
+                    &self.operations[self.operations.len() - 1 - step],
+                    state,
+                    parameters,
+                    cutoff,
+                )?;
+                block_bytes = block_bytes
+                    .checked_add(dynamic_terms_storage_bytes(&state, self.nqubits)?)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating reverse replay storage",
+                    })?;
+                check_budget(block_bytes, self.max_bytes, "reverse replay storage")?;
+                block_states.push(state.clone());
+            }
+
+            for local_step in (0..(*end - *start)).rev() {
+                let global_step = *start + local_step;
+                let operation = &self.operations[self.operations.len() - 1 - global_step];
+                let input = &block_states[local_step];
+                let output = &block_states[local_step + 1];
+                lambda = reverse_frame(
+                    self.nqubits,
+                    operation,
+                    input,
+                    output,
+                    parameters,
+                    cutoff,
+                    &lambda,
+                    &mut gradient,
+                )?;
+            }
+        }
+        if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
+            return Err(PauliError::NonFiniteCoefficient { index: 0 });
+        }
+        Ok(PropagationValueAndGradient { value, gradient })
+    }
+
     /// Evaluate already propagated terms against the compiled product state.
     pub fn expectation_of_terms(&self, terms: &[PauliTerm]) -> f64 {
         expectation_from_terms(terms, &self.initial_state, self.nqubits)
@@ -288,8 +419,35 @@ struct DynamicTerm {
     coefficient: Complex64,
 }
 
+fn initial_dynamic_terms(
+    nqubits: usize,
+    observable: &PauliOperator,
+    cutoff: Option<usize>,
+) -> Vec<DynamicTerm> {
+    observable
+        .terms()
+        .iter()
+        .filter_map(|term| {
+            let key = PackedKey::from_word(&term.word);
+            (cutoff.is_none_or(|limit| key.weight(nqubits) <= limit)).then_some(DynamicTerm {
+                key,
+                coefficient: term.coefficient,
+            })
+        })
+        .collect()
+}
+
+fn dynamic_terms_storage_bytes(terms: &[DynamicTerm], nqubits: usize) -> Result<usize, PauliError> {
+    terms.iter().try_fold(0usize, |sum, _| {
+        sum.checked_add(dynamic_term_storage_bytes(nqubits)?)
+            .ok_or(PauliError::Overflow {
+                context: "estimating reverse sparse state storage",
+            })
+    })
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum PackedKey {
+pub(crate) enum PackedKey {
     Inline {
         nqubits: usize,
         x: [u64; 2],
@@ -303,7 +461,7 @@ enum PackedKey {
 }
 
 impl PackedKey {
-    fn from_word(word: &PauliWord) -> Self {
+    pub(crate) fn from_word(word: &PauliWord) -> Self {
         let nqubits = word.nqubits();
         if nqubits <= 128 {
             let mut x = [0_u64; 2];
@@ -324,7 +482,7 @@ impl PackedKey {
         }
     }
 
-    fn code_at(&self, qubit: usize) -> u8 {
+    pub(crate) fn code_at(&self, qubit: usize) -> u8 {
         let index = qubit / 64;
         let shift = qubit % 64;
         let (x, z) = match self {
@@ -340,7 +498,7 @@ impl PackedKey {
         }
     }
 
-    fn set_code(&mut self, qubit: usize, code: u8) {
+    pub(crate) fn set_code(&mut self, qubit: usize, code: u8) {
         let index = qubit / 64;
         let mask = 1_u64 << (qubit % 64);
         let (x_bit, z_bit) = match code {
@@ -422,7 +580,7 @@ fn masks_z(key: &PackedKey, nqubits: usize) -> Vec<u64> {
     }
 }
 
-fn validate_state(nqubits: usize, state: &ProductState) -> Result<(), PauliError> {
+pub(crate) fn validate_state(nqubits: usize, state: &ProductState) -> Result<(), PauliError> {
     match state {
         ProductState::Zero => Ok(()),
         ProductState::ComputationalBasis(bits) => {
@@ -606,6 +764,135 @@ fn apply_operation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn reverse_frame(
+    nqubits: usize,
+    operation: &GateOperation,
+    input: &[DynamicTerm],
+    output: &[DynamicTerm],
+    parameters: &[f64],
+    cutoff: Option<usize>,
+    output_lambda: &[f64],
+    gradient: &mut [f64],
+) -> Result<Vec<f64>, PauliError> {
+    let mut output_indices = FxHashMap::with_capacity_and_hasher(output.len(), Default::default());
+    for (index, term) in output.iter().enumerate() {
+        output_indices.insert(term.key.clone(), index);
+    }
+    let mut input_lambda = vec![0.0; input.len()];
+    for (input_index, term) in input.iter().enumerate() {
+        visit_retained_edges(
+            nqubits,
+            operation,
+            term,
+            parameters,
+            cutoff,
+            &output_indices,
+            |output_index, multiplier, derivative, slot| {
+                let output_adjoint = output_lambda[output_index];
+                input_lambda[input_index] += multiplier * output_adjoint;
+                if let Some(parameter_slot) = slot {
+                    gradient[parameter_slot] += term.coefficient.re * derivative * output_adjoint;
+                }
+            },
+        )?;
+    }
+    if input_lambda.iter().any(|value| !value.is_finite())
+        || gradient.iter().any(|value| !value.is_finite())
+    {
+        return Err(PauliError::NonFiniteCoefficient { index: 0 });
+    }
+    Ok(input_lambda)
+}
+
+/// Visit the nonzero contribution edges that survived the executed forward
+/// support decision. The output map is intentionally supplied by the reverse
+/// caller so aggregation and projection are applied exactly once.
+fn visit_retained_edges<F>(
+    nqubits: usize,
+    operation: &GateOperation,
+    term: &DynamicTerm,
+    parameters: &[f64],
+    cutoff: Option<usize>,
+    output_indices: &FxHashMap<PackedKey, usize>,
+    mut visit: F,
+) -> Result<(), PauliError>
+where
+    F: FnMut(usize, f64, f64, Option<usize>),
+{
+    let mut emit = |key: PackedKey, multiplier: f64, derivative: f64, slot: Option<usize>| {
+        let scaled = checked_scale(term.coefficient, multiplier, 0)?;
+        if is_exact_zero(scaled) || cutoff.is_some_and(|limit| key.weight(nqubits) > limit) {
+            return Ok::<(), PauliError>(());
+        }
+        if let Some(&output_index) = output_indices.get(&key) {
+            visit(output_index, multiplier, derivative, slot);
+        }
+        Ok(())
+    };
+
+    match &operation.kind {
+        GateKind::Clifford1 { gate, wire } => {
+            let (key, multiplier) = map_clifford1(&term.key, *gate, *wire);
+            emit(key, multiplier, 0.0, None)?;
+        }
+        GateKind::Clifford2 { gate, wire0, wire1 } => {
+            let (key, multiplier) = map_clifford2(&term.key, *gate, *wire0, *wire1);
+            emit(key, multiplier, 0.0, None)?;
+        }
+        GateKind::Rotation {
+            axis,
+            wire0,
+            wire1,
+            parameter,
+        } => {
+            let (cosine, sine) = resolve_parameter(*parameter, parameters)?;
+            let slot = match parameter {
+                ParameterRef::Slot(index) => Some(*index),
+                ParameterRef::Static { .. } => None,
+            };
+            let (product, phase) =
+                multiply_by_generator(&term.key, rotation_code(*axis), *wire0, *wire1);
+            match phase {
+                PauliPhase::PlusI | PauliPhase::MinusI => {
+                    if cosine != 0.0 {
+                        emit(term.key.clone(), cosine, slot.map_or(0.0, |_| -sine), slot)?;
+                    }
+                    if sine != 0.0 {
+                        let sign = phase_sign_i(phase);
+                        emit(
+                            product,
+                            sine * sign,
+                            slot.map_or(0.0, |_| cosine * sign),
+                            slot,
+                        )?;
+                    }
+                }
+                PauliPhase::PlusOne | PauliPhase::MinusOne => {
+                    emit(term.key.clone(), 1.0, 0.0, None)?;
+                }
+            }
+        }
+        GateKind::CustomPtm {
+            wire0,
+            wire1,
+            transitions,
+        } => {
+            let input = local_index(&term.key, *wire0, *wire1);
+            for &(output, coefficient) in &transitions[input] {
+                let mut key = term.key.clone();
+                let (first, second) = local_codes(output, wire1.is_some());
+                key.set_code(*wire0, first);
+                if let Some(second_wire) = wire1 {
+                    key.set_code(*second_wire, second);
+                }
+                emit(key, coefficient, 0.0, None)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn aggregate(
     contributions: Vec<(PackedKey, Complex64)>,
     nqubits: usize,
@@ -666,7 +953,7 @@ fn checked_scale(
     }
 }
 
-fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f64) {
+pub(crate) fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f64) {
     let code = key.code_at(wire);
     let (mapped_code, sign) = match gate {
         Clifford1::X => match code {
@@ -717,7 +1004,12 @@ fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f
     (result, sign)
 }
 
-fn map_clifford2(key: &PackedKey, gate: Clifford2, wire0: usize, wire1: usize) -> (PackedKey, f64) {
+pub(crate) fn map_clifford2(
+    key: &PackedKey,
+    gate: Clifford2,
+    wire0: usize,
+    wire1: usize,
+) -> (PackedKey, f64) {
     let first = key.code_at(wire0);
     let second = key.code_at(wire1);
     let (mapped_first, mapped_second, multiplier) = clifford2_local_map(gate, first, second);
@@ -791,7 +1083,7 @@ fn clifford2_local_map(gate: Clifford2, first: u8, second: u8) -> (u8, u8, f64) 
     }
 }
 
-fn rotation_code(axis: RotationAxis) -> u8 {
+pub(crate) fn rotation_code(axis: RotationAxis) -> u8 {
     match axis {
         RotationAxis::X => 1,
         RotationAxis::Y => 2,
@@ -799,7 +1091,7 @@ fn rotation_code(axis: RotationAxis) -> u8 {
     }
 }
 
-fn multiply_by_generator(
+pub(crate) fn multiply_by_generator(
     key: &PackedKey,
     generator_code: u8,
     wire0: usize,
@@ -813,6 +1105,20 @@ fn multiply_by_generator(
         phase = phase.multiply(local_phase);
     }
     (result, phase)
+}
+
+pub(crate) fn generator_phase(
+    key: &PackedKey,
+    generator_code: u8,
+    wire0: usize,
+    wire1: Option<usize>,
+) -> PauliPhase {
+    let mut phase = PauliPhase::PlusOne;
+    for wire in [Some(wire0), wire1].into_iter().flatten() {
+        let (_, local_phase) = local_product(generator_code, key.code_at(wire));
+        phase = phase.multiply(local_phase);
+    }
+    phase
 }
 
 fn local_product(left: u8, right: u8) -> (u8, PauliPhase) {
@@ -829,7 +1135,7 @@ fn local_product(left: u8, right: u8) -> (u8, PauliPhase) {
     }
 }
 
-fn resolve_parameter(
+pub(crate) fn resolve_parameter(
     parameter: ParameterRef,
     parameters: &[f64],
 ) -> Result<(f64, f64), PauliError> {
@@ -842,7 +1148,7 @@ fn resolve_parameter(
     }
 }
 
-fn phase_sign_i(phase: PauliPhase) -> f64 {
+pub(crate) fn phase_sign_i(phase: PauliPhase) -> f64 {
     match phase {
         PauliPhase::PlusI => -1.0,
         PauliPhase::MinusI => 1.0,
@@ -893,6 +1199,12 @@ fn expectation_from_dynamic_terms(
         .sum()
 }
 
+pub(crate) fn expectation_of_key(key: &PackedKey, state: &ProductState, nqubits: usize) -> f64 {
+    (0..nqubits).fold(1.0, |product, qubit| {
+        product * expectation_component(state, key.code_at(qubit), qubit)
+    })
+}
+
 fn expectation_component(state: &ProductState, code: u8, qubit: usize) -> f64 {
     match state {
         ProductState::Zero => match code {
@@ -917,7 +1229,7 @@ fn expectation_component(state: &ProductState, code: u8, qubit: usize) -> f64 {
     }
 }
 
-fn check_budget(
+pub(crate) fn check_budget(
     requested: usize,
     limit: Option<u128>,
     _context: &'static str,

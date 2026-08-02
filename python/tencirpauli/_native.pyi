@@ -70,12 +70,60 @@ class NativePropagationEngine:
     @property
     def is_exact(self) -> bool: ...
     def expectation(self, parameters: object) -> float: ...
+    def value_and_grad(
+        self, parameters: object, checkpoint_interval: int | None = None
+    ) -> tuple[float, object]: ...
     def propagate_operator(
         self, parameters: object
     ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
     def profile(
         self, parameters: object
     ) -> tuple[float, int, int, int, int, Sequence[int], float]: ...
+
+class NativeSPPSEngine:
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def nparameters(self) -> int: ...
+    @property
+    def gate_count(self) -> int: ...
+    @property
+    def observable_terms(self) -> int: ...
+    @property
+    def smoothing(self) -> float: ...
+    def value_and_grad(
+        self, parameters: object, samples_per_term: int, seed: int
+    ) -> tuple[
+        float,
+        object,
+        float,
+        int,
+        Sequence[int],
+        int,
+        int,
+        float | None,
+        Sequence[float] | None,
+        bool | None,
+    ]: ...
+    def value_and_grad_adaptive(
+        self,
+        parameters: object,
+        initial_samples_per_term: int,
+        max_samples_per_term: int,
+        gradient_tolerance: float,
+        seed: int,
+    ) -> tuple[
+        float,
+        object,
+        float,
+        int,
+        Sequence[int],
+        int,
+        int,
+        float | None,
+        Sequence[float] | None,
+        bool | None,
+    ]: ...
 
 def pauli_weight(
     nqubits: int, x_words: Sequence[int], z_words: Sequence[int]
@@ -297,3 +345,15 @@ def pauli_propagation_engine(
     max_weight: int | None = ...,
     max_bytes: int | None = ...,
 ) -> NativePropagationEngine: ...
+def pauli_spps_engine(
+    nqubits: int,
+    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    state_kind: int,
+    state_bits: Sequence[int],
+    state_values: Sequence[float],
+    smoothing: float = 0.01,
+    max_bytes: int | None = None,
+) -> NativeSPPSEngine: ...

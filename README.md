@@ -2,7 +2,7 @@
 
 TenCirPauli is a Rust-native Pauli algebra, deterministic measurement grouping, Hamiltonian compiler, and Heisenberg Pauli propagation engine with a typed Python API compatible with TensorCircuit's Pauli codes and qubit-ordering conventions.
 
-The public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, a versioned backend MVP plan, Pauli Z2 symmetry/tapering plans, explicit U(1) restricted-sector operators, and a Rust-native `GateTape`/`PropagationEngine`. Native gradients remain outside the current scope.
+The public surface includes phase-free `PauliWord`, canonical `PauliOperator`, QWC and general-commuting grouping results, dense/COO/CSR Hamiltonian targets, native matrix-free MVP, a versioned backend MVP plan, Pauli Z2 symmetry/tapering plans, explicit U(1) restricted-sector operators, and Rust-native deterministic and stochastic value-and-gradient engines built on `GateTape`.
 
 ## Architecture
 
@@ -88,6 +88,8 @@ For large numeric batches, use `PauliOperator.from_code_arrays()` to construct a
 `GateTape` records gates in Schrödinger execution order. `PropagationEngine` traverses that tape in reverse for Heisenberg propagation, using exact recurrence when `max_weight=None` or the cutoff is at least `nqubits`, and applying a deterministic Pauli-weight projection after each aggregated gate when a finite cutoff is selected. The supported built-ins are `X/Y/Z/H/S/Sdg/CNOT/CZ/SWAP`, `RX/RY/RZ/RXX/RYY/RZZ`, and finite real one- or two-qubit PTMs.
 
 The default `expectation(parameters)` path stays in Rust and returns one scalar for `ZeroState`, `ComputationalBasisState`, or `ProductBlochState`. Use `propagate_operator()` only when the full canonical operator is needed; use `profile()` for explicit structural and timing metadata. Parameter slots are immutable after engine construction, while a mutable `GateTape` can continue to be used to build other engines.
+
+`PropagationEngine.value_and_grad()` returns a read-only `float64` gradient for the executed sparse trace. Its zero-branch, duplicate-aggregation, and `max_weight` support decisions are frozen to that forward call; it is not a dense/fixed-basis derivative at support-change points. `SPPSEngine.value_and_grad()` provides seeded fixed-budget stochastic value-and-gradient estimates with positive smoothing, stable PAD, and per-term sample budgets; `value_and_grad_adaptive()` adds the two-replicate empirical stopping proxy. Both calls are coarse-grained native operations and release the GIL.
 
 ## Symmetry and restricted sectors
 

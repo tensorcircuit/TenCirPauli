@@ -1,6 +1,16 @@
 """Optional framework integrations for TenCirPauli."""
 
-from .tensorcircuit import backend_mvp, require_tensorcircuit
+from .tensorcircuit import (
+    TensorCircuitTapeConversion,
+    backend_mvp,
+    gate_tape_from_circuit,
+    require_tensorcircuit,
+)
 
 
-__all__ = ["backend_mvp", "require_tensorcircuit"]
+__all__ = [
+    "TensorCircuitTapeConversion",
+    "backend_mvp",
+    "gate_tape_from_circuit",
+    "require_tensorcircuit",
+]

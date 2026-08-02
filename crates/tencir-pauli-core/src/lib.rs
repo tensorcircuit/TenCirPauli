@@ -8,6 +8,7 @@ mod operator;
 mod propagation;
 mod scalar;
 mod sector;
+mod spps;
 mod symmetry;
 mod word;
 
@@ -19,9 +20,13 @@ pub use grouping::{
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
-pub use propagation::{ProductState, PropagationEngine, PropagationResult, PropagationStats};
+pub use propagation::{
+    ProductState, PropagationEngine, PropagationResult, PropagationStats,
+    PropagationValueAndGradient,
+};
 pub use scalar::Complex64;
 pub use sector::{U1CooMatrix, U1CsrMatrix, U1MvpPlan, U1RestrictedOperator, U1Sector};
+pub use spps::{SPPSEngine, SPPSEstimate};
 pub use symmetry::{find_z2_symmetries, CliffordOperation, Z2SymmetryAnalysis, Z2TaperingPlan};
 pub use word::{packed_word_count, PauliPhase, PauliWord};
 

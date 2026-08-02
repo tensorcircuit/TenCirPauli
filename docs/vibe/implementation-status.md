@@ -4,7 +4,7 @@
 
 ## Current objective
 
-完成 `phase-1-spec.md` 中的 P0–P5，并完成 `phase-2-spec.md` 的 Z2 analysis/tapering、显式 U1 sector、restricted MVP/CSR 和 symmetry-aware JAX benchmark 对照。2026-08-02 acceptance review 暴露的多生成元 tapering row-sign blocker、U1 native width boundary、热路径布局和 correctness/benchmark evidence gaps 已完成 remediation；Phase 2 现可标记为完成，但仍保留明确的 `< usize::BITS` native U1 限制。Phase 1 remediation 和 core/native module split 已完成；项目暂不增加 MSRV 1.85 CI job。Phase 3 的可执行合同已冻结在 `phase-3-spec.md`，当前正在推进 P2/P3 recurrence hardening、P6 profiling/optimization 和 P7 handoff。
+Phase 1–3 已完成，Phase 4 的 deterministic frozen-support reverse、SPPS fixed/adaptive engines、release benchmark/profile 和 optional TensorCircuit adapter 已贯通。当前工作是完成最终 full benchmark record/compare、审计内存与可选依赖证据，并保持 Phase 1–4 regression；项目暂不增加 MSRV 1.85 CI job。
 
 ## Completed foundation
 
@@ -53,7 +53,19 @@ Owner decisions recorded on 2026-08-02：`max_bytes` remains a cheap best-effort
 
 Phase 3 owner decisions recorded on 2026-08-02：propagation uses one recurrence parameterized only by `max_weight`，with `None` or `max_weight >= nqubits` recovering exact propagation and Clifford gates acting as an automatic no-branch fast path；projection occurs only after canonical aggregation；coefficient cutoff、top-k、fixed buffers and discarded-norm error estimates are excluded；the first gate set is `X/Y/Z/H/S/Sdg/CNOT/CZ/SWAP` plus `RX/RY/RZ/RXX/RYY/RZZ`；custom one-/two-qubit PTM accepts finite real `float64` only；initial states cover zero、computational-basis and product Bloch states；Rust computes the default expectation result and materializes the propagated operator only on request；all public `DEFAULT_MAX_BYTES` values migrate from the currently implemented 4 GiB to 16 GiB in Phase 3 P0 and may be explicitly disabled with `None`；performance has no fixed speedup completion threshold but requires synchronized warm-JIT comparison、profiling and continued bottleneck-driven optimization。
 
-Phase 4 gradient scope is also frozen at the roadmap level：both projected-recurrence deterministic gradients and arXiv:2607.17804 SPPS unbiased stochastic gradients are REQUIRED。The deterministic path must study and report its bias relative to the exact objective rather than treating exact differentiation of the truncated recurrence as an unbiased full-circuit gradient；SPPS must separately report sampling variance、budget/proxy behavior and optimization-level accuracy-runtime trade-offs。Neither gradient path replaces the other。
+Phase 4 owner decisions recorded on 2026-08-02：both deterministic frozen-support reverse and arXiv:2607.17804 SPPS are REQUIRED。The deterministic path differentiates only the nonzero terms/contributions retained by the executed Phase 3 sparse forward trace；zero local multipliers、exact aggregate cancellations and projected outputs are not reintroduced for gradient correctness。It uses analytic local VJP、shared-slot accumulation and checkpoint/recomputation；production parameter shift、forward sensitivity、generic Rust AD and gradient-bias/optimization-trajectory studies are excluded。SPPS remains a separate full-path stochastic engine with positive smoothing、importance reweighting、stable PAD、fixed/adaptive budgets、A/B proxy、explicit seeded replay and parallel batching；custom PTM and `max_weight` are excluded from SPPS。The full executable contract is `phase-4-spec.md`。
+
+## Phase 4 implementation checkpoint
+
+- P0–P1 vertical slice：`PropagationEngine.value_and_grad()` 已贯通 pure Rust、PyO3 和 Python dataclass；reverse 只遍历本次 forward retained edge，支持 exact/finite `max_weight`、shared slots、static PTM transpose action、product Bloch state、non-Hermitian/nonfinite/invalid checkpoint errors，并返回 contiguous read-only `float64` gradient。
+- P2 checkpoint slice：显式 interval 使用 block boundary checkpoints 与 deterministic replay，`None` 使用固定 auto heuristic；interval=1 走已保存 boundary，跳过无意义 replay。不同 interval 的 value/gradient 在 focused tests 中 bitwise 一致；best-effort checkpoint/replay/gradient storage checks 复用 `max_bytes`。
+- P3–P4 SPPS slice：`SPPSEngine` 独立于 deterministic recurrence，支持 Clifford 与六种 Pauli rotations、positive smoothing、importance-reweighted value、zero-factor-safe prefix/suffix PAD、fixed budget、term-wise adaptive A/B doubling、counter-derived seed replay 和 fixed-order Rayon chunks；custom PTM、`max_weight` 与 unsupported inputs construction-time fail。
+- P5 public/integration slice：顶层导出 `PropagationValueAndGradient`、`SPPSEngine`、`SPPSEstimate`；新增 numeric/direct-symbol TensorCircuit QIR adapter，保持 lazy optional dependency 与 integration-module 边界。TensorCircuit source 本身未修改。
+- Correctness evidence：`conda run -p .conda cargo test --locked --workspace` 为 15 passed；`conda run -p .conda pytest -q` 为 105 passed, 4 skipped；独立 dense finite-difference、exact legal-path enumerator、zero-factor PAD、seed replay、adaptive metadata、PTM、checkpoint 和 adapter tests 已加入。
+- Release benchmark evidence：Phase 4 Python native median on this arm64/macOS host is approximately deterministic 12q projected gradient `0.45 ms` at checkpoint 1 and `0.76 ms` at interval 4, SPPS 12q/12-term `0.10 ms` at 128 paths/term and `0.68 ms` at 1024 paths/term, and 100q near-Clifford SPPS `0.14 ms` at 640 total paths. Rust Criterion covers local VJP/tape/checkpoint/SPPS cases. Results are informational, not wall-time gates.
+- TensorCircuit end-to-end comparison：using the local `examples/spps_pauli_path_vqe.py` workload at 12q/2 layers, 23 TFIM terms and 256 paths/term, Rust deterministic value+gradient is approximately `1.45 ms` versus TensorCircuit `PauliPropagationEngine` + JAX `value_and_grad` approximately `15.97 ms` warm. Rust SPPS is approximately `3.64 ms` versus the example's JAX-vmap SPPS approximately `3.50 ms`; both are complete Python-call boundaries with synchronization, and the SPPS numbers are not a claim of lower variance or identical random paths.
+- Profile evidence：direct macOS `/usr/bin/sample` on release Python calls shows deterministic reverse dominated by existing `aggregate` FxHashMap/PackedKey sorting plus replay/edge lookup; SPPS initially spent about 43% of sampled native stack in unconditional `multiply_by_generator`. The implemented optimizations are checkpoint-1 no-replay, generator-phase-only SPPS branching, and fixed-order Rayon batch execution. The raw profiles are preserved only under `/private/tmp/tencirpauli-phase4-*.sample` and are not tracked.
+- Known limits：the public API does not expose thread-count controls or raw path/profile counters; adaptive proxies are empirical stopping statistics, not confidence intervals; TensorCircuit/JAX comparison is optional and requires the local TensorCircuit source plus JAX. Full all-suite benchmark recording remains the final handoff step.
 
 长期 roadmap 已记录 qudit generalized Pauli/Weyl 支持：以每个 site 的 `X^a Z^b` 指数对构造 `QuditPauliWord`/`QuditPauliOperator`，并编译 qudit dense、COO/CSR、native MVP 和 backend plan。该方向位于现有 qubit symmetry、propagation 与 gradient 路线之后；phase convention、支持的 local dimension 范围和 uniform/mixed-radix 边界必须在实现前单独冻结，当前 Phase 2 不越界实现。
 
@@ -112,10 +124,10 @@ A native-only regression workload now extends the coverage to 128 qubits and 12 
 
 ## Next actions
 
-1. Keep the Phase 2/3 regression, property, and benchmark workloads stable; do not re-open the resolved row-sign, best-effort memory semantics, U1 width boundary, propagation recurrence, or serialization decisions without a new owner decision.
-2. Hand the stable `GateTape`/`PropagationEngine` handles, parameter-slot semantics, local derivative-ready gate rules, and product-state reduction to the next gradient phase. Do not add placeholder gradient APIs or SPPS behavior to the Phase 3 surface.
-3. Treat cross-call scratch reuse, parallel propagation, the full benchmark matrix, and packed public materialization as benchmark-driven follow-ups. Any optimization must retain the independent dense differential tests and release end-to-end evidence, including the Python/Rust boundary.
-4. Treat public canonicalization boundary work as a separate performance follow-up unless new profiling shows it directly dominates propagation setup; prefer the existing coarse-grained native handle and a measured packed boundary over lower-value FFI micro-optimization.
+1. Run the full `python scripts/check.py --benchmark smoke` gate after the final Rust/Python edits and repeat the optional read-only TensorCircuit/JAX comparison.
+2. Record a named release benchmark label with `python benchmarks/run.py record --suite all`, then compare the Phase 4 workload against that label on the same machine; keep `.benchmarks/` and raw profiles untracked.
+3. Audit the final public docs/typing/packaging surface and preserve the explicit distinction between frozen-support deterministic gradients, unbiased fixed-budget SPPS estimates, and adaptive empirical proxies.
+4. Keep Phase 1–4 regression and benchmark workload definitions stable; any further optimization must be profile-backed and correctness-gated.
 
 ## Scheduled future phases
 

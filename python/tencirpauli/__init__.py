@@ -28,8 +28,10 @@ from .propagation import (
     ProfiledExpectation,
     PropagationEngine,
     PropagationProfile,
+    PropagationValueAndGradient,
     ZeroState,
 )
+from .spps import SPPSEngine, SPPSEstimate
 from .symmetry import (
     U1MvpPlan,
     U1RestrictedOperator,
@@ -59,7 +61,10 @@ __all__ = [
     "ProfiledExpectation",
     "PropagationEngine",
     "PropagationProfile",
+    "PropagationValueAndGradient",
     "QWCGroupingResult",
+    "SPPSEngine",
+    "SPPSEstimate",
     "U1MvpPlan",
     "U1RestrictedOperator",
     "U1Sector",

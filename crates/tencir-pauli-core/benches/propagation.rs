@@ -3,7 +3,7 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tencir_pauli_core::{
     Clifford1, Clifford2, Complex64, GateOperation, ParameterRef, PauliOperator, ProductState,
-    PropagationEngine, RotationAxis,
+    PropagationEngine, RotationAxis, SPPSEngine,
 };
 
 fn observable(nqubits: usize, count: usize) -> PauliOperator {
@@ -146,12 +146,76 @@ fn benchmark_tapes(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_value_and_gradient(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("propagation/value_and_gradient");
+    let mut operations = Vec::new();
+    for layer in 0..3 {
+        for wire in 0..12 {
+            operations.push(
+                GateOperation::rotation(
+                    12,
+                    RotationAxis::Y,
+                    wire,
+                    None,
+                    ParameterRef::Slot(wire % 2),
+                )
+                .unwrap(),
+            );
+        }
+        for wire in (layer % 2..11).step_by(2) {
+            operations.push(GateOperation::clifford2(12, Clifford2::Cnot, wire, wire + 1).unwrap());
+        }
+    }
+    let engine = PropagationEngine::new(
+        12,
+        operations,
+        observable(12, 12),
+        ProductState::Zero,
+        Some(3),
+        None,
+    )
+    .unwrap();
+    for interval in [1_usize, 4, 16] {
+        group.bench_with_input(
+            BenchmarkId::new("deterministic", format!("12q_interval_{interval}")),
+            &interval,
+            |bencher, interval| {
+                bencher.iter(|| {
+                    black_box(
+                        engine
+                            .value_and_grad(&[0.13, -0.21], Some(*interval))
+                            .unwrap(),
+                    )
+                })
+            },
+        );
+    }
+
+    let spps = SPPSEngine::new(
+        12,
+        vec![
+            GateOperation::rotation(12, RotationAxis::Y, 0, None, ParameterRef::Slot(0)).unwrap(),
+            GateOperation::rotation(12, RotationAxis::Z, 1, None, ParameterRef::Slot(1)).unwrap(),
+        ],
+        observable(12, 12),
+        ProductState::Zero,
+        0.01,
+        None,
+    )
+    .unwrap();
+    group.throughput(Throughput::Elements(256));
+    group.bench_function("spps_12q_12terms_256paths", |bencher| {
+        bencher.iter(|| black_box(spps.value_and_grad(&[0.13, -0.21], 256, 7).unwrap()))
+    });
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(300))
         .measurement_time(Duration::from_secs(1))
         .sample_size(30);
-    targets = benchmark_local_kernels, benchmark_tapes
+    targets = benchmark_local_kernels, benchmark_tapes, benchmark_value_and_gradient
 }
 criterion_main!(benches);

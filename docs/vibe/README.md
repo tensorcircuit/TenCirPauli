@@ -10,6 +10,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 - [Phase 1 implementation specification](phase-1-spec.md): bounded milestones, required deliverables, non-goals, acceptance gates, and completion checklist for the first implementation goal.
 - [Phase 2 symmetry/sector Spike](phase-2-spec.md): background, concrete Python API, Z2 analysis and tapering, explicit U1 sector reduction, implementation slices, and end-to-end acceptance semantics.
 - [Phase 3 Rust-native propagation specification](phase-3-spec.md): frozen propagation semantics, GateTape and Python API, real PTM contract, dynamic Rust implementation plan, performance requirements, benchmarks, milestones, and handoff boundaries.
+- [Phase 4 frozen-support reverse and SPPS specification](phase-4-spec.md): frozen deterministic sparse-trace reverse semantics, SPPS sampling/PAD contracts, public APIs, checkpointing, seeded parallelism, benchmarks, milestones, and integration boundaries.
 - [Implementation status](implementation-status.md): durable progress, verification evidence, decisions, blockers, and the next milestone for long-running agents.
 - [Local benchmarking](benchmarking.md): microbenchmarks, integration benchmarks, local result history, and manual regression comparison.
 - [Phase 1 review notes](phase-1-review-notes.md): implementation gaps, performance findings, and owner decisions awaiting review.

@@ -6,7 +6,7 @@
 
 TenCirPauli 围绕 Pauli 代数、Pauli 算符、Hamiltonian 生成、对称性分析和 Pauli propagation 建立一个可选的 Rust 原生扩展。它不替代 TensorCircuit 的 tensor backend，也不把通用量子线路数值计算搬到 Rust。Rust 负责离散、bit-packed、CPU 密集且适合批量执行的结构化工作；JAX、TensorFlow、PyTorch 和 NumPy 继续负责需要 backend tensor、自动微分或加速器执行的数值工作。
 
-项目采用两种互补执行模式：Rust-native 模式在 CPU 上完成动态 Pauli operator propagation，并在后续阶段同时提供两类原生梯度，即对 weight-projected recurrence 精确求导的确定性梯度，以及从完整 Pauli path 空间采样得到的 SPPS 无偏随机梯度；backend-plan 模式由 Rust 生成稳定的代数、Hamiltonian 和 measurement plan，再由 `tc.backend` 执行需要多 backend、JIT 或加速器的数值计算。两类梯度针对不同数学目标，均为 REQUIRED 能力，不能互相替代。
+项目采用两种互补执行模式：Rust-native 模式在 CPU 上完成动态 Pauli operator propagation，并在 Phase 4 同时提供两类原生梯度，即只对当次非零 sparse forward trace 求导的 deterministic frozen-support reverse，以及从完整 Pauli path 空间采样得到的 SPPS 随机 value-and-gradient；backend-plan 模式由 Rust 生成稳定的代数、Hamiltonian 和 measurement plan，再由 `tc.backend` 执行需要多 backend、JIT 或加速器的数值计算。两类梯度针对不同执行合同，均为 REQUIRED 能力，不能互相替代。
 
 建议首先实现 Pauli 核心表示、算符规范化、measurement grouping、Hamiltonian matrix/MVP plan 和基准体系，然后实现 forward-only Rust-native Pauli propagation。对称性分析和两类原生梯度在核心语义稳定后增加。性能工作不设置固定倍数的停止或淘汰门槛；每个阶段都必须以同步后的 Python/JAX warm-JIT steady runtime 为主要对照持续 profile 和优化，同时分别保留 setup、cold execution、memory 与 correctness evidence。
 
@@ -31,7 +31,7 @@ TenCirPauli 的核心技术壁垒不是单个 bit operation，而是一套与 Te
 - 快速生成 dense、COO/CSR、matrix-free MVP 和 symmetry-restricted Hamiltonian plan。
 - 支持 Z2 Pauli symmetry 的发现、验证、sector 选择和 tapering；为显式给定粒子数守恒的 U(1) sector 提供 restricted basis 与 operator plan。
 - 提供一个统一的动态 Pauli propagation recurrence；Clifford gate 自然走不分支的 exact fast path，`max_weight` 决定是否在聚合后应用 Pauli-weight projection。
-- 提供无需 JAX tracing 的 Rust-native forward 路径，并在后续阶段同时提供 projected-recurrence deterministic gradient 与 SPPS unbiased stochastic gradient。
+- 提供无需 JAX tracing 的 Rust-native forward 路径，并在后续阶段同时提供 deterministic frozen-support reverse gradient 与 SPPS stochastic value-and-gradient。
 - 提供 backend-plan 路径，使结构计算离开 JIT hot path，同时保留 `tc.backend` 数值执行和自动微分。
 - 保持核心 TensorCircuit 纯 Python 安装可用；Rust 扩展作为显式可选依赖发布。
 
@@ -140,9 +140,9 @@ Propagation 采用 Heisenberg picture，对 GateTape 逆序执行。公开语义
 
 Dynamic operator 默认使用 hash aggregation，并在公开输出或序列化前按 canonical key 确定性排序。并行传播可以为每个 worker 建立局部 map，再执行 deterministic merge，避免对全局 map 的高争用。`max_weight` 是 Pauli word 的结构属性，不依赖连续参数值，因此 weight projection 可以作为传播递推中的固定线性投影参与求导。Clifford fast path、exact propagation 和 weight-projected propagation 是同一 recurrence 的自然特例，而不是三套公开执行模式。
 
-Phase 3 不提供 coefficient-magnitude cutoff。参数依赖的 coefficient pruning 会让保留路径随连续参数变化，并使 forward 与 gradient 语义不稳定；结构性近似只使用参数无关的 Pauli-weight projection。
+Phase 3 不提供 coefficient-magnitude cutoff。Phase 4 deterministic reverse显式冻结当次动态稀疏forward trace，并沿用exact-zero removal；这不是可调coefficient cutoff，也不声称等于support-change point的fixed-basis AD。结构性近似仍只使用公开的Pauli-weight projection。
 
-第一批 native gate 支持为固定 Clifford gates，以及 `rx`、`ry`、`rz`、`rxx`、`ryy`、`rzz`。通用 one- or two-qubit local map 可以通过显式 PTM 输入进入 forward-only recurrence，但在没有 derivative rule 时不能进入 deterministic gradient API，也不能自动进入 SPPS。
+第一批 native gate 支持为固定 Clifford gates，以及 `rx`、`ry`、`rz`、`rxx`、`ryy`、`rzz`。Static one- or two-qubit real PTM可以通过显式输入进入forward recurrence，并以固定transpose/VJP进入deterministic reverse；它没有parameter gradient，也不能自动进入SPPS。
 
 PTM 使用 Hermitian Pauli basis `I/X/Y/Z`。若 local map 保持 Hermiticity，则 `R_ab = 2**(-m) Tr[P_a E(P_b)]` 必为实数；负值是正常的实数系数，不意味着需要 complex PTM。Phase 3 公开 custom PTM API 只接受 finite real `float64` arrays，complex dtype 明确失败。Complex entries 只对应非 Hermiticity-preserving 的一般线性 Pauli map、非 Hermitian basis，或数值噪声；未来若有真实需求，必须另设不宣称物理 PTM 的 complex linear-Pauli-map API。
 
@@ -168,25 +168,23 @@ Backend-plan 模式由 Rust 完成 basis、canonicalization、transition table�
 
 第一阶段 native propagation 只保证 value correctness。需要梯度的用户继续使用 backend-plan 或现有 `tensorcircuit.pauliprop`。这样可以先验证 Rust 数据模型、传播语义和性能，不把 AD 实现变成项目启动的阻塞条件。
 
-### 10.2 Projected-recurrence deterministic gradient
+### 10.2 Deterministic frozen-support reverse gradient
 
-第一类 native gradient 对受支持 Pauli rotations 使用解析 PTM derivative。Hamiltonian coefficient 的梯度利用线性结构直接计算。多参数线路优先实现 reverse mode，并允许 checkpoint interval 控制保存中间 Pauli operators 与重计算之间的权衡；参数很少时可以提供 forward sensitivity mode。
+第一类 native gradient 对受支持 Pauli rotations 使用解析 local derivative，并对给定参数下实际执行的dynamic sparse trace手写reverse mode。Forward未生成、local multiplier严格为零、聚合后严格抵消或被`max_weight`删除的term/contribution不进入反向；support decisions作为frozen control flow，不求导。
 
-令一次反向线路传播写成 `s[r + 1] = Projection_k(M_r(theta_r) s[r])`，其中 `Projection_k` 只根据 Pauli weight 删除 `w(P) > k` 的 basis terms。由于该投影与参数值无关，truncated model 对参数仍然可以正常求导。Reverse mode 保存或重算 `s[r]`，并使用 local PTM derivative 计算 `dE/dtheta_r = lambda[r + 1]^T Projection_k(dM_r/dtheta_r s[r])`，再传播 `lambda[r] = M_r(theta_r)^T Projection_k(lambda[r + 1])`。
+对retained edge，reverse mode保存或checkpoint/replay输入sparse states，计算`gradient[p] += input_coefficient * edge_derivative * output_adjoint`和`lambda_input += edge_multiplier * lambda_output`。多个gates引用同一parameter slot时确定性累加。Static custom PTM使用固定transpose/VJP且不产生parameter gradient。
 
-对 `rx`、`ry`、`rz`、`rxx`、`ryy`、`rzz` 等 Pauli rotations，直接实现解析 conjugation 和 derivative rule，不通过通用 Rust autodiff crate 对 hash map 程序求导。多个 gates 引用同一 parameter slot 时，其梯度贡献确定性累加。即使某个角度当前为零，也不能因为对应 branch coefficient 为零而删除其 derivative path；只有 parameter-independent 的 Pauli weight projection 可以进入保证正确的 gradient 路径。
-
-该梯度对指定 `max_weight` 的 projected recurrence 是确定且精确的，但当 `max_weight < nqubits` 时，一般相对未截断 circuit objective 存在系统性偏差。实现与研究必须同时报告两种误差：对同一 projected recurrence 的实现误差，以及相对 exact objective 的 truncation-induced gradient bias。后者至少研究 gradient norm error、方向/cosine error、optimization trajectory deviation，以及它们随 `max_weight`、线路深度、rotation angles、observable locality 和 term-growth profile 的变化；不得把“对截断模型精确”表述成“对原始模型无偏”。
+该结果在一般固定support区域等价于相应sparse arithmetic的解析反向，但在trigonometric zero、exact cancellation、underflow-to-zero等support-change point不声称等于dense/fixed-basis AD或相邻参数极限。Phase 4不实现production parameter shift、forward sensitivity、通用Rust AD，也不承担相对exact objective的bias或optimization-trajectory研究；完整合同见`phase-4-spec.md`。
 
 ### 10.3 SPPS unbiased stochastic value-and-gradient
 
 第二类 native gradient 实现 arXiv:2607.17804 的 stochastic Pauli-path simulator（SPPS）。SPPS 不构造或截断完整传播树，而是对每个 observable Pauli term 从完整 legal path space 逐 gate 采样一条路径；Clifford/commuting steps 确定性前进，反对易 Pauli rotation 按平滑后的 cosine/sine branch probability 采样。每条路径通过 importance reweighting 贡献无偏 value estimate，并通过 numerically stable path automatic differentiation（PAD）从同一路径贡献所有 active parameter gradients。
 
-SPPS 必须支持 fixed sample budget 与基于两个独立 macro-replicates 的 adaptive A/B gradient-error proxy，提供显式 random seed、可复现的确定性调度选项、最大 sample budget、并行 path batching，以及零点附近采用 prefix/suffix products 的稳定 PAD。对多项 observable，第一版按 Pauli term 独立采样并线性组合；observable-term sampling 或 correlated sampling 只有在另行证明无偏性后才能加入。
+SPPS 必须支持 fixed sample budget 与基于两个独立 macro-replicates 的 adaptive A/B gradient-error proxy，提供显式 random seed、可复现的确定性调度、最大 sample budget、并行 path batching，以及零点附近采用 prefix/suffix products 的稳定 PAD。对多项 observable，第一版按 Pauli term 独立采样并线性组合；observable-term sampling 或 correlated sampling 不属于Phase 4。
 
 SPPS 首版只承诺 Clifford gates 与具有论文所需二分 trigonometric branch rule 的参数化 Pauli rotations。任意 custom PTM 不会仅因 forward recurrence 可用而自动获得 SPPS 支持；它还必须显式提供合法 transition sampling distribution、importance weight、parameter derivative 和稳定 local PAD rule。
 
-Projected-recurrence deterministic gradient 与 SPPS gradient 都是 REQUIRED。前者提供确定性、可重复且针对近似 recurrence 的精确导数，后者提供相对完整 path expansion 的无偏随机估计但带有 sampling variance。测试、文档和 benchmark 必须并列呈现二者的目标、偏差、方差、运行时间和适用范围，不能将一者描述为另一者的替代品。
+Deterministic frozen-support reverse与SPPS都为REQUIRED。前者提供确定、可重复且高性能的executed sparse-trace反向；后者的fixed-budget mode提供相对完整path expansion的无偏随机估计但带有sampling variance。测试、文档和benchmark必须分别验证各自合同、runtime和memory，不能把一者描述为另一者的替代品。
 
 初期不使用 Python callback 把 Rust native engine 强行包装进 JAX `jit`。只有在 native gradient 稳定且存在明确需求时，才评估 JAX custom call/custom VJP；这属于独立工程，不作为本项目成功的必要条件。
 
@@ -312,9 +310,9 @@ maturin --version
 - `max_weight=None` 或 `max_weight >= nqubits` 的统一 recurrence 与 dense state expectation 一致。
 - 有限 `max_weight` 的统一 recurrence 严格执行 duplicate aggregation 后再应用 Pauli weight projection，不包含 fixed buffer、top-k 或 coefficient cutoff。
 - Rust 与现有 `PauliPropagationEngine` 在相同 Pauli weight cutoff 下比较 value；现有 `SparsePauliPropagationEngine` 只作为独立性能参考，不要求复制其 truncation 语义。
-- projected-recurrence deterministic gradient 与 TensorCircuit/JAX 对同一个 weight-projected recurrence 的 gradient 在小系统比较，并独立量化它相对 exact objective 的 gradient bias。
-- SPPS value/gradient 在可 exact 枚举的小系统上验证 empirical unbiasedness、variance scaling、fixed-seed reproducibility、A/B proxy behavior 和 trigonometric zero 附近的 stable PAD。
-- 零角度 Pauli rotation、共享 parameter slots 和 weight boundary transitions 均有专门 gradient tests。
+- deterministic frozen-support reverse与独立sparse-trace reference在小系统比较；generic nonsingular fixtures可用外部Python parameter-shift helper交叉验证。
+- SPPS value/gradient在可exact枚举的小系统上验证proposal-weighted estimator、fixed-seed reproducibility、A/B proxy behavior和trigonometric zero附近的stable PAD。
+- 零角度Pauli rotation对deterministic与SPPS分别验证各自不同合同；共享parameter slots和weight boundary transitions有专门tests。
 - fuzz 随机 Pauli sums、随机 Clifford/rotation tapes 和随机 qubit ordering。
 
 ## 15. Benchmark 设计与性能策略
@@ -331,7 +329,7 @@ maturin --version
 
 使用现有 12-qubit TFIM dense PPE、2D Heisenberg 和 100-qubit Pauli propagation 示例的线路与 Hamiltonian 作为起点，但统一改用 `max_weight` 配置。增加 Clifford-heavy、Pauli-rotation-heavy、duplicate-heavy 和不同 weight-growth profile 的 workload。
 
-传播性能的主要基线是同步后的 JAX CPU warm-JIT steady runtime；非 JIT Python、JAX trace/compile、first execution、one-shot end-to-end、peak memory 和 result error 分开记录，但不能用 cold compile 优势替代 steady-runtime 对比。Python 调 Rust 的 steady benchmark 必须复用 native tape/operator handle，只在热调用中传递参数和返回 scalar 或 gradient；完整 operator 只在显式请求时跨 FFI。Projected deterministic gradient 与 SPPS 分别对照其等价 Python/JAX reference，并同时报告 SPPS sample budget、variance/proxy、parallel scaling 和 optimization-level accuracy-runtime trade-off。
+传播性能的主要基线是同步后的 JAX CPU warm-JIT steady runtime；非 JIT Python、JAX trace/compile、first execution、one-shot end-to-end、peak memory 和 result validation 分开记录，但不能用 cold compile 优势替代 steady-runtime 对比。Python 调 Rust 的 steady benchmark 必须复用 native tape/operator handle，只在热调用中传递参数和返回 scalar 或 gradient；完整 operator 只在显式请求时跨 FFI。Deterministic frozen-support reverse在generic fixed-support fixtures对照matched JAX/reference；SPPS报告sample budget、paths/s、proxy和parallel scaling，不要求optimization-level研究。
 
 ### 15.3 Symmetry
 
@@ -357,7 +355,7 @@ maturin --version
 
 ### 阶段四：双梯度引擎与 TensorCircuit integration
 
-同时实现两类 REQUIRED gradient。第一类为 projected-recurrence deterministic gradient：对受支持 rotation gates 实现 analytic derivative、reverse mode 和 checkpointing，并系统研究其相对 exact objective 的 gradient bias 与 optimization trajectory deviation。第二类为 arXiv:2607.17804 SPPS：实现 sequential path sampling、importance reweighting、stable PAD、fixed/adaptive sample budgets、A/B proxy、seeded reproducibility 和 parallel path batching，并验证相对完整 path objective 的 empirical unbiasedness 与 variance。两类引擎稳定后增加 `tc.pauli` adapter、文档、examples 和迁移指南；是否开发 JAX custom call 另行立项。
+同时实现两类REQUIRED gradient。第一类为deterministic frozen-support reverse：对受支持rotation gates实现analytic local VJP、reverse mode和checkpointing，只反传当次forward实际保留的nonzero sparse trace。第二类为arXiv:2607.17804 SPPS：实现sequential path sampling、importance reweighting、stable PAD、fixed/adaptive sample budgets、A/B proxy、seeded reproducibility和parallel path batching。完成TenCirPauli侧optional TensorCircuit QIR/SymbolCircuit adapter、文档和examples；不开发JAX custom call，也不加入bias/optimization-trajectory研究。
 
 ### 阶段五：64+ qubit multiword U1 Hamiltonian engine
 
@@ -381,15 +379,15 @@ maturin --version
 
 ### 17.1 Term explosion
 
-非 Clifford gate 会让 Pauli term 数指数增长。Rust 只能降低常数，不能改变复杂度。确定性 recurrence 的结构控制只使用 `max_weight` 与宽松的 best-effort 16 GiB memory budget，不使用 coefficient cutoff；不得用性能语言掩盖 weight projection 的近似误差。SPPS 不构造完整传播树，但其 sampling variance 和所需 sample count 仍可随有效 branching factor 快速增长。
+非 Clifford gate 会让 Pauli term 数指数增长。Rust 只能降低常数，不能改变复杂度。Deterministic forward/reverse的公开结构控制只使用`max_weight`与宽松的best-effort 16 GiB memory budget，不使用可调coefficient cutoff；它显式沿用exact-zero sparse removal和frozen-support反向。SPPS不构造完整传播树，但其sampling variance和所需sample count仍可随有效branching factor快速增长。
 
 ### 17.2 Native gradient 实现复杂度
 
-Rust 不具备现成的 TensorCircuit backend AD graph。Projected deterministic gradient 必须维护 local VJP、parameter-slot accumulation、checkpoint 和 term aggregation 的反向映射；控制措施是只支持有解析 derivative rule 的 Pauli rotations，把 parameter-independent 的 Pauli weight projection 纳入明确递推，并对通用 PTM 要求同时提供 derivative PTM。SPPS 必须另外维护 sampling distribution、importance weights、stable PAD、randomness 和 variance/proxy 语义；custom PTM 只有在具备完整 sampling 与 derivative contract 时才进入 SPPS。
+Rust 不具备现成的 TensorCircuit backend AD graph。Deterministic frozen-support reverse必须维护retained-edge local VJP、parameter-slot accumulation、checkpoint和term aggregation的反向映射；控制措施是复用实际forward trace、只对Pauli rotations求parameter derivative，并让static PTM仅使用固定transpose/VJP。SPPS必须另外维护sampling distribution、importance weights、stable PAD、randomness和proxy语义；custom PTM不进入Phase 4 SPPS。
 
 ### 17.3 SPPS variance 与复现性
 
-SPPS 的无偏性不等于低方差或任意线路上的高效率。控制措施是同时提供 fixed budget 与 adaptive A/B proxy、显式最大 sample budget、seeded deterministic replay、独立 exact small-system statistical tests，以及按 circuit depth、angle distribution、observable term count 和 effective branching profile 报告 variance/scaling。并行实现不得因线程调度改变同一 deterministic-replay 配置的结果。
+SPPS 的无偏性不等于低方差或任意线路上的高效率。控制措施是同时提供fixed budget与adaptive A/B proxy、显式最大sample budget、seeded deterministic replay和独立exact small-system path-enumeration tests；性能记录budget、paths/s、memory和parallel scaling，不扩展为variance规律研究。并行实现不得因线程调度改变同一deterministic-replay配置的结果。
 
 ### 17.4 与 TensorCircuit 语义漂移
 
@@ -409,9 +407,9 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 
 ## 19. 关键开放问题
 
-- 参数化 GateTape 由显式 builder、`SymbolCircuit` adapter 还是新的 QIR parameter reference 生成。
-- Projected deterministic gradient 的 checkpoint/recomputation 策略，以及 gradient-bias study 的标准 workload、方向误差和 optimization-trajectory 指标。
-- SPPS 首版 fixed/adaptive sample-budget API、A/B proxy tolerance、observable-term scheduling 和 deterministic parallel RNG contract。
+- Phase 4之后是否需要上游TensorCircuit增加`tc.pauli`入口；Phase 4只实现TenCirPauli侧optional QIR/SymbolCircuit adapter。
+- Deterministic frozen-support reverse的auto checkpoint heuristic可按profile演进，但显式interval和结果语义已由Phase 4 spec冻结。
+- SPPS后续是否增加adaptive smoothing、observable-term sampling或correlated sampling；这些均不属于Phase 4。
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
 - Backend MVP plan 的 portable integer dtype 如何兼容 JAX 默认关闭 int64、TensorFlow 和 PyTorch。
 - 64+ qubit U1 restricted Hamiltonian 使用何种 packed multiword basis key、combinatorial rank/lookup 和 transition storage，并如何在 low-particle-number workload 上验证其相对 Python/TensorCircuit 的收益。

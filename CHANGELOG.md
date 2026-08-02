@@ -6,6 +6,10 @@ The project follows Semantic Versioning once the public API reaches its first ta
 
 ## Unreleased
 
+- Add Phase 4 Rust-native frozen-support reverse gradients with analytic local VJPs, shared parameter slots, checkpoint replay, static PTM transpose action, typed Python results, and deterministic differential tests.
+- Add the independent Rust-native SPPS engine with smoothed importance sampling, stable prefix/suffix PAD, fixed and adaptive A/B budgets, counter-derived seeded replay, streamed fixed-chunk Rayon batching, typed estimates, and explicit unsupported-gate validation.
+- Add Phase 4 release Criterion/Python workloads and optional end-to-end comparisons against the TensorCircuit `spps_pauli_path_vqe.py` example and `PauliPropagationEngine` plus JAX `value_and_grad`.
+- Add the optional TensorCircuit QIR/SymbolCircuit-to-`GateTape` adapter for supported numeric and direct-symbol Clifford/Pauli-rotation circuits.
 - Add the Rust-native `GateTape`/`PropagationEngine` with exact and per-gate Pauli-weight-projected Heisenberg propagation, supported Clifford and Pauli-rotation gates, finite real custom PTMs, product-state expectations, explicit operator materialization, typed parameter slots, and profile metadata.
 - Add the independent Phase 3 dense propagation reference, differential/boundary tests, 100-qubit packed-key coverage, release Criterion/Python workloads, and synchronized complex128 JAX warm-reference comparison.
 - Implement Phase 2 Pauli Z2 symmetry analysis, reusable Clifford tapering plans, explicit U(1) fixed-particle sectors, restricted MVP/CSR operators, public typed APIs, and deterministic setup/apply benchmark workloads.
