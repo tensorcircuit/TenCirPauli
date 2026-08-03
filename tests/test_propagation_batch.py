@@ -160,6 +160,20 @@ def test_batch_memory_budget_limits_expanding_rows_to_safe_concurrency() -> None
     np.testing.assert_array_equal(result, result[0])
 
 
+def test_batch_rejects_budget_smaller_than_one_worker_at_construction() -> None:
+    tape = tcp.GateTape(12)
+    for layer in range(4):
+        for wire in range(12):
+            tape.ry(wire, parameter=layer * 12 + wire)
+    observable = tcp.PauliOperator(12, [([3] * 12, 1.0)])
+    with pytest.raises(MemoryError, match="memory limit"):
+        tcp.PropagationBatch(
+            tape,
+            [observable] * 16,
+            max_bytes=100_000,
+        )
+
+
 def test_batch_concurrent_calls_are_isolated() -> None:
     tape = _tape()
     batch = tcp.PropagationBatch(tape, _observables(16))

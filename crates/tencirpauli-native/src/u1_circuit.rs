@@ -164,15 +164,17 @@ impl NativeU1CircuitPlan {
         let parameters = parameters
             .as_slice()
             .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
-        let observable = build_canonical_operator(
-            self.plan.nqubits(),
-            &structures,
-            &coefficients_re,
-            &coefficients_im,
-        )?;
-        let value = py
-            .allow_threads(|| self.plan.expectation(initial, &observable, parameters))
-            .map_err(map_error)?;
+        let value = py.allow_threads(|| -> PyResult<_> {
+            let observable = build_canonical_operator(
+                self.plan.nqubits(),
+                &structures,
+                &coefficients_re,
+                &coefficients_im,
+            )?;
+            self.plan
+                .expectation(initial, &observable, parameters)
+                .map_err(map_error)
+        })?;
         Ok((value.re, value.im))
     }
 
@@ -192,15 +194,17 @@ impl NativeU1CircuitPlan {
         let parameters = parameters
             .as_slice()
             .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
-        let observable = build_canonical_operator(
-            self.plan.nqubits(),
-            &structures,
-            &coefficients_re,
-            &coefficients_im,
-        )?;
-        let (value, gradient) = py
-            .allow_threads(|| self.plan.value_and_grad(initial, &observable, parameters))
-            .map_err(map_error)?;
+        let (value, gradient) = py.allow_threads(|| -> PyResult<_> {
+            let observable = build_canonical_operator(
+                self.plan.nqubits(),
+                &structures,
+                &coefficients_re,
+                &coefficients_im,
+            )?;
+            self.plan
+                .value_and_grad(initial, &observable, parameters)
+                .map_err(map_error)
+        })?;
         Ok((value, PyArray1::from_vec(py, gradient)))
     }
 }
@@ -241,15 +245,17 @@ impl NativeU1FinalState {
         coefficients_re: Vec<f64>,
         coefficients_im: Vec<f64>,
     ) -> PyResult<(f64, f64)> {
-        let observable = build_canonical_operator(
-            self.plan.nqubits(),
-            &structures,
-            &coefficients_re,
-            &coefficients_im,
-        )?;
-        let value = py
-            .allow_threads(|| self.plan.expectation_from_state(&self.state, &observable))
-            .map_err(map_error)?;
+        let value = py.allow_threads(|| -> PyResult<_> {
+            let observable = build_canonical_operator(
+                self.plan.nqubits(),
+                &structures,
+                &coefficients_re,
+                &coefficients_im,
+            )?;
+            self.plan
+                .expectation_from_state(&self.state, &observable)
+                .map_err(map_error)
+        })?;
         Ok((value.re, value.im))
     }
 
@@ -261,18 +267,17 @@ impl NativeU1FinalState {
         coefficients_re: Vec<f64>,
         coefficients_im: Vec<f64>,
     ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
-        let observable = build_canonical_operator(
-            self.plan.nqubits(),
-            &structures,
-            &coefficients_re,
-            &coefficients_im,
-        )?;
-        let (value, gradient) = py
-            .allow_threads(|| {
-                self.plan
-                    .value_and_grad_from_state(&self.state, &observable, &self.parameters)
-            })
-            .map_err(map_error)?;
+        let (value, gradient) = py.allow_threads(|| -> PyResult<_> {
+            let observable = build_canonical_operator(
+                self.plan.nqubits(),
+                &structures,
+                &coefficients_re,
+                &coefficients_im,
+            )?;
+            self.plan
+                .value_and_grad_from_state(&self.state, &observable, &self.parameters)
+                .map_err(map_error)
+        })?;
         Ok((value, PyArray1::from_vec(py, gradient)))
     }
 }

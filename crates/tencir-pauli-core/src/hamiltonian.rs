@@ -164,6 +164,16 @@ impl MvpPlan {
         max_bytes: u128,
     ) -> Result<Vec<Complex64>, PauliError> {
         let dimension = matrix_dimension(self.nqubits)?;
+        if state.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: state.len(),
+            });
+        }
+        check_allocation(
+            dimension as u128 * size_of::<Complex64>() as u128,
+            max_bytes,
+        )?;
         let mut result = vec![Complex64::default(); dimension];
         self.apply_into(state, &mut result, max_bytes)?;
         Ok(result)

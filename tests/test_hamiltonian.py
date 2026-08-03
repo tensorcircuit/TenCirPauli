@@ -87,6 +87,15 @@ def test_backend_plan_has_versioned_arrays_and_independent_numpy_executor() -> N
     assert plan.x_words.dtype == np.uint64
     assert plan.z_words.dtype == np.uint64
     assert plan.coefficients.dtype == np.complex128
+    assert plan.x_words.flags.c_contiguous and not plan.x_words.flags.writeable
+    assert plan.z_words.flags.c_contiguous and not plan.z_words.flags.writeable
+    assert (
+        plan.coefficients.flags.c_contiguous and not plan.coefficients.flags.writeable
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        plan.x_words[0, 0] = 0
+    with pytest.raises(ValueError, match="read-only"):
+        plan.coefficients[0] = 0
     state = np.random.default_rng(20260801).normal(size=8) + 1j * np.random.default_rng(
         7
     ).normal(size=8)
@@ -156,6 +165,16 @@ def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:
         make_operator(10).dense(max_bytes=1)
     with pytest.raises(OverflowError, match="dimension"):
         PauliOperator.empty(64).dense()
+
+
+def test_mvp_memory_guard_rejects_before_output_materialization() -> None:
+    operator = PauliOperator.empty(20)
+    state = np.zeros(1 << 20, dtype=np.complex128)
+    with pytest.raises(MemoryError, match="requested"):
+        operator.mvp(state, max_bytes=1)
+    plan = operator.native_mvp_plan(max_bytes=1)
+    with pytest.raises(MemoryError, match="requested"):
+        plan.apply(state, max_bytes=1)
 
 
 def test_compile_target_dispatch_is_explicit() -> None:

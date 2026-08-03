@@ -8,7 +8,7 @@ from typing import Any, Sequence, Tuple, Union
 import numpy as np
 
 from . import _native
-from .pauli import PauliOperator
+from .pauli import PauliOperator, _validate_nonnegative_int
 
 
 @dataclass(frozen=True)
@@ -35,13 +35,16 @@ class QWCGroupingResult:
         """Reconstruct eigenvalues for one group from rotated measurement bits."""
         if not 0 <= group_index < len(self.groups):
             raise IndexError(f"group index {group_index} is out of range")
-        values = np.asarray(bitstrings, dtype=np.int8)
-        if values.ndim != 2 or values.shape[1] != self.nqubits:
+        raw_values = np.asarray(bitstrings)
+        if raw_values.ndim != 2 or raw_values.shape[1] != self.nqubits:
             raise ValueError(
-                f"bitstrings must have shape (shots, {self.nqubits}), got {values.shape}"
+                f"bitstrings must have shape (shots, {self.nqubits}), got {raw_values.shape}"
             )
-        if np.any((values != 0) & (values != 1)):
+        if raw_values.dtype.kind not in "biuf" or np.any(
+            (raw_values != 0) & (raw_values != 1)
+        ):
             raise ValueError("bitstrings must contain only 0 and 1")
+        values = np.asarray(raw_values, dtype=np.int8)
         output: np.ndarray[Any, Any] = np.empty(
             (values.shape[0], len(self.groups[group_index])), dtype=np.int8
         )
@@ -78,7 +81,8 @@ def group_operator(
     algorithm: str = "largest_first",
     max_matrix_entries: int = 10_000_000,
 ) -> GroupingResult:
-    """Group canonical operator terms with a deterministic native coloring call."""
+    """Group terms with a deterministic native call and entry bound."""
+    _validate_nonnegative_int(max_matrix_entries, "max_matrix_entries")
     mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
     algorithm_code = {"largest_first": 0, "dsatur": 1}.get(algorithm)
     if mode_code is None:

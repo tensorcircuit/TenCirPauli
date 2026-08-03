@@ -122,6 +122,17 @@ class BackendMVPPlan:
     integer_width: int = 64
     required_operations: Tuple[str, ...] = ("xor", "phase", "scatter_add")
 
+    def __post_init__(self) -> None:
+        """Normalize plan buffers and freeze them after construction."""
+        for name, dtype in (
+            ("x_words", np.uint64),
+            ("z_words", np.uint64),
+            ("coefficients", np.complex128),
+        ):
+            values = np.ascontiguousarray(getattr(self, name), dtype=dtype)
+            values.setflags(write=False)
+            object.__setattr__(self, name, values)
+
     def apply(
         self,
         state: Sequence[complex],

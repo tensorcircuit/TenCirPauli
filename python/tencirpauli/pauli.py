@@ -33,6 +33,11 @@ class PauliPhase(IntEnum):
         return (1.0, 1.0j, -1.0, -1.0j)[int(self)]
 
 
+def _validate_nonnegative_int(value: int, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+
+
 @dataclass(frozen=True)
 class PauliProduct:
     """Result of multiplying two phase-free Pauli words."""
@@ -550,7 +555,8 @@ class PauliOperator:
     def compatibility_matrix(
         self, mode: str = "general", max_entries: int = 10_000_000
     ) -> np.ndarray[Any, Any]:
-        """Return a bounded dense compatibility matrix for canonical terms."""
+        """Return a bounded dense matrix, limited by compatibility entries."""
+        _validate_nonnegative_int(max_entries, "max_entries")
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
@@ -567,7 +573,8 @@ class PauliOperator:
     def incompatibility_edges(
         self, mode: str = "general", max_edges: int = 10_000_000
     ) -> Tuple[Tuple[int, int], ...]:
-        """Return a bounded streaming edge list without dense matrix allocation."""
+        """Return streaming edges, limited by the number of output edges."""
+        _validate_nonnegative_int(max_edges, "max_edges")
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")

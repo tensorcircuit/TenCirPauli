@@ -343,7 +343,7 @@ impl PauliOperator {
         }
         self.terms.iter().all(|term| {
             let difference = term.coefficient - term.coefficient.conj();
-            difference.norm_sqr() <= tolerance * tolerance
+            difference.re.hypot(difference.im) <= tolerance
         })
     }
 

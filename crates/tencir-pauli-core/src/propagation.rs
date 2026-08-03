@@ -537,11 +537,12 @@ impl PropagationBatch {
             per_worker_bytes,
             base_bytes,
         )?;
-        let worker_bytes = active_workers
-            .checked_mul(per_worker_bytes.min(remaining_budget(base_bytes, program.max_bytes)?))
-            .ok_or(PauliError::Overflow {
-                context: "estimating propagation batch worker storage",
-            })?;
+        let worker_bytes =
+            active_workers
+                .checked_mul(per_worker_bytes)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating propagation batch worker storage",
+                })?;
         let shared_bytes = observable_bytes
             .checked_add(program.transition_bytes)
             .and_then(|bytes| bytes.checked_add(output_bytes))
@@ -743,17 +744,31 @@ fn allowed_batch_workers(
     per_worker_bytes: usize,
     base_bytes: usize,
 ) -> Result<usize, PauliError> {
-    let thread_limit = observable_count.min(rayon::current_num_threads());
-    if thread_limit <= 1 || !should_parallelize_batch(program, observable_count, maximum_terms) {
-        return Ok(usize::from(observable_count != 0));
+    if observable_count == 0 {
+        return Ok(0);
     }
     let remaining = remaining_budget(base_bytes, program.max_bytes)?;
+    if per_worker_bytes > remaining {
+        let requested = (base_bytes as u128)
+            .checked_add(per_worker_bytes as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch worker storage",
+            })?;
+        return Err(PauliError::MemoryLimit {
+            requested,
+            limit: program.max_bytes.unwrap_or(u128::MAX),
+        });
+    }
+    let thread_limit = observable_count.min(rayon::current_num_threads());
+    if thread_limit <= 1 || !should_parallelize_batch(program, observable_count, maximum_terms) {
+        return Ok(1);
+    }
     let budget_limit = if per_worker_bytes == 0 {
         thread_limit
     } else {
-        remaining.checked_div(per_worker_bytes).unwrap_or(0).max(1)
+        remaining.checked_div(per_worker_bytes).unwrap_or(0)
     };
-    Ok(thread_limit.min(budget_limit).max(1))
+    Ok(thread_limit.min(budget_limit))
 }
 
 fn remaining_budget(base_bytes: usize, max_bytes: Option<u128>) -> Result<usize, PauliError> {

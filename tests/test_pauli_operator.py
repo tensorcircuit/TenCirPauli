@@ -96,6 +96,14 @@ def test_complex_scaling_and_hermiticity_validation() -> None:
         hermitian.is_hermitian(-1.0)
 
 
+def test_hermiticity_tolerance_uses_stable_norm_at_float_max_boundary() -> None:
+    large_imaginary = PauliOperator.from_terms(1, (("I", 1.7e308j),))
+    assert large_imaginary.is_hermitian(1.0e308) is False
+    near_threshold = PauliOperator.from_terms(1, (("I", 0.25j),))
+    assert near_threshold.is_hermitian(0.5) is True
+    assert near_threshold.is_hermitian(0.49) is False
+
+
 def test_scaling_preserves_zero_free_finite_coefficients() -> None:
     operator = PauliOperator.from_terms(1, (("X", 2.0), ("Z", 1e-300)))
 

@@ -1,6 +1,4 @@
-use numpy::{
-    Complex64 as NumpyComplex128, PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadwriteArray1,
-};
+use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{MvpPlan, MvpStrategy};
@@ -44,18 +42,10 @@ impl NativeMvpPlan {
         let state_slice = state
             .as_slice()
             .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
-        let output_array = PyArray1::zeros(py, state_slice.len(), false);
-        let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
-        let output_slice = writable
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
-        py.allow_threads(|| {
-            self.plan
-                .apply_into(state_slice, output_slice, max_bytes as u128)
-        })
-        .map_err(map_error)?;
-        drop(writable);
-        Ok(output_array)
+        let values = py
+            .allow_threads(|| self.plan.apply(state_slice, max_bytes as u128))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, values))
     }
 }
 
@@ -202,15 +192,10 @@ pub(crate) fn pauli_mvp_array<'py>(
     let state_slice = state
         .as_slice()
         .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
-    let output_array = PyArray1::zeros(py, state_slice.len(), false);
-    let mut writable: PyReadwriteArray1<'_, NumpyComplex128> = output_array.readwrite();
-    let output_slice = writable
-        .as_slice_mut()
-        .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
-    py.allow_threads(|| operator.mvp_into(state_slice, output_slice, max_bytes as u128))
+    let values = py
+        .allow_threads(|| operator.mvp(state_slice, max_bytes as u128))
         .map_err(map_error)?;
-    drop(writable);
-    Ok(output_array)
+    Ok(PyArray1::from_vec(py, values))
 }
 
 #[pyfunction]

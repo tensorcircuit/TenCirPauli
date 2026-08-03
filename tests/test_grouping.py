@@ -51,6 +51,8 @@ def test_qwc_reconstruction_matches_term_eigenvalues() -> None:
     )
     with pytest.raises(ValueError, match="only 0 and 1"):
         result.reconstruct(0, [[2, 0]])
+    with pytest.raises(ValueError, match="only 0 and 1"):
+        result.reconstruct(0, [[0.5, 0.0]])
     with pytest.raises(ValueError, match="shape"):
         result.reconstruct(0, [[0]])
 
@@ -75,6 +77,12 @@ def test_grouping_rejects_unknown_options_and_empty_is_deterministic() -> None:
         PauliOperator.empty(2).group_commuting(mode="invalid")
     with pytest.raises(ValueError, match="algorithm"):
         PauliOperator.empty(2).group_commuting(algorithm="invalid")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        PauliOperator.empty(2).group_commuting(max_matrix_entries=-1)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        PauliOperator.empty(2).compatibility_matrix(max_entries=-1)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        PauliOperator.empty(2).incompatibility_edges(max_edges=True)
     empty = PauliOperator.empty(4).group_commuting()
     assert empty.groups == ()
 

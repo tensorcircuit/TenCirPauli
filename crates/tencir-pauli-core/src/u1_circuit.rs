@@ -1088,17 +1088,24 @@ fn pair_block_matrix(block: &PairBlock, values: &[f64], inverse: bool) -> Matrix
 
 fn apply_pair_matrix(state: &mut [Complex64], pairs: &[PairIndex], matrix: Matrix2) {
     if pairs.len() >= U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD {
-        // Pair construction emits disjoint endpoints: every sector basis state
-        // with one occupied wire in this pair appears exactly once.
         let state_ptr = state.as_mut_ptr() as usize;
-        pairs.par_iter().for_each(|pair| unsafe {
-            let state_ptr = state_ptr as *mut Complex64;
-            let left = *state_ptr.add(pair.zero_one);
-            let right = *state_ptr.add(pair.one_zero);
-            *state_ptr.add(pair.zero_one) =
-                matrix.values[0][0] * left + matrix.values[0][1] * right;
-            *state_ptr.add(pair.one_zero) =
-                matrix.values[1][0] * left + matrix.values[1][1] * right;
+        pairs.par_iter().for_each(|pair| {
+            // SAFETY: `state_ptr` comes from the live mutable `state` slice and
+            // remains valid for the duration of this parallel section. `pair_map`
+            // constructs both endpoints as valid sector indices, and each pair
+            // has distinct endpoints. Its construction enumerates every
+            // assignment of the other wires exactly once, so endpoints from
+            // different pairs are disjoint; parallel workers therefore never
+            // alias a read or write location.
+            unsafe {
+                let state_ptr = state_ptr as *mut Complex64;
+                let left = *state_ptr.add(pair.zero_one);
+                let right = *state_ptr.add(pair.one_zero);
+                *state_ptr.add(pair.zero_one) =
+                    matrix.values[0][0] * left + matrix.values[0][1] * right;
+                *state_ptr.add(pair.one_zero) =
+                    matrix.values[1][0] * left + matrix.values[1][1] * right;
+            }
         });
     } else {
         for pair in pairs {
@@ -1518,4 +1525,54 @@ fn check_budget(bytes: u128, max_bytes: Option<u128>) -> Result<(), PauliError> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_pair_matrix, pair_map, Matrix2, PairIndex, U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD,
+    };
+    use crate::scalar::Complex64;
+    use crate::sector::U1Sector;
+    use std::collections::HashMap;
+
+    #[test]
+    fn large_pair_map_parallel_kernel_matches_serial_reference() {
+        let sector = U1Sector::new(20, 10).expect("valid sector");
+        let dimension = sector.dimension().expect("bounded dimension");
+        let mut cache = HashMap::new();
+        let pairs = pair_map(&sector, 0, 1, &mut cache, None).expect("pair map");
+        assert!(pairs.len() >= U1_CIRCUIT_PARALLEL_PAIR_THRESHOLD);
+
+        let mut seen = vec![false; dimension];
+        for pair in pairs.iter() {
+            assert!(pair.zero_one < dimension);
+            assert!(pair.one_zero < dimension);
+            assert_ne!(pair.zero_one, pair.one_zero);
+            assert!(!seen[pair.zero_one]);
+            assert!(!seen[pair.one_zero]);
+            seen[pair.zero_one] = true;
+            seen[pair.one_zero] = true;
+        }
+
+        let matrix = Matrix2 {
+            values: [
+                [Complex64::new(0.8, 0.1), Complex64::new(-0.2, 0.3)],
+                [Complex64::new(0.4, -0.5), Complex64::new(0.6, 0.2)],
+            ],
+        };
+        let initial = (0..dimension)
+            .map(|index| Complex64::new((index % 17) as f64, (index % 11) as f64))
+            .collect::<Vec<_>>();
+        let mut parallel = initial.clone();
+        let mut serial = initial;
+        apply_pair_matrix(&mut parallel, &pairs, matrix);
+        for PairIndex { zero_one, one_zero } in pairs.iter().copied() {
+            let left = serial[zero_one];
+            let right = serial[one_zero];
+            serial[zero_one] = matrix.values[0][0] * left + matrix.values[0][1] * right;
+            serial[one_zero] = matrix.values[1][0] * left + matrix.values[1][1] * right;
+        }
+        assert_eq!(parallel, serial);
+    }
 }
