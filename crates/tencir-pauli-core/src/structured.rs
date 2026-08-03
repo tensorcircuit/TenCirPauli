@@ -860,12 +860,24 @@ fn fermion_rewrite(
     sequence: Vec<(usize, bool)>,
     max_bytes: u128,
 ) -> Result<BTreeMap<FermionKey, i128>, PauliError> {
-    let branch_count = 1_u128
-        .checked_shl(sequence.len().try_into().unwrap_or(u32::MAX))
-        .unwrap_or(u128::MAX);
-    check_structured_bytes_u128(branch_count, max_bytes, "fermion expansion")?;
+    if sequence.is_empty() {
+        let mut result = BTreeMap::new();
+        result.insert((Vec::new(), Vec::new()), 1);
+        return Ok(result);
+    }
 
-    fn recurse(sequence: &[(usize, bool)]) -> Result<BTreeMap<FermionKey, i128>, PauliError> {
+    // Canonical/no-contraction inputs are common in bulk construction.  They
+    // should not be rejected by a blanket 2**len estimate: the exact result
+    // is one key (or zero for an adjacent nilpotent pair) and no branching is
+    // needed.  The same fast path handles long inversion-only words below.
+    if let Some(result) = canonical_without_contractions(&sequence) {
+        return result;
+    }
+
+    fn recurse(
+        sequence: &[(usize, bool)],
+        max_bytes: u128,
+    ) -> Result<BTreeMap<FermionKey, i128>, PauliError> {
         for index in 0..sequence.len().saturating_sub(1) {
             let (left_mode, left_creation) = sequence[index];
             let (right_mode, right_creation) = sequence[index + 1];
@@ -885,13 +897,16 @@ fn fermion_rewrite(
             let mut swapped = sequence.to_vec();
             swapped.swap(index, index + 1);
             let mut result = BTreeMap::new();
-            add_integer_maps(&mut result, recurse(&swapped)?, -1)?;
+            add_integer_maps(&mut result, recurse(&swapped, max_bytes)?, -1)?;
+            check_structured_bytes_u128(result.len() as u128, max_bytes, "fermion expansion")?;
             if !left_creation && right_creation && left_mode == right_mode {
                 let mut contracted = sequence.to_vec();
                 contracted.drain(index..=index + 1);
-                add_integer_maps(&mut result, recurse(&contracted)?, 1)?;
+                add_integer_maps(&mut result, recurse(&contracted, max_bytes)?, 1)?;
+                check_structured_bytes_u128(result.len() as u128, max_bytes, "fermion expansion")?;
             }
             result.retain(|_, value| *value != 0);
+            check_structured_bytes_u128(result.len() as u128, max_bytes, "fermion expansion")?;
             return Ok(result);
         }
         let creation = sequence
@@ -907,7 +922,109 @@ fn fermion_rewrite(
         Ok(result)
     }
 
-    recurse(&sequence)
+    recurse(&sequence, max_bytes)
+}
+
+/// Return the exact one-key/zero-key result for a non-branching CAR word.
+///
+/// `None` means that a contraction may be reachable and the general rewrite
+/// must be used.  The scan is linear for the ordinary canonical case and the
+/// quadratic inversion count is only used for words whose creation and
+/// annihilation supports are disjoint.
+fn canonical_without_contractions(
+    sequence: &[(usize, bool)],
+) -> Option<Result<BTreeMap<FermionKey, i128>, PauliError>> {
+    let mut canonical = true;
+    for pair in sequence.windows(2) {
+        let (left_mode, left_creation) = pair[0];
+        let (right_mode, right_creation) = pair[1];
+        if left_creation == right_creation && left_mode == right_mode {
+            return Some(Ok(BTreeMap::new()));
+        }
+        let inversion = if left_creation && right_creation {
+            left_mode > right_mode
+        } else if !left_creation && !right_creation {
+            left_mode < right_mode
+        } else {
+            !left_creation && right_creation
+        };
+        if inversion {
+            canonical = false;
+            break;
+        }
+    }
+    if canonical {
+        return Some(Ok(single_canonical_fermion_key(sequence, 1)));
+    }
+
+    let creation_modes: Vec<usize> = sequence
+        .iter()
+        .filter_map(|&(mode, is_creation)| is_creation.then_some(mode))
+        .collect();
+    let annihilation_modes: Vec<usize> = sequence
+        .iter()
+        .filter_map(|&(mode, is_creation)| (!is_creation).then_some(mode))
+        .collect();
+    if creation_modes
+        .iter()
+        .any(|mode| annihilation_modes.iter().any(|other| mode == other))
+    {
+        return None;
+    }
+    if has_duplicate(&creation_modes) || has_duplicate(&annihilation_modes) {
+        return Some(Ok(BTreeMap::new()));
+    }
+
+    let inversions = sequence
+        .iter()
+        .enumerate()
+        .map(|(left_index, &left)| {
+            sequence[left_index + 1..]
+                .iter()
+                .filter(|&&right| fermion_inversion(left, right))
+                .count()
+        })
+        .sum::<usize>();
+    let sign = if inversions & 1 == 0 { 1 } else { -1 };
+    Some(Ok(single_canonical_fermion_key(sequence, sign)))
+}
+
+fn fermion_inversion(left: (usize, bool), right: (usize, bool)) -> bool {
+    let (left_mode, left_creation) = left;
+    let (right_mode, right_creation) = right;
+    if left_creation && right_creation {
+        left_mode > right_mode
+    } else if !left_creation && !right_creation {
+        left_mode < right_mode
+    } else {
+        !left_creation && right_creation
+    }
+}
+
+fn has_duplicate(values: &[usize]) -> bool {
+    values
+        .iter()
+        .enumerate()
+        .any(|(index, value)| values[index + 1..].contains(value))
+}
+
+fn single_canonical_fermion_key(
+    sequence: &[(usize, bool)],
+    coefficient: i128,
+) -> BTreeMap<FermionKey, i128> {
+    let mut creation = sequence
+        .iter()
+        .filter_map(|&(mode, is_creation)| is_creation.then_some(mode as u32))
+        .collect::<Vec<_>>();
+    let mut annihilation = sequence
+        .iter()
+        .filter_map(|&(mode, is_creation)| (!is_creation).then_some(mode as u32))
+        .collect::<Vec<_>>();
+    creation.sort_unstable();
+    annihilation.sort_unstable_by(|left, right| right.cmp(left));
+    let mut result = BTreeMap::new();
+    result.insert((creation, annihilation), coefficient);
+    result
 }
 
 fn boson_rewrite(

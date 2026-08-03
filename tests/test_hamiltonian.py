@@ -84,6 +84,7 @@ def test_backend_plan_has_versioned_arrays_and_independent_numpy_executor() -> N
     assert isinstance(plan, BackendMVPPlan)
     assert plan.schema_version == 1
     assert plan.ordering == "qubit0_msb_matrix"
+    assert plan.estimated_bytes > 0
     assert plan.x_words.dtype == np.uint64
     assert plan.z_words.dtype == np.uint64
     assert plan.coefficients.dtype == np.complex128
@@ -113,6 +114,7 @@ def test_native_mvp_plan_reuses_compiled_masks() -> None:
     assert plan.nqubits == 4
     assert plan.term_count == len(operator.terms)
     assert plan.strategy == "x_mask_diagonal"
+    assert plan.estimated_bytes > 0
     state = np.random.default_rng(20260801).normal(
         size=16
     ) + 1j * np.random.default_rng(7).normal(size=16)

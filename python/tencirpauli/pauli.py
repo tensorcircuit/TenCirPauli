@@ -15,7 +15,13 @@ from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_
 
 if TYPE_CHECKING:
     from .grouping import GroupingResult
-    from .hamiltonian import BackendMVPPlan, COOMatrix, CSRMatrix, NativeMVPPlan
+    from .hamiltonian import (
+        BackendMVPPlan,
+        CompileResult,
+        COOMatrix,
+        CSRMatrix,
+        NativeMVPPlan,
+    )
     from .symmetry import U1RestrictedOperator, U1Sector, Z2SymmetryAnalysis
 
 
@@ -737,6 +743,7 @@ class PauliOperator:
             + 1j * np.asarray(imaginary, dtype=np.float64),
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
+            estimated_bytes=int(len(real) * (word_count * 16 + 16)),
         )
 
     def native_mvp_plan(
@@ -759,6 +766,13 @@ class PauliOperator:
             raise RuntimeError("native MVP plan has incompatible qubit count")
         if native_plan.term_count != len(self.terms):
             raise RuntimeError("native MVP plan has incompatible term count")
+        word_count = (self.nqubits + 63) // 64
+        term_bytes = len(self.terms) * (word_count * 16 + 16)
+        if native_plan.strategy == "x_mask_diagonal":
+            x_masks = {term.word.x_words for term in self.terms}
+            estimated_bytes = term_bytes + len(x_masks) * (1 << self.nqubits) * 16
+        else:
+            estimated_bytes = term_bytes
         return NativeMVPPlan(
             self.nqubits,
             len(self.terms),
@@ -766,10 +780,12 @@ class PauliOperator:
             native_plan,
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
-            estimated_bytes=0,
+            estimated_bytes=estimated_bytes,
         )
 
-    def compile(self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> Any:
+    def compile(
+        self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> "CompileResult":
         """Compile one named Hamiltonian target through the public API."""
         if target == "dense":
             return self.dense(max_bytes=max_bytes)

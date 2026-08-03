@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from itertools import product
 from typing import Dict, List, Tuple
 
@@ -10,6 +11,42 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+
+
+def _record_metadata(
+    benchmark: BenchmarkFixture,
+    *,
+    input_terms: int,
+    canonical_terms: int,
+    generated_contributions: int,
+    dimension: int,
+    nonzeros_or_transitions: int,
+    plan_bytes: int = 0,
+    output_bytes: int = 0,
+    numerical_error: float = 0.0,
+    workload: str,
+) -> None:
+    """Record the frozen Phase 7 workload fields on every benchmark case."""
+    stats = benchmark.stats or {}
+    mean = float(stats.get("mean", 0.0))
+    throughput = generated_contributions / mean if mean > 0.0 else 0.0
+    benchmark.extra_info.update(
+        {
+            "workload": workload,
+            "input_terms": input_terms,
+            "canonical_terms": canonical_terms,
+            "generated_contributions": generated_contributions,
+            "dimension": dimension,
+            "nonzeros_or_transitions": nonzeros_or_transitions,
+            "plan_bytes": plan_bytes,
+            "output_bytes": output_bytes,
+            "thread_count": int(
+                os.environ.get("RAYON_NUM_THREADS", str(os.cpu_count() or 1))
+            ),
+            "throughput_contributions_per_second": throughput,
+            "numerical_error": numerical_error,
+        }
+    )
 
 
 def fermion_workload(n_modes: int = 12) -> tcp.FermionOperator:
@@ -35,6 +72,45 @@ def fermion_workload(n_modes: int = 12) -> tcp.FermionOperator:
             )
         )
     return tcp.FermionOperator.from_terms(n_modes, terms)
+
+
+def hubbard_quartic_terms(
+    n_sites: int = 4,
+) -> list[tuple[tuple[tuple[int, str], ...], complex]]:
+    """Return a spinful Hubbard chain with explicit quartic onsite terms."""
+    terms = []
+    for site in range(n_sites):
+        up, down = 2 * site, 2 * site + 1
+        terms.append(
+            (
+                (
+                    (up, "create"),
+                    (up, "annihilate"),
+                    (down, "create"),
+                    (down, "annihilate"),
+                ),
+                1.25,
+            )
+        )
+    for site in range(n_sites - 1):
+        for spin in (0, 1):
+            left, right = 2 * site + spin, 2 * (site + 1) + spin
+            terms.extend(
+                (
+                    (((left, "create"), (right, "annihilate")), -0.7),
+                    (((right, "create"), (left, "annihilate")), -0.7),
+                )
+            )
+    return terms
+
+
+def hubbard_quartic_workload() -> tuple[
+    tcp.FermionOperator,
+    list[tuple[tuple[tuple[int, str], ...], complex]],
+]:
+    """Build a bounded eight-mode Hubbard chain for quartic JW timing."""
+    terms = hubbard_quartic_terms()
+    return tcp.FermionOperator.from_terms(8, terms), terms
 
 
 def fermion_terms(
@@ -103,15 +179,35 @@ def direct_weyl_workload(dimension: int = 5, n_sites: int = 3) -> tcp.QuditWeylO
     return tcp.QuditWeylOperator.from_terms(dimension, terms, n_sites=n_sites)
 
 
+def duplicate_fermion_terms(
+    n_modes: int = 12, repetitions: int = 24
+) -> list[tuple[tuple[tuple[int, str], ...], complex]]:
+    """Return a duplicate-heavy canonicalization workload."""
+    return fermion_terms(n_modes) * repetitions
+
+
+def holstein_workload() -> Tuple[tcp.HybridOperator, dict[int, int]]:
+    """Build a bounded mixed fermion-boson/qubit Holstein-style workload."""
+    space = tcp.OperatorSpace(fermions=6, bosons=2, qubits=2)
+    displacement = space.boson.create(0) + space.boson.annihilate(0)
+    displacement = displacement + space.boson.create(1) + space.boson.annihilate(1)
+    operator = 0.5 * space.fermion.create(0) * space.fermion.annihilate(0)
+    for mode in range(1, 6):
+        density = space.fermion.create(mode) * space.fermion.annihilate(mode)
+        operator = operator + 0.1 * density * displacement
+    operator = operator + 0.25 * space.qubit.z(0) + 0.15 * space.qubit.x(1)
+    return operator, {0: 3, 1: 3}
+
+
 STRUCTURED_SPARSE_CASES = (
     (
-        "small_python",
+        "small_native",
         tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)]),
         {0: 1},
     ),
     ("threshold_64", structured_sparse_operator(8), {0: 1, 1: 3}),
-    ("medium_rust", structured_sparse_operator(16), {0: 3, 1: 3}),
-    ("large_rust", structured_sparse_operator(8), {0: 7, 1: 7}),
+    ("medium_native", structured_sparse_operator(16), {0: 3, 1: 3}),
+    ("large_native", structured_sparse_operator(8), {0: 7, 1: 7}),
 )
 STRUCTURED_SPARSE_CASE_IDS = tuple(case[0] for case in STRUCTURED_SPARSE_CASES)
 
@@ -125,6 +221,17 @@ def test_phase7_fermion_jordan_wigner(
     result = benchmark(operator.compile, "native_mvp")
     state = np.ones(1 << 12, dtype=np.complex128)
     np.testing.assert_allclose(result.apply(state), expected.apply(state))
+    _record_metadata(
+        benchmark,
+        input_terms=len(fermion_terms()),
+        canonical_terms=operator.term_count,
+        generated_contributions=len(operator.map_fermions().terms),
+        dimension=1 << 12,
+        nonzeros_or_transitions=operator.term_count * (1 << 12),
+        plan_bytes=result.estimated_bytes,
+        output_bytes=state.nbytes,
+        workload="fermion_jordan_wigner_native_mvp",
+    )
 
 
 def test_phase7_fermion_native_construction(benchmark: BenchmarkFixture) -> None:
@@ -133,6 +240,15 @@ def test_phase7_fermion_native_construction(benchmark: BenchmarkFixture) -> None
     expected = tcp.FermionOperator.from_terms(12, terms)
     result = benchmark(tcp.FermionOperator.from_terms, 12, terms)
     assert result.term_count == expected.term_count
+    _record_metadata(
+        benchmark,
+        input_terms=len(terms),
+        canonical_terms=result.term_count,
+        generated_contributions=len(terms),
+        dimension=1 << 12,
+        nonzeros_or_transitions=result.term_count,
+        workload="fermion_sparse_construction",
+    )
 
 
 def test_phase7_fermion_native_mapping(benchmark: BenchmarkFixture) -> None:
@@ -141,6 +257,57 @@ def test_phase7_fermion_native_mapping(benchmark: BenchmarkFixture) -> None:
     expected = operator.map_fermions()
     result = benchmark(operator.map_fermions)
     np.testing.assert_allclose(result.compile("dense"), expected.compile("dense"))
+    _record_metadata(
+        benchmark,
+        input_terms=len(fermion_terms()),
+        canonical_terms=operator.term_count,
+        generated_contributions=len(expected.terms),
+        dimension=1 << 12,
+        nonzeros_or_transitions=len(expected.terms),
+        output_bytes=expected.compile("dense").nbytes,
+        workload="fermion_jordan_wigner_mapping",
+    )
+
+
+def test_phase7_hubbard_quartic_mapping(benchmark: BenchmarkFixture) -> None:
+    """Measure JW mapping of explicit Hubbard quartic interactions."""
+    operator, raw_terms = hubbard_quartic_workload()
+    expected = operator.map_fermions()
+    result = benchmark(operator.map_fermions)
+    np.testing.assert_allclose(result.compile("dense"), expected.compile("dense"))
+    generated = sum(
+        1 << (len(term.word.creation_modes) + len(term.word.annihilation_modes))
+        for term in operator.terms
+    )
+    _record_metadata(
+        benchmark,
+        input_terms=len(raw_terms),
+        canonical_terms=operator.term_count,
+        generated_contributions=generated,
+        dimension=1 << 8,
+        nonzeros_or_transitions=len(expected.terms),
+        output_bytes=expected.compile("dense").nbytes,
+        workload="hubbard_quartic_jordan_wigner_mapping",
+    )
+
+
+def test_phase7_fermion_duplicate_canonicalization(
+    benchmark: BenchmarkFixture,
+) -> None:
+    """Measure aggregation-heavy duplicate canonicalization."""
+    terms = duplicate_fermion_terms()
+    expected = tcp.FermionOperator.from_terms(12, terms)
+    result = benchmark(tcp.FermionOperator.from_terms, 12, terms)
+    assert result.term_count == expected.term_count
+    _record_metadata(
+        benchmark,
+        input_terms=len(terms),
+        canonical_terms=result.term_count,
+        generated_contributions=len(terms),
+        dimension=1 << 12,
+        nonzeros_or_transitions=result.term_count,
+        workload="fermion_duplicate_aggregation",
+    )
 
 
 def test_phase7_boson_native_dense(
@@ -151,6 +318,17 @@ def test_phase7_boson_native_dense(
     expected = operator.compile("dense", boson_cutoffs=cutoffs)
     result = benchmark(operator.compile, "dense", boson_cutoffs=cutoffs)
     np.testing.assert_allclose(result, expected)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=result.shape[0],
+        nonzeros_or_transitions=int(np.count_nonzero(result)),
+        output_bytes=result.nbytes,
+        numerical_error=float(np.max(np.abs(result - expected))),
+        workload="hybrid_boson_dense",
+    )
 
 
 def test_phase7_boson_native_mvp(
@@ -163,6 +341,18 @@ def test_phase7_boson_native_mvp(
     expected = plan.apply(state)
     result = benchmark(plan.apply, state)
     np.testing.assert_allclose(result, expected)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=operator.term_count,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=result.nbytes,
+        numerical_error=float(np.max(np.abs(result - expected))),
+        workload="hybrid_boson_native_mvp_apply",
+    )
 
 
 @pytest.mark.parametrize(
@@ -178,7 +368,7 @@ def test_phase7_structured_sparse_scaling(
     cutoffs: Dict[int, int],
     target: str,
 ) -> None:
-    """Measure adaptive Python/Rust sparse compilation over several scales."""
+    """Measure native sparse compilation over several finite scales."""
     dense = operator.compile("dense", boson_cutoffs=cutoffs)
     expected = operator.compile(target, boson_cutoffs=cutoffs)
     result = benchmark(operator.compile, target, boson_cutoffs=cutoffs)
@@ -194,7 +384,22 @@ def test_phase7_structured_sparse_scaling(
             reconstructed[row, result.indices[start:stop]] = result.data[start:stop]
         np.testing.assert_array_equal(reconstructed, dense)
         assert result.indices.shape == expected.indices.shape
-    benchmark.extra_info.update({"case": case, "target": target})
+    nonzeros = len(result.row) if target == "coo" else len(result.indices)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count * dense.shape[0],
+        dimension=dense.shape[0],
+        nonzeros_or_transitions=nonzeros,
+        output_bytes=(
+            int(result.row.nbytes + result.column.nbytes + result.data.nbytes)
+            if target == "coo"
+            else int(result.indptr.nbytes + result.indices.nbytes + result.data.nbytes)
+        ),
+        numerical_error=float(np.max(np.abs(reconstructed - dense))),
+        workload=f"{case}_{target}_native",
+    )
 
 
 @pytest.mark.parametrize(
@@ -208,18 +413,19 @@ def test_phase7_structured_mvp_construction(
     operator: tcp.BosonOperator,
     cutoffs: Dict[int, int],
 ) -> None:
-    """Measure plan construction, including the adaptive dispatch decision."""
+    """Measure reusable native plan construction."""
     expected = operator.compile("native_mvp", boson_cutoffs=cutoffs)
     result = benchmark(operator.compile, "native_mvp", boson_cutoffs=cutoffs)
     assert result.strategy == expected.strategy
-    benchmark.extra_info.update(
-        {
-            "case": case,
-            "strategy": result.strategy,
-            "dimension": result.dimension,
-            "term_count": result.term_count,
-            "plan_bytes": result.estimated_bytes,
-        }
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=result.dimension,
+        nonzeros_or_transitions=operator.term_count,
+        plan_bytes=result.estimated_bytes,
+        workload=f"{case}_native_mvp_construction",
     )
 
 
@@ -230,7 +436,7 @@ def test_phase7_structured_mvp_construction(
         STRUCTURED_SPARSE_CASES[2],
         STRUCTURED_SPARSE_CASES[3],
     ),
-    ids=("small_python", "medium_rust", "large_rust"),
+    ids=("small_native", "medium_native", "large_native"),
 )
 def test_phase7_structured_mvp_apply(
     benchmark: BenchmarkFixture,
@@ -238,7 +444,7 @@ def test_phase7_structured_mvp_apply(
     operator: tcp.BosonOperator,
     cutoffs: Dict[int, int],
 ) -> None:
-    """Measure steady reusable MVP apply for Python and Rust plans."""
+    """Measure steady reusable native MVP apply."""
     plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
     state = (
         np.random.default_rng(20260803)
@@ -248,7 +454,18 @@ def test_phase7_structured_mvp_apply(
     expected = plan.apply(state)
     result = benchmark(plan.apply, state)
     np.testing.assert_allclose(result, expected)
-    benchmark.extra_info.update({"case": case, "strategy": plan.strategy})
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=operator.term_count,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=result.nbytes,
+        numerical_error=float(np.max(np.abs(result - expected))),
+        workload=f"{case}_native_mvp_apply",
+    )
 
 
 def test_phase7_hybrid_native_multiply(benchmark: BenchmarkFixture) -> None:
@@ -272,6 +489,15 @@ def test_phase7_hybrid_native_multiply(benchmark: BenchmarkFixture) -> None:
         result.compile("dense", boson_cutoffs={0: 2, 1: 2}),
         expected.compile("dense", boson_cutoffs={0: 2, 1: 2}),
     )
+    _record_metadata(
+        benchmark,
+        input_terms=2,
+        canonical_terms=result.term_count,
+        generated_contributions=1,
+        dimension=2**4 * 3**2 * 2**2 * 3,
+        nonzeros_or_transitions=result.term_count,
+        workload="hybrid_coarse_multiply",
+    )
 
 
 def test_phase7_hybrid_native_mapping(benchmark: BenchmarkFixture) -> None:
@@ -288,6 +514,15 @@ def test_phase7_hybrid_native_mapping(benchmark: BenchmarkFixture) -> None:
         result.compile("dense", boson_cutoffs={0: 2, 1: 2}),
         expected.compile("dense", boson_cutoffs={0: 2, 1: 2}),
     )
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=len(expected.terms),
+        dimension=2**4 * 3**2 * 2,
+        nonzeros_or_transitions=len(expected.terms),
+        workload="hybrid_jordan_wigner_mapping",
+    )
 
 
 def test_phase7_hybrid_native_builder(benchmark: BenchmarkFixture) -> None:
@@ -303,11 +538,79 @@ def test_phase7_hybrid_native_builder(benchmark: BenchmarkFixture) -> None:
     expected = builder.finish()
     result = benchmark(builder.finish)
     assert result.term_count == expected.term_count
+    _record_metadata(
+        benchmark,
+        input_terms=7,
+        canonical_terms=result.term_count,
+        generated_contributions=7,
+        dimension=2**8 * 3**2 * 2**2,
+        nonzeros_or_transitions=result.term_count,
+        workload="hybrid_builder_batch_canonicalization",
+    )
 
 
-def test_phase7_uniform_weyl_backend_mvp(benchmark: BenchmarkFixture) -> None:
+def test_phase7_holstein_native_mvp(benchmark: BenchmarkFixture) -> None:
+    """Measure bounded Holstein-style mixed native plan construction and apply."""
+    operator, cutoffs = holstein_workload()
+    plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
+    state = (
+        np.random.default_rng(20260803)
+        .normal(size=plan.dimension)
+        .astype(np.complex128)
+    )
+    expected = plan.apply(state)
+    result = benchmark(plan.apply, state)
+    error = float(np.max(np.abs(result - expected)))
+    np.testing.assert_allclose(result, expected)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=operator.term_count,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=result.nbytes,
+        numerical_error=error,
+        workload="holstein_mixed_native_mvp_apply",
+    )
+
+
+def test_phase7_holstein_native_mvp_first_apply(benchmark: BenchmarkFixture) -> None:
+    """Measure the first caller-visible apply after native plan construction."""
+    operator, cutoffs = holstein_workload()
+    plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
+    state = (
+        np.random.default_rng(20260803)
+        .normal(size=plan.dimension)
+        .astype(np.complex128)
+    )
+    result = benchmark.pedantic(
+        plan.apply, args=(state,), rounds=1, iterations=1, warmup_rounds=0
+    )
+    expected = plan.apply(state)
+    error = float(np.max(np.abs(result - expected)))
+    np.testing.assert_allclose(result, expected)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=operator.term_count,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=result.nbytes,
+        numerical_error=error,
+        workload="holstein_mixed_native_mvp_first_apply",
+    )
+
+
+@pytest.mark.parametrize("dimension", [3, 4, 5, 6])
+def test_phase7_uniform_weyl_backend_mvp(
+    benchmark: BenchmarkFixture, dimension: int
+) -> None:
     """Measure factorized uniform-qudit backend execution end to end."""
-    operator = direct_weyl_workload()
+    operator = direct_weyl_workload(dimension)
     plan = operator.compile("backend_mvp")
     state = (
         np.random.default_rng(20260803)
@@ -317,22 +620,42 @@ def test_phase7_uniform_weyl_backend_mvp(benchmark: BenchmarkFixture) -> None:
     expected = operator.compile("dense") @ state
     result = benchmark(tcp.backend_mvp(plan), state)
     np.testing.assert_allclose(result, expected, atol=1e-6)
-    benchmark.extra_info.update(
-        {
-            "dimension": plan.dimension,
-            "term_count": plan.term_count,
-            "plan_bytes": plan.estimated_bytes,
-            "local_dimension": plan.qudit_dimension,
-        }
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=operator.term_count * plan.dimension,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=result.nbytes,
+        numerical_error=float(np.max(np.abs(result - expected))),
+        workload=f"uniform_weyl_d{dimension}_backend_mvp",
     )
 
 
 def test_phase7_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
     """Keep the recursive-expansion memory guard executable and bounded."""
-    factors = (((0, "annihilate"),) * 5) + (((0, "create"),) * 5)
+    factors = (
+        (0, "annihilate"),
+        (1, "annihilate"),
+        (2, "annihilate"),
+        (0, "create"),
+        (1, "create"),
+        (2, "create"),
+    )
 
     def guarded() -> None:
         with pytest.raises(MemoryError):
-            tcp.BosonOperator.from_terms(1, [(factors, 1.0)], max_bytes=1)
+            tcp.FermionOperator.from_terms(3, [(factors, 1.0)], max_bytes=1400)
 
     benchmark(guarded)
+    _record_metadata(
+        benchmark,
+        input_terms=1,
+        canonical_terms=0,
+        generated_contributions=6,
+        dimension=1 << 3,
+        nonzeros_or_transitions=0,
+        workload="fermion_contraction_expansion_guard",
+    )

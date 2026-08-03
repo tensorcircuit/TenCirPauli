@@ -35,6 +35,36 @@ def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.nd
     return result
 
 
+def _hubbard_terms(
+    n_sites: int,
+) -> tuple[tuple[tuple[tuple[int, str], ...], complex], ...]:
+    """Return a small spinful Hubbard Hamiltonian in raw ladder form."""
+    terms: list[tuple[tuple[tuple[int, str], ...], complex]] = []
+    for site in range(n_sites):
+        up, down = 2 * site, 2 * site + 1
+        terms.append(
+            (
+                (
+                    (up, "create"),
+                    (up, "annihilate"),
+                    (down, "create"),
+                    (down, "annihilate"),
+                ),
+                1.25,
+            )
+        )
+    for site in range(n_sites - 1):
+        for spin in (0, 1):
+            left, right = 2 * site + spin, 2 * (site + 1) + spin
+            terms.extend(
+                (
+                    (((left, "create"), (right, "annihilate")), -0.7),
+                    (((right, "create"), (left, "annihilate")), -0.7),
+                )
+            )
+    return tuple(terms)
+
+
 def _boson_matrix(cutoff: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
     result = np.eye(cutoff + 1, dtype=np.complex128)
     for _, action in factors:
@@ -90,6 +120,56 @@ def test_fermion_car_and_jordan_wigner_reference() -> None:
     assert not (annihilate * annihilate).terms
 
 
+def test_fermion_car_identities_across_modes() -> None:
+    n_modes = 3
+    identity = np.eye(1 << n_modes, dtype=np.complex128)
+    annihilators = [
+        tcp.FermionOperator.from_terms(n_modes, [(((mode, "annihilate"),), 1.0)])
+        for mode in range(n_modes)
+    ]
+    creators = [
+        tcp.FermionOperator.from_terms(n_modes, [(((mode, "create"),), 1.0)])
+        for mode in range(n_modes)
+    ]
+    for left_mode in range(n_modes):
+        for right_mode in range(n_modes):
+            aa = (
+                annihilators[left_mode] * annihilators[right_mode]
+                + annihilators[right_mode] * annihilators[left_mode]
+            ).compile("dense")
+            dd = (
+                creators[left_mode] * creators[right_mode]
+                + creators[right_mode] * creators[left_mode]
+            ).compile("dense")
+            ad = (
+                annihilators[left_mode] * creators[right_mode]
+                + creators[right_mode] * annihilators[left_mode]
+            ).compile("dense")
+            np.testing.assert_allclose(aa, 0.0)
+            np.testing.assert_allclose(dd, 0.0)
+            np.testing.assert_allclose(ad, identity if left_mode == right_mode else 0.0)
+
+
+def test_hubbard_quartic_fermion_dense_and_mvp_reference() -> None:
+    n_sites = 2
+    raw_terms = _hubbard_terms(n_sites)
+    operator = tcp.FermionOperator.from_terms(2 * n_sites, raw_terms)
+    expected = sum(
+        (
+            coefficient * _fermion_matrix(2 * n_sites, factors)
+            for factors, coefficient in raw_terms
+        ),
+        start=np.zeros((1 << (2 * n_sites), 1 << (2 * n_sites)), dtype=np.complex128),
+    )
+    assert max(len(term.word.factors) for term in operator.terms) == 4
+    np.testing.assert_allclose(operator.compile("dense"), expected)
+    np.testing.assert_allclose(operator.map_fermions().compile("dense"), expected)
+    state = np.arange(1 << (2 * n_sites), dtype=np.complex128)
+    np.testing.assert_allclose(
+        operator.compile("native_mvp").apply(state), expected @ state
+    )
+
+
 def test_boson_closed_form_and_projected_boundary() -> None:
     for m in range(4):
         for n in range(4):
@@ -107,6 +187,15 @@ def test_boson_closed_form_and_projected_boundary() -> None:
     lower = tcp.BosonOperator.from_terms(1, [(((0, "annihilate"),), 1.0)])
     with pytest.raises(ValueError, match="exactly one"):
         lower.compile("dense", boson_cutoffs={})
+
+
+def test_boson_plan_reuse_across_cutoffs_and_unbounded_guard() -> None:
+    factors = ((0, "annihilate"), (0, "create"))
+    operator = tcp.BosonOperator.from_terms(1, [(factors, 1.0)])
+    for cutoff in (1, 3):
+        actual = operator.compile("dense", boson_cutoffs={0: cutoff}, max_bytes=None)
+        large = _boson_matrix(cutoff + 1, factors)
+        np.testing.assert_allclose(actual, large[: cutoff + 1, : cutoff + 1])
 
 
 @pytest.mark.parametrize("dimension", [3, 4, 5, 6])
@@ -127,6 +216,18 @@ def test_direct_weyl_reference_and_targets(dimension: int) -> None:
         operator.compile("native_mvp").apply(state), expected @ state
     )
     assert coo.shape == (dimension, dimension)
+
+
+def test_native_weyl_plan_metadata_and_unbounded_guard() -> None:
+    operator = tcp.QuditWeylOperator.from_terms(5, [(((0, 1, 2),), 1.0)], n_sites=2)
+    plan = operator.compile("native_mvp", max_bytes=None)
+    assert plan.qudit_dimension == 5
+    assert plan.weyl_convention == "X^a Z^b"
+    assert plan.boson_cutoffs == ()
+    state = np.arange(25, dtype=np.complex128)
+    np.testing.assert_allclose(
+        plan.apply(state, max_bytes=None), operator.compile("dense") @ state
+    )
 
 
 def test_hybrid_targets_and_mixed_radix_ordering() -> None:
@@ -316,6 +417,52 @@ def test_embedding_validates_permutations_dimensions_and_fermion_signs() -> None
         tcp.OperatorSpace(qudits=(3,)).embed(qudit4, qudits={0: 0})
 
 
+def test_embedding_full_domain_permutation_reference() -> None:
+    source = tcp.OperatorSpace(fermions=2, bosons=2, qubits=2, qudits=(3, 3))
+    target = tcp.OperatorSpace(fermions=2, bosons=2, qubits=2, qudits=(3, 3))
+    operator = (
+        source.fermion.create(0)
+        * source.fermion.annihilate(1)
+        * source.boson.create(0)
+        * source.boson.annihilate(1)
+        * source.qubit.x(0)
+        * source.qudit.weyl(0, 1, 2)
+    )
+    embedded = target.embed(
+        operator,
+        fermions={0: 1, 1: 0},
+        bosons={0: 1, 1: 0},
+        qubits={0: 1, 1: 0},
+        qudits={0: 1, 1: 0},
+    )
+    expected = (
+        target.fermion.create(1)
+        * target.fermion.annihilate(0)
+        * target.boson.create(1)
+        * target.boson.annihilate(0)
+        * target.qubit.x(1)
+        * target.qudit.weyl(1, 1, 2)
+    )
+    np.testing.assert_allclose(
+        embedded.compile("dense", boson_cutoffs={0: 1, 1: 1}),
+        expected.compile("dense", boson_cutoffs={0: 1, 1: 1}),
+    )
+
+
+def test_structured_mapping_replay_is_deterministic() -> None:
+    space = tcp.OperatorSpace(fermions=3, bosons=1, qubits=1, qudits=(3,))
+    operator = (
+        space.fermion.create(0) * space.fermion.annihilate(2)
+        + 0.3 * space.fermion.create(1) * space.boson.create(0)
+        + 0.2j * space.qubit.y(0) * space.qudit.weyl(0, 2, 1)
+    )
+    mapped = [operator.map_fermions() for _ in range(4)]
+    assert all(value.terms == mapped[0].terms for value in mapped[1:])
+    dense = [value.compile("dense", boson_cutoffs={0: 2}) for value in mapped]
+    for value in dense[1:]:
+        np.testing.assert_array_equal(value, dense[0])
+
+
 def test_builder_multiplies_repeated_qubit_factors() -> None:
     space = tcp.OperatorSpace(qubits=1)
     actual = space.builder().add_product(qubits=((0, "X"), (0, "Y"))).finish()
@@ -351,3 +498,280 @@ def test_uniform_qudit_backend_mvp_uses_direct_weyl_plan() -> None:
     )
     with pytest.raises(NotImplementedError):
         tcp.OperatorSpace(qubits=1, qudits=(3,)).qubit.z(0).compile("backend_mvp")
+
+
+@pytest.mark.parametrize("dimension", [3, 4, 5, 6])
+def test_weyl_structural_phases_adjoint_commutation_and_hermiticity(
+    dimension: int,
+) -> None:
+    left = tcp.QuditWeylWord(dimension, ((0, 1, 2), (1, 2, 1)))
+    right = tcp.QuditWeylWord(dimension, ((0, 2, 1), (1, 1, 3)))
+    product = left.multiply(right)
+    expected_exponent = (2 * 2 + 1 * 1) % dimension
+    assert product.phase_exponent == expected_exponent
+    expected_word = tcp.QuditWeylWord(
+        dimension,
+        (
+            (0, (1 + 2) % dimension, (2 + 1) % dimension),
+            (1, (2 + 1) % dimension, (1 + 3) % dimension),
+        ),
+    )
+    assert product.word == expected_word
+    left_matrix = np.kron(_weyl_matrix(dimension, 1, 2), _weyl_matrix(dimension, 2, 1))
+    right_matrix = np.kron(_weyl_matrix(dimension, 2, 1), _weyl_matrix(dimension, 1, 3))
+    product_matrix = np.kron(
+        _weyl_matrix(dimension, (1 + 2) % dimension, (2 + 1) % dimension),
+        _weyl_matrix(dimension, (2 + 1) % dimension, (1 + 3) % dimension),
+    )
+    np.testing.assert_allclose(
+        left_matrix @ right_matrix,
+        cmath.exp(2j * math.pi * expected_exponent / dimension) * product_matrix,
+    )
+    assert not left.commutes_with(right)
+    assert left.commutes_with(left)
+    adjoint = left.adjoint()
+    adjoint_matrix = np.eye(1, dtype=np.complex128)
+    for _, a, b in adjoint.word.triples:
+        adjoint_matrix = np.kron(adjoint_matrix, _weyl_matrix(dimension, a, b))
+    left_matrix = np.kron(_weyl_matrix(dimension, 1, 2), _weyl_matrix(dimension, 2, 1))
+    phase = cmath.exp(2j * math.pi * adjoint.phase_exponent / dimension)
+    np.testing.assert_allclose(phase * adjoint_matrix, left_matrix.conj().T)
+
+    operator = tcp.QuditWeylOperator.from_terms(
+        dimension,
+        [(((0, 1, 2),), 1.0), (((0, 1, 2),), -0.25)],
+        n_sites=1,
+    )
+    assert operator.term_count == 1
+    hermitian = operator + operator.adjoint()
+    assert hermitian.is_hermitian(1e-12)
+    sparse = hermitian.compile("coo")
+    reconstructed = np.zeros((dimension, dimension), dtype=np.complex128)
+    reconstructed[sparse.row, sparse.column] = sparse.data
+    np.testing.assert_allclose(hermitian.compile("dense"), reconstructed)
+
+
+def test_fermion_products_adjoint_commutator_and_dense_reference() -> None:
+    space = tcp.OperatorSpace(fermions=2)
+    create = space.fermion.create(0)
+    annihilate = space.fermion.annihilate(0)
+    number = create * annihilate
+    identity = np.eye(4, dtype=np.complex128)
+    np.testing.assert_allclose(
+        number.compile("dense"), _fermion_matrix(2, ((0, "create"), (0, "annihilate")))
+    )
+    np.testing.assert_allclose(
+        (annihilate.commutator(create)).compile("dense"),
+        identity - 2 * number.compile("dense"),
+    )
+    np.testing.assert_allclose(
+        (create * space.fermion.annihilate(1)).adjoint().compile("dense"),
+        (create * space.fermion.annihilate(1)).compile("dense").conj().T,
+    )
+    assert number.is_hermitian()
+
+
+@pytest.mark.parametrize("count", [40, 128])
+def test_fermion_canonical_fast_path_accepts_long_words(count: int) -> None:
+    factors = tuple((mode, "create") for mode in range(count))
+    operator = tcp.FermionOperator.from_terms(
+        count, [(factors, 1.0)], max_bytes=count * 192 + 192
+    )
+    assert operator.term_count == 1
+    assert operator.terms[0].word.creation_modes == tuple(range(count))
+
+
+def test_fermion_inversion_nilpotency_and_running_guard() -> None:
+    factors = tuple((mode, "create") for mode in range(127, -1, -1))
+    inverted = tcp.FermionOperator.from_terms(
+        128, [(factors, 1.0)], max_bytes=128 * 192 + 192
+    )
+    assert inverted.term_count == 1
+    assert inverted.terms[0].coefficient == 1.0
+    for action in ("create", "annihilate"):
+        duplicate = tcp.FermionOperator.from_terms(
+            3,
+            [(((0, action), (1, action), (0, action)), 1.0)],
+            max_bytes=1024,
+        )
+        assert duplicate.term_count == 0
+    with pytest.raises(MemoryError):
+        tcp.FermionOperator.from_terms(
+            3,
+            [
+                (
+                    (
+                        (0, "annihilate"),
+                        (1, "annihilate"),
+                        (2, "annihilate"),
+                        (0, "create"),
+                        (1, "create"),
+                        (2, "create"),
+                    ),
+                    1.0,
+                )
+            ],
+            max_bytes=1400,
+        )
+
+
+def test_partial_mapping_both_orders_nested_and_tensor_product() -> None:
+    space = tcp.OperatorSpace(fermions=1, bosons=1)
+    create = space.fermion.create(0)
+    annihilate = space.fermion.annihilate(0)
+    boson_create = space.boson.create(0)
+    left_raw = create * boson_create
+    right_raw = annihilate * space.boson.annihilate(0)
+    for actual, expected in (
+        (
+            (annihilate * left_raw.map_fermions()).map_fermions(),
+            (annihilate * left_raw).map_fermions(),
+        ),
+        (
+            (left_raw.map_fermions() * annihilate).map_fermions(),
+            (left_raw * annihilate).map_fermions(),
+        ),
+        (
+            (annihilate * (left_raw.map_fermions() * right_raw)).map_fermions(),
+            (annihilate * (left_raw * right_raw)).map_fermions(),
+        ),
+    ):
+        np.testing.assert_allclose(
+            actual.compile("dense", boson_cutoffs={0: 1}),
+            expected.compile("dense", boson_cutoffs={0: 1}),
+        )
+
+    other_space = tcp.OperatorSpace(fermions=1, bosons=1)
+    other_raw = other_space.fermion.create(0) * other_space.boson.create(0)
+    expected_tensor = left_raw.tensor_product(other_raw).map_fermions()
+    for actual in (
+        left_raw.map_fermions().tensor_product(other_raw),
+        left_raw.tensor_product(other_raw.map_fermions()),
+        left_raw.map_fermions().tensor_product(other_raw.map_fermions()),
+    ):
+        np.testing.assert_allclose(
+            actual.compile("dense", boson_cutoffs={0: 1, 1: 1}),
+            expected_tensor.compile("dense", boson_cutoffs={0: 1, 1: 1}),
+        )
+
+    for raw_operator, mapped_operator in (
+        (left_raw, left_raw.map_fermions()),
+        (right_raw, right_raw.map_fermions()),
+    ):
+        np.testing.assert_allclose(
+            mapped_operator.adjoint().compile("dense", boson_cutoffs={0: 1}),
+            raw_operator.adjoint()
+            .map_fermions()
+            .compile("dense", boson_cutoffs={0: 1}),
+        )
+    np.testing.assert_allclose(
+        (left_raw.map_fermions().commutator(annihilate)).compile(
+            "dense", boson_cutoffs={0: 1}
+        ),
+        left_raw.commutator(annihilate)
+        .map_fermions()
+        .compile("dense", boson_cutoffs={0: 1}),
+    )
+
+
+@pytest.mark.parametrize("dimension", [3, 4, 5, 6])
+@pytest.mark.parametrize("backend_name", ["numpy", "jax"])
+def test_uniform_weyl_backend_numpy_jax_matrix(
+    dimension: int, backend_name: str
+) -> None:
+    import tensorcircuit as tc
+
+    if backend_name == "jax":
+        jax = pytest.importorskip("jax")
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+
+        state = jnp.arange(dimension**2, dtype=jnp.complex128)
+        override = jnp.asarray([0.25 - 0.1j, -0.4 + 0.3j])
+    else:
+        state = np.arange(dimension**2, dtype=np.complex128)
+        override = np.asarray([0.25 - 0.1j, -0.4 + 0.3j])
+    operator = tcp.QuditWeylOperator.from_terms(
+        dimension,
+        [(((0, 1, 2),), 0.7 - 0.2j), (((1, 2, 1),), 0.3 + 0.1j)],
+        n_sites=2,
+    )
+    plan = operator.compile("backend_mvp")
+    assert plan.local_dimensions == (dimension, dimension)
+    assert plan.required_operations == (
+        "broadcast_phase",
+        "cyclic_shift",
+        "multiply",
+        "add",
+    )
+    tc.set_backend(backend_name)
+    try:
+        apply = tcp.backend_mvp(plan, coefficients=override)
+        expected_operator = tcp.QuditWeylOperator.from_terms(
+            dimension,
+            [
+                (((0, 1, 2),), complex(override[0])),
+                (((1, 2, 1),), complex(override[1])),
+            ],
+            n_sites=2,
+        )
+        expected = expected_operator.compile("dense") @ np.asarray(state)
+        actual = np.asarray(apply(state))
+        np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+        rank_state = state.reshape((dimension, dimension))
+        np.testing.assert_allclose(
+            np.asarray(apply(rank_state)),
+            expected.reshape((dimension, dimension)),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+        if backend_name == "jax" and dimension == 3:
+            np.testing.assert_allclose(
+                np.asarray(jax.jit(apply)(state)), expected, rtol=1e-10, atol=1e-10
+            )
+    finally:
+        tc.set_backend("numpy")
+
+
+def test_plan_metadata_and_checked_weyl_dimension() -> None:
+    boson = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
+    native = boson.compile("native_mvp", boson_cutoffs={0: 2})
+    assert native.target == "native_mvp"
+    assert native.schema_version == 1
+    assert native.boson_cutoffs == ((0, 2),)
+    assert native.boson_boundary == "projected_fock"
+    assert native.dimension == 3
+    fermion = tcp.FermionOperator.from_terms(1, [(((0, "create"),), 1.0)])
+    fermion_plan = fermion.compile("native_mvp")
+    assert fermion_plan.mapping == "jordan_wigner"
+    assert fermion_plan.source_term_count == 1
+    with pytest.raises(OverflowError):
+        tcp.QuditWeylOperator.from_terms(3, [(((0, 1, 0),), 1.0)], n_sites=50).compile(
+            "backend_mvp"
+        )
+    with pytest.raises(ValueError, match="exponents"):
+        tcp.BackendMVPPlan(
+            2,
+            0,
+            1,
+            np.empty((1, 0), dtype=np.uint64),
+            np.empty((1, 0), dtype=np.uint64),
+            np.ones(1, dtype=np.complex128),
+            local_dimensions=(3, 3),
+            plan_kind="direct_weyl",
+            qudit_dimension=3,
+            a_exponents=np.full((1, 2), 3, dtype=np.uint32),
+            b_exponents=np.zeros((1, 2), dtype=np.uint32),
+            required_operations=("broadcast_phase", "cyclic_shift", "multiply", "add"),
+            weyl_convention="X^a Z^b",
+        )
+    with pytest.raises(ValueError, match="local dimensions"):
+        tcp.BackendMVPPlan(
+            2,
+            0,
+            0,
+            np.empty((0, 0), dtype=np.uint64),
+            np.empty((0, 0), dtype=np.uint64),
+            np.empty(0, dtype=np.complex128),
+            local_dimensions=(0, 3),
+        )

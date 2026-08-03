@@ -20,7 +20,7 @@ RESULTS_ROOT = ROOT / ".benchmarks"
 RUST_TARGET = RESULTS_ROOT / "rust-target"
 PYTHON_STORAGE = RESULTS_ROOT / "python"
 RUNS_ROOT = RESULTS_ROOT / "runs"
-SUITES = ("all", "rust", "python")
+SUITES = ("all", "rust", "python", "phase7")
 
 
 def command_environment() -> Dict[str, str]:
@@ -160,15 +160,15 @@ def build_python_extension() -> None:
     run(["maturin", "develop", "--release", "--locked"])
 
 
-def record_python(label: str) -> None:
-    """Record a named pytest-benchmark run."""
+def record_python(label: str, paths: Optional[List[str]] = None) -> None:
+    """Record a named pytest-benchmark run for the selected paths."""
     build_python_extension()
     run(
         [
             sys.executable,
             "-m",
             "pytest",
-            "benchmarks/python",
+            *(paths or ["benchmarks/python"]),
             "--benchmark-only",
             f"--benchmark-storage={python_storage_uri()}",
             f"--benchmark-save={label}",
@@ -190,6 +190,10 @@ def record(label: str, suite: str) -> None:
             record_rust(label)
         if suite in ("all", "python"):
             record_python(label)
+        if suite == "phase7":
+            record_python(
+                label, ["benchmarks/python/test_phase7_structured_benchmark.py"]
+            )
     except (OSError, subprocess.CalledProcessError):
         data["status"] = "failed"
         write_manifest(data)
@@ -230,8 +234,8 @@ def compare_rust(label: str) -> None:
         )
 
 
-def compare_python(label: str) -> None:
-    """Run Python benchmarks and compare them with a saved result."""
+def compare_python(label: str, paths: Optional[List[str]] = None) -> None:
+    """Run selected Python benchmarks and compare them with a saved result."""
     build_python_extension()
     result_id = find_python_result(label)
     run(
@@ -239,7 +243,7 @@ def compare_python(label: str) -> None:
             sys.executable,
             "-m",
             "pytest",
-            "benchmarks/python",
+            *(paths or ["benchmarks/python"]),
             "--benchmark-only",
             f"--benchmark-storage={python_storage_uri()}",
             f"--benchmark-compare={result_id}",
@@ -259,6 +263,8 @@ def compare(label: str, suite: Optional[str]) -> None:
         compare_rust(label)
     if selected_suite in ("all", "python"):
         compare_python(label)
+    if selected_suite == "phase7":
+        compare_python(label, ["benchmarks/python/test_phase7_structured_benchmark.py"])
 
 
 def list_runs() -> None:
