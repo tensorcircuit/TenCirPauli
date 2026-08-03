@@ -2,6 +2,14 @@ from typing import Sequence
 
 __version__: str
 
+def structured_dense(
+    local_dimensions: Sequence[int],
+    operations: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, object]: ...
+
 class NativeMvpPlan:
     @property
     def nqubits(self) -> int: ...

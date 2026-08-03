@@ -6,6 +6,7 @@ mod hamiltonian;
 mod operator;
 mod propagation;
 mod spps;
+mod structured;
 mod symmetry;
 mod u1_circuit;
 mod word;
@@ -27,6 +28,7 @@ use propagation::{
     NativePropagationEngine,
 };
 use spps::{pauli_spps_engine, NativeSPPSEngine};
+use structured::structured_dense;
 use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
     NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
@@ -86,5 +88,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_propagation_engine, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_propagation_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_dense, module)?)?;
     Ok(())
 }

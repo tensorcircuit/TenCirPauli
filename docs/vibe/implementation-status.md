@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoint 是 Phase Alpha review remediation。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 仍为 future proposal。项目当前保持 public API 与发布基础稳定，暂不启动新的算法阶段或增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoint 是 Phase Alpha review remediation。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的首个结构化代数/编译 vertical slice 已实现并进入 acceptance review。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
 
 ## Active status
 
@@ -13,7 +13,7 @@ Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoin
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
-| Phase 7 qudit generalized Pauli/Weyl | future | Roadmap only；not part of the current implementation checkpoint. |
+| Phase 7 structured Hamiltonian algebra | implemented vertical slice; under acceptance review | Fermion CAR/Jordan–Wigner, symbolic boson CCR with projected finite targets, `OperatorSpace`/hybrid algebra, direct Weyl, shared finite targets, native structured dense kernel, tests, and benchmark sources are present; TensorCircuit qudit adapter and full P0–P5 handoff remain acceptance work. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -195,7 +195,7 @@ The reproducible local A/B driver is `benchmarks/phase6_ab.py`. After the parall
 
 ## Deferred future phases
 - **Phase 6.5 — generic Rust-native matrix-free time evolution (deferred)**：inactive research proposal in `phase-6.5-spec.md`, not the automatic next milestone after Phase 6. It requires a real workload, matched baseline, dependency/accuracy spike and a new owner decision before activation; no preparatory general-linear-algebra abstraction or numerical dependency should enter Phase 6.
-- **Phase 7 — Qudit generalized Pauli/Weyl**：preserve the existing qudit word/operator/Hamiltonian compiler roadmap after the U1 engine and circuit semantics are stable；do not mix it into the current qubit Phase 2 remediation。
+- **Phase 7 — structured Hamiltonian algebra and compilation**：the contract is frozen and its first vertical slice is implemented. Remaining acceptance work is the full P0–P5 evidence matrix, including TensorCircuit uniform-qudit backend differentials and any additional native sparse/plan optimization justified by release profiling。
 
 ## Phase 1 completion record
 

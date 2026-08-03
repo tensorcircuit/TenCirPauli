@@ -73,14 +73,31 @@ class NativeMVPPlan:
     term_count: int
     strategy: str
     _native_plan: Any
+    local_dimensions: Tuple[int, ...]
+    basis_ordering: str
+    estimated_bytes: int
+    _generic_entries: Any
 
     def __init__(
-        self, nqubits: int, term_count: int, strategy: str, native_plan: Any
+        self,
+        nqubits: int,
+        term_count: int,
+        strategy: str,
+        native_plan: Any,
+        *,
+        local_dimensions: Tuple[int, ...] = (),
+        basis_ordering: str = "qubit0_msb_matrix",
+        estimated_bytes: int = 0,
+        generic_entries: Any = None,
     ) -> None:
         object.__setattr__(self, "nqubits", nqubits)
         object.__setattr__(self, "term_count", term_count)
         object.__setattr__(self, "strategy", strategy)
         object.__setattr__(self, "_native_plan", native_plan)
+        object.__setattr__(self, "local_dimensions", tuple(local_dimensions))
+        object.__setattr__(self, "basis_ordering", basis_ordering)
+        object.__setattr__(self, "estimated_bytes", int(estimated_bytes))
+        object.__setattr__(self, "_generic_entries", generic_entries)
 
     def apply(
         self,
@@ -88,6 +105,8 @@ class NativeMVPPlan:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the precompiled Rust plan without rebuilding its structure."""
+        if self._generic_entries is not None:
+            return _apply_generic_entries(self._generic_entries, state, max_bytes)
         dimension = _dimension(self.nqubits)
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1 or values.shape[0] != dimension:
@@ -102,6 +121,13 @@ class NativeMVPPlan:
                 dtype=np.complex128,
             ),
         )
+
+    @property
+    def dimension(self) -> int:
+        """Finite basis dimension represented by this plan."""
+        if self.local_dimensions:
+            return int(np.prod(self.local_dimensions, dtype=np.intp))
+        return _dimension(self.nqubits)
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         """Apply the plan using its default memory limit."""
@@ -121,6 +147,10 @@ class BackendMVPPlan:
     ordering: str = "qubit0_msb_matrix"
     integer_width: int = 64
     required_operations: Tuple[str, ...] = ("xor", "phase", "scatter_add")
+    local_dimensions: Tuple[int, ...] = ()
+    basis_ordering: str = "qubit0_msb_matrix"
+    estimated_bytes: int = 0
+    _generic_entries: Any = None
 
     def __post_init__(self) -> None:
         """Normalize plan buffers and freeze them after construction."""
@@ -139,6 +169,8 @@ class BackendMVPPlan:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the plan using only NumPy arrays and deterministic indexing."""
+        if self._generic_entries is not None:
+            return _apply_generic_entries(self._generic_entries, state, max_bytes)
         dimension = _dimension(self.nqubits)
         _check_allocation(dimension * 80, max_bytes, "backend MVP working memory")
         values = np.asarray(state, dtype=np.complex128)
@@ -194,6 +226,22 @@ def _check_allocation(requested: int, limit: Optional[int], context: str) -> Non
             f"{context} requires approximately {requested} bytes, "
             f"exceeding max_bytes={limit}"
         )
+
+
+def _apply_generic_entries(
+    generic_entries: Any, state: Sequence[complex], max_bytes: Optional[int]
+) -> np.ndarray[Any, Any]:
+    dimensions, rows, columns, coefficients = generic_entries
+    dimension = int(np.prod(dimensions, dtype=np.intp))
+    _check_allocation(dimension * 16, max_bytes, "structured MVP output")
+    values = np.asarray(state, dtype=np.complex128)
+    if values.ndim != 1 or values.shape[0] != dimension:
+        raise ValueError(f"state must have shape ({dimension},), got {values.shape}")
+    output: np.ndarray[Any, Any] = np.zeros(dimension, dtype=np.complex128)
+    np.add.at(
+        output, rows.astype(np.intp), coefficients * values[columns.astype(np.intp)]
+    )
+    return output
 
 
 def _matrix_mask(

@@ -383,11 +383,11 @@ Phase 6.5与U1语义解耦，接受已经在Rust中的full-space `MvpPlan`、res
 
 该阶段当前搁置，不是Phase 6之后的自动下一里程碑，也不得为其提前引入general linear algebra abstraction、small eigensolver或Bessel dependency。重新启动必须有真实workload、matched baseline、dependency/accuracy spike和新的owner decision。它不实现time-dependent Hamiltonian、Python callback、ODE、automatic Trotter、general autodiff、JAX custom call或accelerator integration。完整deferred proposal见`phase-6.5-spec.md`。
 
-### 阶段七：Qudit generalized Pauli/Weyl 与 Hamiltonian compiler
+### 阶段七：structured Hamiltonian algebra and compiler（frozen future contract）
 
-在 qubit API、U1 engine 和 circuit/integration 语义稳定后，增加统一局域维数 `d>2` 的 generalized Pauli/Weyl 表示。每个 qudit site 用指数对 `(a,b)` 表示 `X^a Z^b`，其中 `a,b` 按 `d` 取模，`X|j⟩=|j+1 mod d⟩`，`Z|j⟩=ω^j|j⟩`，`ω=exp(2πi/d)`。第一版提供 `QuditPauliWord`、`QuditPauliOperator`、乘法相位、adjoint、commutation、canonicalization 和 deterministic aggregation，并让 Hamiltonian compiler 支持 `d**n` basis 上的 bounded dense、COO/CSR、native MVP 与 backend plan。
+Phase 7 is expanded from the earlier qudit-only roadmap into a structured Hamiltonian algebra and compilation milestone. It covers Pauli-compatible downstream compilation plus separate fermion, infinite-Fock symbolic boson, finite mixed-basis hybrid, and uniform-dimension direct-Weyl operator domains. The frozen implementation contract, scope, non-goals, finite-basis ordering, TensorCircuit boundary, and Python construction API are recorded in `docs/vibe/phase-7-spec.md`.
 
-该阶段优先支持所有 sites 使用相同 local dimension 的模型，并保持 qudit 0 的 computational-basis ordering 与 TensorCircuit adapter 明确一致。Mixed local dimensions、任意 composite-d stabilizer/symmetry 算法和 qudit propagation 不自动包含在首个 qudit slice 中。Qudit Hamiltonian generation 在这里指从 generalized Pauli/Weyl sums 编译矩阵或 MVP，而不是内置生成特定物理模型；常见 clock/shift、Potts 或 Bose-Hubbard fixtures 可以作为 examples 和 benchmarks。
+The contract uses the existing best-effort 16 GiB default and a unified `compile()` target vocabulary across current Pauli and new operator types. Fermions use Jordan-Wigner only. Bosons use exact symbolic CCR canonicalization followed by explicit inclusive-cutoff `P O P` compilation with an open boundary; no public finite-boson algebra is added. Hybrid mixed-dimension execution is native-only, while TensorCircuit backend MVP remains required for Pauli-compatible and uniform-qudit plans. Direct Weyl words store modular phase exponents before complex128 conversion. The Python construction contract uses a compact default `OperatorSpace`, readable factories, overloaded `+`/`-`/`*`, explicit `tensor_product()`, low-level `from_terms()`, and a batched `OperatorBuilder` without exposing a universal algebra trait or a large public limits object.
 
 ## 17. 主要风险与控制措施
 
@@ -427,9 +427,6 @@ PyO3 wheel 增加平台矩阵和维护门槛。控制措施是独立可选 distr
 - Z2 tapering 是否第一版实现完整 Clifford transform，还是先只提供 symmetry generators 与 sector projector。
 - Backend MVP plan 的 portable integer dtype 如何兼容 JAX 默认关闭 int64、TensorFlow 和 PyTorch。
 - Phase 6.5需要通过P0 spike冻结Krylov orthogonalization和small symmetric eigensolver dependency、Chebyshev Bessel implementation、Taylor schedule defaults以及spectral-bound safety margin。
-- Qudit canonical basis 采用直接 `X^a Z^b` 还是带中心相位的 Weyl-normalized `τ^(ab)X^a Z^b`；该选择会影响 multiplication phase、adjoint、Hermiticity 和 `d=2` 与现有 `PauliWord` 的兼容方式，必须在实现前冻结。
-- 首个 qudit slice 是支持任意整数 `d>=2`，还是先限定 prime/prime-power dimension；GF(d) symmetry 方法不能在 composite `d` 上未经说明地复用。
-- Qudit 首版是否只支持 uniform local dimension，mixed-radix systems 后续再做；公开 serialization 必须无歧义记录每个 site 的 dimension 和 exponent ordering。
 
 ## 20. 推荐结论
 

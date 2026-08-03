@@ -10,6 +10,7 @@ mod propagation;
 mod scalar;
 mod sector;
 mod spps;
+mod structured;
 mod symmetry;
 mod u1_circuit;
 mod word;
@@ -32,6 +33,7 @@ pub use sector::{
     PackedU1Basis, U1CooMatrix, U1CsrMatrix, U1MvpPlan, U1RestrictedOperator, U1Sector,
 };
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
+pub use structured::{structured_dense_matrix, StructuredOperation};
 pub use symmetry::{find_z2_symmetries, CliffordOperation, Z2SymmetryAnalysis, Z2TaperingPlan};
 pub use u1_circuit::U1CircuitPlan;
 pub use word::{packed_word_count, PauliPhase, PauliWord};

@@ -435,16 +435,28 @@ class PauliOperator:
             self._coefficient_imaginaries,
         )
 
-    def add(self, other: "PauliOperator") -> "PauliOperator":
+    def add(
+        self,
+        other: "PauliOperator",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Add two operators and aggregate exact duplicate keys."""
+        _validate_max_bytes(max_bytes)
         _ensure_operator_compatible(self, other)
         left = self._arrays()
         right = other._arrays()
         result = _native.pauli_operator_binary(self.nqubits, left, right, 0)
         return self._from_native(self.nqubits, result)
 
-    def scale(self, scalar: complex) -> "PauliOperator":
+    def scale(
+        self,
+        scalar: complex,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Multiply all coefficients by a finite complex scalar."""
+        _validate_max_bytes(max_bytes)
         normalized = complex(scalar)
         if not math.isfinite(normalized.real) or not math.isfinite(normalized.imag):
             raise ValueError("scale must be a finite complex128 value")
@@ -459,20 +471,41 @@ class PauliOperator:
         )
         return self._from_native(self.nqubits, result)
 
-    def multiply(self, other: "PauliOperator") -> "PauliOperator":
+    def multiply(
+        self,
+        other: "PauliOperator",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Multiply operators, absorbing exact Pauli phases into coefficients."""
+        _validate_max_bytes(max_bytes)
         return self._binary(other, 1)
 
-    def commutator(self, other: "PauliOperator") -> "PauliOperator":
+    def commutator(
+        self,
+        other: "PauliOperator",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Return ``self * other - other * self``."""
+        _validate_max_bytes(max_bytes)
         return self._binary(other, 2)
 
-    def anticommutator(self, other: "PauliOperator") -> "PauliOperator":
+    def anticommutator(
+        self,
+        other: "PauliOperator",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Return ``self * other + other * self``."""
+        _validate_max_bytes(max_bytes)
         return self._binary(other, 3)
 
-    def adjoint(self) -> "PauliOperator":
+    def adjoint(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> "PauliOperator":
         """Return the coefficient-conjugated adjoint operator."""
+        _validate_max_bytes(max_bytes)
         structures, coefficients_re, coefficients_im = self._arrays()
         result = _native.pauli_operator_adjoint(
             self.nqubits, structures, coefficients_re, coefficients_im
@@ -702,6 +735,8 @@ class PauliOperator:
             np.asarray(z_words, dtype=np.uint64).reshape((len(real), word_count)),
             np.asarray(real, dtype=np.float64)
             + 1j * np.asarray(imaginary, dtype=np.float64),
+            local_dimensions=(2,) * self.nqubits,
+            basis_ordering="qubit0_msb_matrix",
         )
 
     def native_mvp_plan(
@@ -725,7 +760,13 @@ class PauliOperator:
         if native_plan.term_count != len(self.terms):
             raise RuntimeError("native MVP plan has incompatible term count")
         return NativeMVPPlan(
-            self.nqubits, len(self.terms), native_plan.strategy, native_plan
+            self.nqubits,
+            len(self.terms),
+            native_plan.strategy,
+            native_plan,
+            local_dimensions=(2,) * self.nqubits,
+            basis_ordering="qubit0_msb_matrix",
+            estimated_bytes=0,
         )
 
     def compile(self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> Any:
@@ -739,8 +780,7 @@ class PauliOperator:
         if target == "backend_mvp":
             return self.backend_mvp_plan(max_bytes=max_bytes)
         if target == "native_mvp":
-            plan = self.native_mvp_plan(max_bytes=max_bytes)
-            return lambda state: plan.apply(state, max_bytes=max_bytes)
+            return self.native_mvp_plan(max_bytes=max_bytes)
         raise ValueError(
             "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
         )
@@ -757,15 +797,45 @@ class PauliOperator:
             return NotImplemented
         return self.add(other)
 
+    def __sub__(self, other: object) -> "PauliOperator":
+        if not isinstance(other, PauliOperator):
+            return NotImplemented
+        return self.add(other.scale(-1.0))
+
+    def __neg__(self) -> "PauliOperator":
+        return self.scale(-1.0)
+
     def __mul__(self, scalar: object) -> "PauliOperator":
         if isinstance(scalar, PauliOperator):
-            return NotImplemented
+            return self.multiply(scalar)
         if not isinstance(scalar, (int, float, complex)):
             return NotImplemented
         return self.scale(complex(scalar))
 
     def __rmul__(self, scalar: object) -> "PauliOperator":
         return self * scalar
+
+    def tensor_product(
+        self,
+        other: "PauliOperator",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
+        """Return the ordinary tensor product with left axes first."""
+        _validate_max_bytes(max_bytes)
+        if not isinstance(other, PauliOperator):
+            raise TypeError("tensor_product expects a PauliOperator")
+        terms = []
+        for left, right in (
+            (left, right) for left in self.terms for right in other.terms
+        ):
+            terms.append(
+                (
+                    left.word.to_codes() + right.word.to_codes(),
+                    left.coefficient * right.coefficient,
+                )
+            )
+        return PauliOperator.from_terms(self.nqubits + other.nqubits, terms)
 
 
 def _normalize_operator_inputs(
