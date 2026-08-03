@@ -134,8 +134,10 @@ class NativeMVPPlan:
             raise ValueError("schema_version must be positive")
         if target != "native_mvp":
             raise ValueError("native MVP plans must have target='native_mvp'")
-        if mapping not in {None, "jordan_wigner"}:
-            raise ValueError("mapping must be None or 'jordan_wigner'")
+        if mapping not in {None, "jordan_wigner", "parity", "bravyi_kitaev"}:
+            raise ValueError(
+                "mapping must be None, 'jordan_wigner', 'parity', or 'bravyi_kitaev'"
+            )
         object.__setattr__(self, "nqubits", nqubits)
         object.__setattr__(self, "term_count", term_count)
         object.__setattr__(self, "strategy", strategy)
@@ -295,8 +297,10 @@ class BackendMVPPlan:
                 raise ValueError(f"{name} must be an integer")
             if value < 0:
                 object.__setattr__(self, name, len(self.coefficients))
-        if self.mapping not in {None, "jordan_wigner"}:
-            raise ValueError("mapping must be None or 'jordan_wigner'")
+        if self.mapping not in {None, "jordan_wigner", "parity", "bravyi_kitaev"}:
+            raise ValueError(
+                "mapping must be None, 'jordan_wigner', 'parity', or 'bravyi_kitaev'"
+            )
         if not np.isfinite(self.coefficients).all():
             raise ValueError("backend plan coefficients must be finite")
         if self.plan_kind == "pauli":

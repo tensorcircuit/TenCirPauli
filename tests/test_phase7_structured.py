@@ -461,8 +461,10 @@ def test_phase7_memory_and_target_errors() -> None:
     with pytest.raises(NotImplementedError):
         operator.compile("backend_mvp", boson_cutoffs={0: 3})
     fermion = tcp.FermionOperator.from_terms(1, [(((0, "annihilate"),), 1.0)])
-    with pytest.raises(NotImplementedError):
-        fermion.compile("dense", mapping="bravyi_kitaev")
+    np.testing.assert_allclose(
+        fermion.compile("dense", mapping="bravyi_kitaev"),
+        fermion.compile("dense", mapping="jordan_wigner"),
+    )
 
 
 def test_partial_mapping_preserves_existing_pauli_factors() -> None:

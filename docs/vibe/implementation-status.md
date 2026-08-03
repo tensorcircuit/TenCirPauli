@@ -14,7 +14,7 @@ Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
 | Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0 in progress | Frozen contract in `phase-7.5-spec.md`; first work is to freeze independent Majorana, GF(2) mapping, charge, and restricted-basis references before native optimization. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P3 implemented; P4 in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, and restricted-target references pass; native restricted-plan and performance handoff remain. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -77,6 +77,12 @@ The public end-to-end measurements show no material common-path regression and a
 The third-round Holstein gate uses an independently assembled one-fermion/one-boson fixture with explicit Fock and projected ladder matrices, Kronecker products, dense/COO/CSR reconstruction, and native MVP application. Structured native plans now publish `operator_space_axis0_msb_mixed_radix`, while Pauli and mapped-fermion plans retain `qubit0_msb_matrix`; direct-Weyl backend plans publish `qudit0_msb_matrix` with neutral Pauli-only `nqubits=0` and `word_count=0` metadata.
 
 The final local evidence is `conda run -p .conda python scripts/check.py --benchmark smoke`: 31 Rust tests, 232 Python tests, 165 selected benchmark-smoke cases, Black, Ruff, strict mypy, Clippy, release `maturin develop --release --locked`, and the executable benchmark suites all pass. Phase 7 is accepted on this baseline; Phase 7.5 work must preserve the existing Pauli/U1/Z2 contracts and begin from the independent references required by its P0 gate.
+
+## Phase 7.5 P0–P3 checkpoint
+
+The first Phase 7.5 slice exports immutable `MajoranaWord`, `MajoranaProduct`, `MajoranaTerm`, `MajoranaOperator`, and `FermionQubitMapping` values. Majorana raw sequences canonicalize with exact signs; conversion to and from Phase 7 fermions is batched through the existing canonical native boundary and guarded by `max_bytes`. Jordan–Wigner, parity, and Fenwick Bravyi–Kitaev plans expose schema, convention, binary/inverse matrices, canonical CNOT provenance, basis metadata, and reusable pure-operator/hybrid mapping.
+
+Exact `AdditiveCharge` values ignore display names in equality, analyze complete aggregated commutators, infer simple finite boson bounds, preserve zero-charge qudit spectators, and build simultaneous-constraint `ChargeSector` rank/unrank plans. `ChargeRestrictedOperator` validates conservation before compiling deterministic restricted transitions and exposes dense, COO, CSR, and matrix-free MVP targets without allocating a full-space state or matrix. Focused Phase 7.5 coverage is 16 tests; the next gate is a release-profiled native restricted plan and the P4/P5 overflow, memory, and delivery matrix.
 
 ## Frozen owner decisions
 

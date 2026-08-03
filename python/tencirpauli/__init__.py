@@ -1,6 +1,13 @@
 """Public Python API for TenCirPauli."""
 
 from ._native import __version__
+from .charge import (
+    AdditiveCharge,
+    AdditiveSymmetryAnalysis,
+    ChargeMvpPlan,
+    ChargeRestrictedOperator,
+    ChargeSector,
+)
 from .circuit import Parameter, ParameterExpr
 from .grouping import (
     GeneralCommutingGroupingResult,
@@ -14,6 +21,8 @@ from .hamiltonian import (
     NativeMVPPlan,
 )
 from .integrations.tensorcircuit import backend_mvp
+from .majorana import MajoranaOperator, MajoranaProduct, MajoranaTerm, MajoranaWord
+from .mapping import FermionQubitMapping
 from .pauli import (
     CanonicalizationArrayResult,
     CanonicalizationResult,
@@ -66,6 +75,8 @@ from .u1_circuit import U1Circuit, U1CircuitPlan, U1CircuitValueAndGradient
 
 __all__ = [
     "DEFAULT_MAX_BYTES",
+    "AdditiveCharge",
+    "AdditiveSymmetryAnalysis",
     "BackendMVPPlan",
     "BosonOperator",
     "BosonTerm",
@@ -74,14 +85,22 @@ __all__ = [
     "CSRMatrix",
     "CanonicalizationArrayResult",
     "CanonicalizationResult",
+    "ChargeMvpPlan",
+    "ChargeRestrictedOperator",
+    "ChargeSector",
     "ComputationalBasisState",
     "FermionOperator",
+    "FermionQubitMapping",
     "FermionTerm",
     "FermionWord",
     "GateTape",
     "GeneralCommutingGroupingResult",
     "HybridOperator",
     "HybridTerm",
+    "MajoranaOperator",
+    "MajoranaProduct",
+    "MajoranaTerm",
+    "MajoranaWord",
     "NativeMVPPlan",
     "OperatorBuilder",
     "OperatorSpace",

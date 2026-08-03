@@ -14,6 +14,12 @@ from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_
 
 
 if TYPE_CHECKING:
+    from .charge import (
+        AdditiveCharge,
+        AdditiveSymmetryAnalysis,
+        ChargeRestrictedOperator,
+        ChargeSector,
+    )
     from .grouping import GroupingResult
     from .hamiltonian import (
         BackendMVPPlan,
@@ -532,6 +538,37 @@ class PauliOperator:
                 tolerance,
             )
         )
+
+    def analyze_charge(
+        self,
+        charge: "AdditiveCharge",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "AdditiveSymmetryAnalysis":
+        """Analyze an exact additive charge using the complete commutator."""
+        from .charge import analyze_charge
+
+        return analyze_charge(self, charge, max_bytes=max_bytes)
+
+    def conserves(
+        self,
+        charge: "AdditiveCharge",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> bool:
+        """Return whether this Pauli operator exactly conserves ``charge``."""
+        return self.analyze_charge(charge, max_bytes=max_bytes).is_conserved
+
+    def restrict_charge(
+        self,
+        sector: "ChargeSector",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "ChargeRestrictedOperator":
+        """Restrict an exactly conserved Pauli operator to a charge sector."""
+        from .charge import restrict_charge
+
+        return restrict_charge(self, sector, max_bytes=max_bytes)
 
     def group_commuting(
         self,

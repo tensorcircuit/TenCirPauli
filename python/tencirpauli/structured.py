@@ -15,6 +15,7 @@ import struct
 from dataclasses import dataclass, replace
 from itertools import product
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -45,6 +46,17 @@ from .hamiltonian import (
     _validate_max_bytes,
 )
 from .pauli import PauliOperator
+
+
+if TYPE_CHECKING:
+    from .charge import (
+        AdditiveCharge,
+        AdditiveSymmetryAnalysis,
+        ChargeRestrictedOperator,
+        ChargeSector,
+    )
+    from .majorana import MajoranaOperator
+    from .mapping import FermionQubitMapping
 
 
 _U32_MAX = 2**32 - 1
@@ -1172,6 +1184,37 @@ class _StructuredOperator:
             return False
         return all(abs(keys[key] - other_keys[key]) <= tolerance for key in keys)
 
+    def analyze_charge(
+        self,
+        charge: "AdditiveCharge",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "AdditiveSymmetryAnalysis":
+        """Analyze an exact additive charge using the complete commutator."""
+        from .charge import analyze_charge
+
+        return analyze_charge(self, charge, max_bytes=max_bytes)
+
+    def conserves(
+        self,
+        charge: "AdditiveCharge",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> bool:
+        """Return whether this operator exactly conserves ``charge``."""
+        return self.analyze_charge(charge, max_bytes=max_bytes).is_conserved
+
+    def restrict_charge(
+        self,
+        sector: "ChargeSector",
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "ChargeRestrictedOperator":
+        """Restrict an exactly conserved operator to a charge sector."""
+        from .charge import restrict_charge
+
+        return restrict_charge(self, sector, max_bytes=max_bytes)
+
     def tensor_product(
         self,
         other: "_StructuredOperator",
@@ -1236,13 +1279,40 @@ class _StructuredOperator:
 
     def map_fermions(
         self,
-        mapping: str = "jordan_wigner",
+        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> MappedOperator:
         """Map every raw fermion factor with the Phase 7 JW convention."""
+        if not isinstance(mapping, str):
+            from .mapping import FermionQubitMapping
+
+            if not isinstance(mapping, FermionQubitMapping):
+                raise TypeError(
+                    "mapping must be a supported name or FermionQubitMapping"
+                )
+            if self.space.fermions == 0:
+                if mapping.n_modes != 0:
+                    raise ValueError(
+                        "mapping plan and fermion axis counts are incompatible"
+                    )
+                return self
+            if not isinstance(self, HybridOperator):
+                raise TypeError(
+                    "reusable mappings require a hybrid or fermion operator"
+                )
+            return mapping.map_hybrid(self, max_bytes=max_bytes)
         if mapping != "jordan_wigner":
-            raise NotImplementedError("Phase 7 implements only mapping='jordan_wigner'")
+            from .mapping import FermionQubitMapping
+
+            plan = FermionQubitMapping.from_name(mapping, self.space.fermions)
+            if self.space.fermions == 0:
+                return self
+            if not isinstance(self, HybridOperator):
+                raise TypeError(
+                    "reusable mappings require a hybrid or fermion operator"
+                )
+            return plan.map_hybrid(self, max_bytes=max_bytes)
         if self.space.fermions == 0:
             return self
         if any(_term_has_raw_and_mapped_fermions(term) for term in self._terms):
@@ -1302,7 +1372,7 @@ class _StructuredOperator:
         self,
         target: str,
         *,
-        fermion_mapping: str = "jordan_wigner",
+        fermion_mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
@@ -1317,7 +1387,9 @@ class _StructuredOperator:
             if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
                 return _with_plan_metadata(
                     result,
-                    mapping=fermion_mapping if self.space.fermions else None,
+                    mapping=(
+                        _mapping_name(fermion_mapping) if self.space.fermions else None
+                    ),
                     source_term_count=len(self._terms),
                 )
             return result
@@ -1349,7 +1421,7 @@ class _StructuredOperator:
             target,
             normalized_cutoffs,
             max_bytes,
-            mapping=fermion_mapping if self.space.fermions else None,
+            mapping=(_mapping_name(fermion_mapping) if self.space.fermions else None),
         )
 
     def __add__(self, other: object) -> "_StructuredOperator":
@@ -1428,6 +1500,15 @@ def _with_plan_metadata(
         mapping=mapping,
         source_term_count=source_term_count,
     )
+
+
+def _mapping_name(mapping: Union[str, "FermionQubitMapping"]) -> str:
+    if isinstance(mapping, str):
+        return mapping
+    name = mapping.mapping_name
+    if not isinstance(name, str):
+        raise TypeError("mapping plan has an invalid mapping_name")
+    return name
 
 
 def _make_operator(
@@ -2127,13 +2208,25 @@ class FermionOperator(_StructuredOperator):
 
     def map_fermions(
         self,
-        mapping: str = "jordan_wigner",
+        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> PauliOperator:
         """Return the Jordan-Wigner Pauli representation."""
+        if not isinstance(mapping, str):
+            from .mapping import FermionQubitMapping
+
+            if not isinstance(mapping, FermionQubitMapping):
+                raise TypeError(
+                    "mapping must be a supported name or FermionQubitMapping"
+                )
+            return mapping.map_fermion_operator(self, max_bytes=max_bytes)
         if mapping != "jordan_wigner":
-            raise NotImplementedError("Phase 7 implements only mapping='jordan_wigner'")
+            from .mapping import FermionQubitMapping
+
+            return FermionQubitMapping.from_name(
+                mapping, self.space.fermions
+            ).map_fermion_operator(self, max_bytes=max_bytes)
         creation, annihilation, real, imaginary = _fermion_arrays(self)
         structures, mapped_real, mapped_imaginary = (
             _native.structured_fermion_jordan_wigner(
@@ -2157,7 +2250,7 @@ class FermionOperator(_StructuredOperator):
         self,
         target: str,
         *,
-        mapping: str = "jordan_wigner",
+        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Compile after applying the requested Jordan-Wigner mapping."""
@@ -2167,10 +2260,18 @@ class FermionOperator(_StructuredOperator):
         if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
             return _with_plan_metadata(
                 result,
-                mapping=mapping,
+                mapping=_mapping_name(mapping),
                 source_term_count=len(self._terms),
             )
         return result
+
+    def to_majorana(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> "MajoranaOperator":
+        """Convert this canonical fermion operator to the Phase 7.5 algebra."""
+        from .majorana import fermion_to_majorana
+
+        return fermion_to_majorana(self, max_bytes=max_bytes)
 
 
 class BosonOperator(_StructuredOperator):
@@ -2359,7 +2460,7 @@ class HybridOperator(_StructuredOperator):
         self,
         target: str,
         *,
-        fermion_mapping: str = "jordan_wigner",
+        fermion_mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
