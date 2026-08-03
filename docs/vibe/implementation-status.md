@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前 checkpoint 是 Phase 7.5 P0。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭，Phase 7.5 的 Majorana、fermion mapping 和 additive-charge contract 现已进入实现。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前 checkpoint 是 Phase 7.5 P4/P5 acceptance。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
 
 ## Active status
 
@@ -14,7 +14,7 @@ Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
 | Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P4 slice implemented; acceptance in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, and restricted-target references pass; the restricted apply kernel is now one GIL-released PyO3/Rust call, while native sector construction and final release evidence remain. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P4 implemented; P5 handoff in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, cancellation, and restricted-target references pass; transition construction is now a single pure-Rust core call behind a thin PyO3 boundary, with guarded dense/COO/CSR/MVP targets and mapping-plan memory checks. The remaining gate is the clean focused release record and final delivery note. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -78,15 +78,15 @@ The third-round Holstein gate uses an independently assembled one-fermion/one-bo
 
 The final local evidence is `conda run -p .conda python scripts/check.py --benchmark smoke`: 31 Rust tests, 232 Python tests, 165 selected benchmark-smoke cases, Black, Ruff, strict mypy, Clippy, release `maturin develop --release --locked`, and the executable benchmark suites all pass. Phase 7 is accepted on this baseline; Phase 7.5 work must preserve the existing Pauli/U1/Z2 contracts and begin from the independent references required by its P0 gate.
 
-## Phase 7.5 P0–P3 checkpoint
+## Phase 7.5 P0–P4 checkpoint
 
 The first Phase 7.5 slice exports immutable `MajoranaWord`, `MajoranaProduct`, `MajoranaTerm`, `MajoranaOperator`, and `FermionQubitMapping` values. Majorana raw sequences canonicalize with exact signs; conversion to and from Phase 7 fermions is batched through the existing canonical native boundary and guarded by `max_bytes`. Jordan–Wigner, parity, and Fenwick Bravyi–Kitaev plans expose schema, convention, binary/inverse matrices, canonical CNOT provenance, basis metadata, and reusable pure-operator/hybrid mapping.
 
-Exact `AdditiveCharge` values ignore display names in equality, analyze complete aggregated commutators, infer simple finite boson bounds, preserve zero-charge qudit spectators, and build simultaneous-constraint `ChargeSector` rank/unrank plans. `ChargeRestrictedOperator` validates conservation before compiling deterministic restricted transitions and exposes dense, COO, CSR, and matrix-free MVP targets without allocating a full-space state or matrix. Focused Phase 7.5 coverage is 17 tests; the remaining gate is the P4/P5 overflow, memory, and delivery matrix.
+Exact `AdditiveCharge` values ignore display names in equality, analyze complete aggregated commutators, infer simple finite boson bounds, preserve zero-charge qudit spectators, and build simultaneous-constraint `ChargeSector` rank/unrank plans. `ChargeRestrictedOperator` validates conservation before compiling deterministic restricted transitions and exposes guarded dense, COO, CSR, and matrix-free MVP targets without allocating a full-space state or matrix. Focused Phase 7.5 coverage is 19 tests, including mapping-plan/output memory guards and cancellation-before-leakage validation.
 
-The restricted MVP apply path is now backed by `crates/tencirpauli-native/src/charge.rs`: Python owns one immutable contiguous transition schema, while Rust validates bounded indices, releases the GIL, and accumulates the complex128 output in one call. `benchmarks/python/test_phase75_benchmark.py` records Majorana construction/conversion, all three mapping plans, sector setup, restricted setup/apply, input terms, CNOT count, sector dimension, transitions, and numerical-boundary metadata; the separate `phase75` harness suite is ready for a clean release record.
+The restricted transition path is implemented in `crates/tencir-pauli-core/src/charge.rs` and exposed through a thin `crates/tencirpauli-native/src/charge.rs` binding: Python serializes one complete basis/term batch, while the core validates bounded indices, aggregates same-destination contributions before leakage checks, releases the GIL through the binding, and returns deterministic row-major transitions. `benchmarks/python/test_phase75_benchmark.py` records Majorana construction/multiplication/conversion, all three mapping plans and mapped operators, sector setup, first/steady restricted apply, dense/COO/CSR materialization, the existing U1 setup reference, input terms, CNOT count, sector dimension, transitions, plan/workspace/output bytes, and numerical-boundary metadata.
 
-Clean release benchmark record `phase75-p4-20260803` at commit `da01bd5` completed 8 cases with `git_dirty=false`. Median timings on the local arm64/macOS release environment were approximately 31.6 µs for the 8-mode Majorana construction, 136.0 µs for fermion conversion, 122.2/159.6/142.1 µs for JW/parity/BK mapping, 46.4 µs for 12-mode sector setup, 3.58 ms for the 8-mode restricted setup, and 1.46 µs for native restricted apply at sector dimension 70. These are informational release measurements, not wall-time gates.
+The pure-Rust restricted compiler checkpoint is commit `535de7f`; its local smoke evidence is 31 Rust tests, 251 Python tests, and 177 selected benchmark-smoke cases with all quality checks passing. A clean focused release record will be appended after the P5 benchmark source and delivery updates are committed. These are informational release measurements, not wall-time gates.
 
 ## Frozen owner decisions
 

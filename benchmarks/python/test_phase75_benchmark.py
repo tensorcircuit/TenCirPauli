@@ -75,7 +75,7 @@ def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
     _record(
         benchmark,
         mapping=name,
-        input_terms=operator.term_count,
+        input_terms=len(operator.terms),
         n_modes=8,
         cnot_count=len(mapping.cnot_operations),
         plan_bytes=mapping.estimated_bytes,
@@ -97,7 +97,7 @@ def test_phase75_restricted_setup(benchmark: BenchmarkFixture) -> None:
         benchmark,
         n_modes=8,
         sector_dimension=sector.dimension,
-        input_terms=operator.term_count,
+        input_terms=len(operator.terms),
         plan_bytes=sector.estimated_bytes,
     )
     benchmark(operator.restrict_charge, sector)
@@ -106,11 +106,97 @@ def test_phase75_restricted_setup(benchmark: BenchmarkFixture) -> None:
 def test_phase75_restricted_apply(benchmark: BenchmarkFixture) -> None:
     sector, restricted = _charge_workload()
     state = np.arange(sector.dimension, dtype=np.complex128)
+    plan = restricted.mvp_plan()
     _record(
         benchmark,
         n_modes=8,
         sector_dimension=sector.dimension,
-        transitions=restricted.mvp_plan().transition_count,
-        plan_bytes=restricted.mvp_plan().estimated_bytes,
+        transitions=plan.transition_count,
+        plan_bytes=plan.estimated_bytes,
+        workspace_bytes=sector.dimension * max(len(sector.local_dimensions), 1) * 8,
+        output_bytes=sector.dimension * 16,
     )
     benchmark(restricted.apply, state)
+
+
+def test_phase75_restricted_first_apply(benchmark: BenchmarkFixture) -> None:
+    sector, _ = _charge_workload()
+    operator = _fermion_workload()
+    state = np.arange(sector.dimension, dtype=np.complex128)
+    _record(
+        benchmark,
+        n_modes=8,
+        sector_dimension=sector.dimension,
+        input_terms=operator.term_count,
+        first_apply=True,
+        workspace_bytes=sector.dimension * max(len(sector.local_dimensions), 1) * 8,
+        output_bytes=sector.dimension * 16,
+    )
+
+    def build_and_apply() -> np.ndarray:
+        return operator.restrict_charge(sector).apply(state)
+
+    benchmark(build_and_apply)
+
+
+@pytest.mark.parametrize("target", ["dense", "coo", "csr"])
+def test_phase75_restricted_materialization(
+    benchmark: BenchmarkFixture, target: str
+) -> None:
+    sector, restricted = _charge_workload()
+    plan = restricted.mvp_plan()
+    if target == "dense":
+        output_bytes = sector.dimension * sector.dimension * 16
+    elif target == "coo":
+        output_bytes = plan.estimated_bytes
+    else:
+        output_bytes = (sector.dimension + 1) * np.dtype(
+            np.intp
+        ).itemsize + plan.estimated_bytes
+    _record(
+        benchmark,
+        target=target,
+        n_modes=8,
+        sector_dimension=sector.dimension,
+        transitions=plan.transition_count,
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=output_bytes,
+        numerical_error=0.0,
+    )
+    benchmark(getattr(restricted, target))
+
+
+def test_phase75_restricted_setup_against_u1(benchmark: BenchmarkFixture) -> None:
+    operator = _fermion_workload().map_fermions("jordan_wigner")
+    charge = tcp.AdditiveCharge(
+        tcp.OperatorSpace(qubits=8), qubits={index: (0, 1) for index in range(8)}
+    )
+    sector = charge.sector(4)
+    u1_sector = tcp.U1Sector(8, 4)
+    _record(
+        benchmark,
+        comparison="phase75_charge_vs_existing_u1",
+        n_modes=8,
+        sector_dimension=sector.dimension,
+        input_terms=len(operator.terms),
+        phase75_plan_bytes=sector.estimated_bytes,
+        u1_basis_dimension=u1_sector.dimension,
+    )
+
+    def phase75_setup() -> tcp.ChargeRestrictedOperator:
+        return operator.restrict_charge(sector)
+
+    benchmark(phase75_setup)
+
+
+def test_phase75_existing_u1_reference_setup(benchmark: BenchmarkFixture) -> None:
+    operator = _fermion_workload().map_fermions("jordan_wigner")
+    u1_sector = tcp.U1Sector(8, 4)
+    _record(
+        benchmark,
+        comparison="existing_u1_reference",
+        n_modes=8,
+        sector_dimension=u1_sector.dimension,
+        input_terms=len(operator.terms),
+    )
+    benchmark(operator.restrict_u1, u1_sector)
