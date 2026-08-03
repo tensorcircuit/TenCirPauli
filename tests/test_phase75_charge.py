@@ -279,3 +279,62 @@ def test_sector_zero_negative_weights_overflow_and_memory_boundaries() -> None:
         tcp.AdditiveCharge(tcp.OperatorSpace(fermions=4), fermions={0: 1}).sector(
             0, max_bytes=1
         )
+
+
+@pytest.mark.parametrize("base", [2**53, 2**63, 2**127, -(2**127)])
+def test_large_integer_charge_weights_never_use_lossy_float_selection_rules(
+    base: int,
+) -> None:
+    space = tcp.OperatorSpace(fermions=2)
+    hopping = tcp.FermionOperator.from_terms(
+        2, [(((0, "create"), (1, "annihilate")), 1.0)]
+    )
+    broken = tcp.AdditiveCharge(space, fermions={0: base, 1: base + 1})
+    equal = tcp.AdditiveCharge(space, fermions={0: base, 1: base}, offset=base)
+    assert not hopping.conserves(broken)
+    assert hopping.analyze_charge(broken).commutator_term_count == 1
+    assert hopping.conserves(equal)
+
+
+def test_charge_generator_rejects_unrepresentable_integer_coefficients() -> None:
+    charge = tcp.AdditiveCharge(tcp.OperatorSpace(fermions=1), fermions={0: 2**53 + 1})
+    with pytest.raises(ValueError, match="representable exactly"):
+        charge.as_operator()
+
+
+def test_charge_analysis_and_sector_preflight_share_low_memory_policy() -> None:
+    qubit_space = tcp.OperatorSpace(qubits=2)
+    charge = tcp.AdditiveCharge(qubit_space, qubits={0: (0, 1), 1: (0, 1)})
+    operator = tcp.PauliOperator.from_terms(2, [((1, 1), 1.0)])
+    with pytest.raises(MemoryError):
+        operator.analyze_charge(charge, max_bytes=1)
+
+    boson_space = tcp.OperatorSpace(bosons=1)
+    boson_charge = tcp.AdditiveCharge(boson_space, bosons={0: 1})
+    with pytest.raises(MemoryError, match="preflight"):
+        boson_charge.sector(0, boson_cutoffs={0: 200_000}, max_bytes=1)
+
+    bounded = boson_charge.sector(0, boson_cutoffs={0: 2}, max_bytes=None)
+    larger = boson_charge.sector(0, boson_cutoffs={0: 3}, max_bytes=None)
+    assert bounded.dimension == larger.dimension == 1
+    assert larger.estimated_bytes > bounded.estimated_bytes
+
+
+def test_native_restricted_compiler_uses_plan_rank_unrank_without_basis_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    space = tcp.OperatorSpace(fermions=4)
+    charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
+    sector = charge.sector(2)
+    operator = space.fermion.create(0) * space.fermion.annihilate(
+        1
+    ) + space.fermion.create(1) * space.fermion.annihilate(0)
+
+    def forbidden_basis(*args: object, **kwargs: object) -> np.ndarray:
+        del args, kwargs
+        raise AssertionError("native restricted compilation must not materialize basis")
+
+    monkeypatch.setattr(tcp.ChargeSector, "basis_states", forbidden_basis)
+    restricted = operator.restrict_charge(sector)
+    assert restricted.dimension == 6
+    assert restricted.mvp_plan().transition_count == 4

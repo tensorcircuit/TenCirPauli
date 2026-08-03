@@ -14,10 +14,22 @@ pub struct ChargeSectorPlan {
     estimated_bytes: u128,
 }
 
+const CHARGE_CONTRIBUTION_BYTES: u128 = 16;
+
 impl ChargeSectorPlan {
+    /// Return the finite local dimensions used by the mixed-radix basis.
+    pub fn local_dimensions(&self) -> &[usize] {
+        &self.local_dimensions
+    }
+
     /// Return the number of selected basis states.
     pub fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    /// Return the number of simultaneous charge constraints.
+    pub fn constraint_count(&self) -> usize {
+        self.target.len()
     }
 
     /// Return the best-effort plan-size estimate.
@@ -33,36 +45,51 @@ impl ChargeSectorPlan {
                 actual: occupations.len(),
             });
         }
-        let values: Vec<usize> = occupations
-            .iter()
-            .enumerate()
-            .map(|(position, &value)| {
-                let value = usize::try_from(value).map_err(|_| PauliError::InvalidIndex {
-                    context: "occupation is outside the finite sector layout",
-                })?;
-                if value >= self.local_dimensions[position] {
-                    return Err(PauliError::InvalidIndex {
-                        context: "occupation is outside the finite sector layout",
-                    });
-                }
-                Ok(value)
-            })
-            .collect::<Result<_, _>>()?;
-
-        let mut remaining = self.target.clone();
+        let mut remaining = vec![0_i128; self.target.len()];
         let mut candidate_remaining = vec![0_i128; self.target.len()];
+        self.rank_into(occupations, &mut remaining, &mut candidate_remaining)
+    }
+
+    /// Rank a validated-length occupation using caller-owned scratch buffers.
+    pub fn rank_into<'a>(
+        &self,
+        occupations: &[u64],
+        mut remaining: &'a mut [i128],
+        mut candidate_remaining: &'a mut [i128],
+    ) -> Result<u64, PauliError> {
+        if occupations.len() != self.local_dimensions.len() {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.local_dimensions.len(),
+                actual: occupations.len(),
+            });
+        }
+        if remaining.len() != self.target.len() || candidate_remaining.len() != self.target.len() {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.target.len(),
+                actual: remaining.len(),
+            });
+        }
+        remaining.copy_from_slice(&self.target);
         let mut rank = 0_u128;
-        for (position, &value) in values.iter().enumerate() {
+        for (position, &raw_value) in occupations.iter().enumerate() {
+            let value = usize::try_from(raw_value).map_err(|_| PauliError::InvalidIndex {
+                context: "occupation is outside the finite sector layout",
+            })?;
+            if value >= self.local_dimensions[position] {
+                return Err(PauliError::InvalidIndex {
+                    context: "occupation is outside the finite sector layout",
+                });
+            }
             for candidate in 0..value {
                 subtract_contribution_into(
-                    &remaining,
+                    remaining,
                     &self.contributions[position][candidate],
-                    &mut candidate_remaining,
+                    candidate_remaining,
                 )?;
                 rank = rank
                     .checked_add(
                         self.suffix_counts[position + 1]
-                            .get(&candidate_remaining)
+                            .get(&*candidate_remaining)
                             .copied()
                             .unwrap_or(0),
                     )
@@ -71,9 +98,9 @@ impl ChargeSectorPlan {
                     })?;
             }
             subtract_contribution_into(
-                &remaining,
+                remaining,
                 &self.contributions[position][value],
-                &mut candidate_remaining,
+                candidate_remaining,
             )?;
             std::mem::swap(&mut remaining, &mut candidate_remaining);
         }
@@ -97,11 +124,17 @@ impl ChargeSectorPlan {
         let mut values = vec![0_u64; self.local_dimensions.len()];
         let mut remaining = vec![0_i128; self.target.len()];
         let mut candidate_remaining = vec![0_i128; self.target.len()];
-        self.unrank_into(index, &mut values, &mut remaining, &mut candidate_remaining)?;
+        self.unrank_into_with_scratch(
+            index,
+            &mut values,
+            &mut remaining,
+            &mut candidate_remaining,
+        )?;
         Ok(values)
     }
 
-    fn unrank_into(
+    /// Unrank using caller-owned occupation and remainder scratch buffers.
+    pub fn unrank_into_with_scratch(
         &self,
         index: u64,
         values: &mut [u64],
@@ -112,6 +145,12 @@ impl ChargeSectorPlan {
             return Err(PauliError::InvalidStructureLength {
                 expected: self.local_dimensions.len(),
                 actual: values.len(),
+            });
+        }
+        if remaining.len() != self.target.len() || candidate_remaining.len() != self.target.len() {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.target.len(),
+                actual: remaining.len(),
             });
         }
         remaining.copy_from_slice(&self.target);
@@ -173,7 +212,7 @@ impl ChargeSectorPlan {
         let mut remaining = vec![0_i128; self.target.len()];
         let mut candidate_remaining = vec![0_i128; self.target.len()];
         for index in 0..self.dimension {
-            self.unrank_into(
+            self.unrank_into_with_scratch(
                 index as u64,
                 &mut values,
                 &mut remaining,
@@ -201,6 +240,29 @@ pub fn build_charge_sector_plan(
     if target.is_empty() {
         return Err(PauliError::InvalidSector {
             context: "charge-sector requires at least one charge constraint",
+        });
+    }
+    let contribution_entries = local_dimensions
+        .iter()
+        .try_fold(0_u128, |total, &dimension| {
+            total
+                .checked_add(dimension as u128)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating charge-sector contributions",
+                })
+        })?;
+    let contribution_bytes = contribution_entries
+        .checked_mul(target.len() as u128)
+        .and_then(|value| value.checked_mul(CHARGE_CONTRIBUTION_BYTES))
+        .and_then(|value| value.checked_add((local_dimensions.len() as u128).checked_mul(64)?))
+        .and_then(|value| value.checked_add((target.len() as u128).checked_mul(16)?))
+        .ok_or(PauliError::Overflow {
+            context: "estimating charge-sector contributions",
+        })?;
+    if contribution_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: contribution_bytes,
+            limit: max_bytes,
         });
     }
     for (position, (dimension, table)) in local_dimensions.iter().zip(&contributions).enumerate() {
@@ -290,12 +352,9 @@ pub fn build_charge_sector_plan(
             context: "estimating charge-sector plan",
         })
     })?;
-    let estimated_bytes = table_bytes
-        .checked_add((local_dimensions.len() as u128).checked_mul(8).ok_or(
-            PauliError::Overflow {
-                context: "estimating charge-sector plan",
-            },
-        )?)
+    let estimated_bytes = contribution_bytes
+        .checked_add(table_bytes)
+        .and_then(|value| value.checked_add((local_dimensions.len() as u128).checked_mul(8)?))
         .ok_or(PauliError::Overflow {
             context: "estimating charge-sector plan",
         })?;
@@ -313,6 +372,124 @@ pub fn build_charge_sector_plan(
         dimension,
         estimated_bytes,
     })
+}
+
+/// Build a charge-sector plan from compact affine/local charge metadata.
+///
+/// This entry point performs the contribution-table preflight before creating
+/// one row per local level.  Python therefore only passes axis metadata and
+/// weights across the FFI boundary, even for very large finite boson cutoffs.
+#[allow(clippy::too_many_arguments)]
+pub fn build_compact_charge_sector_plan(
+    local_dimensions: Vec<usize>,
+    axis_kinds: Vec<u8>,
+    axis_indices: Vec<usize>,
+    fermion_weights: Vec<Vec<i128>>,
+    boson_weights: Vec<Vec<i128>>,
+    qubit_levels: Vec<Vec<(i128, i128)>>,
+    target: Vec<i128>,
+    max_bytes: u128,
+) -> Result<ChargeSectorPlan, PauliError> {
+    if local_dimensions.len() != axis_kinds.len() || local_dimensions.len() != axis_indices.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: local_dimensions.len(),
+            actual: axis_kinds.len(),
+        });
+    }
+    if target.is_empty() {
+        return Err(PauliError::InvalidSector {
+            context: "charge-sector requires at least one charge constraint",
+        });
+    }
+    for &dimension in &local_dimensions {
+        if dimension == 0 {
+            return Err(PauliError::InvalidSector {
+                context: "charge-sector local dimensions must be positive",
+            });
+        }
+    }
+    let contribution_entries = local_dimensions
+        .iter()
+        .try_fold(0_u128, |total, &dimension| {
+            total
+                .checked_add(dimension as u128)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating charge-sector contributions",
+                })
+        })?;
+    let preflight = contribution_entries
+        .checked_mul(target.len() as u128)
+        .and_then(|value| value.checked_mul(CHARGE_CONTRIBUTION_BYTES))
+        .and_then(|value| value.checked_add((local_dimensions.len() as u128).checked_mul(64)?))
+        .and_then(|value| value.checked_add((target.len() as u128).checked_mul(16)?))
+        .ok_or(PauliError::Overflow {
+            context: "estimating charge-sector contributions",
+        })?;
+    if preflight > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: preflight,
+            limit: max_bytes,
+        });
+    }
+
+    let mut contributions = Vec::with_capacity(local_dimensions.len());
+    for position in 0..local_dimensions.len() {
+        let kind = axis_kinds[position];
+        let axis_index = axis_indices[position];
+        let table = (0..local_dimensions[position])
+            .map(|value| {
+                let value = i128::try_from(value).map_err(|_| PauliError::Overflow {
+                    context: "converting charge-sector local level",
+                })?;
+                target
+                    .iter()
+                    .enumerate()
+                    .map(|(constraint, _)| match kind {
+                        0 => fermion_weights
+                            .get(constraint)
+                            .and_then(|weights| weights.get(axis_index))
+                            .ok_or(PauliError::InvalidSector {
+                                context: "invalid fermion charge axis",
+                            })?
+                            .checked_mul(value)
+                            .ok_or(PauliError::Overflow {
+                                context: "computing charge-sector contribution",
+                            }),
+                        1 => boson_weights
+                            .get(constraint)
+                            .and_then(|weights| weights.get(axis_index))
+                            .ok_or(PauliError::InvalidSector {
+                                context: "invalid boson charge axis",
+                            })?
+                            .checked_mul(value)
+                            .ok_or(PauliError::Overflow {
+                                context: "computing charge-sector contribution",
+                            }),
+                        2 => {
+                            let levels = qubit_levels
+                                .get(constraint)
+                                .and_then(|values| values.get(axis_index))
+                                .ok_or(PauliError::InvalidSector {
+                                    context: "invalid qubit charge axis",
+                                })?;
+                            if value > 1 {
+                                return Err(PauliError::InvalidSector {
+                                    context: "qubit charge axis has a non-binary level",
+                                });
+                            }
+                            Ok(if value == 0 { levels.0 } else { levels.1 })
+                        }
+                        3 => Ok(0),
+                        _ => Err(PauliError::InvalidSector {
+                            context: "invalid charge-sector axis kind",
+                        }),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        contributions.push(table);
+    }
+    build_charge_sector_plan(local_dimensions, contributions, target, max_bytes)
 }
 
 fn subtract_contribution_into(

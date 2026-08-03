@@ -27,6 +27,35 @@ class NativeMappingPlan:
         coefficients_im: Sequence[float],
         max_bytes: int,
     ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+    def transform_majorana(
+        self,
+        indices: object,
+        coefficients_re: Sequence[float],
+        coefficients_im: Sequence[float],
+        max_bytes: int,
+    ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+    def transform_hybrid(
+        self,
+        n_bosons: int,
+        n_qubits: int,
+        n_qudit_sites: int,
+        qudit_dimension: int,
+        input: object,
+        max_bytes: int,
+    ) -> tuple[
+        object,
+        object,
+        object,
+        object,
+        object,
+        object,
+        object,
+        object,
+        object,
+        object,
+        Sequence[float],
+        Sequence[float],
+    ]: ...
 
 def mapping_plan(mapping: str, n_modes: int, max_bytes: int) -> NativeMappingPlan: ...
 
@@ -38,10 +67,40 @@ class NativeChargeSectorPlan:
     def rank(self, occupations: Sequence[int]) -> int: ...
     def unrank(self, index: int) -> Sequence[int]: ...
     def basis_states(self, max_bytes: int) -> object: ...
+    def compile_transitions(
+        self,
+        dimension: int,
+        local_dimensions: Sequence[int],
+        fermion_positions: Sequence[int],
+        boson_positions: Sequence[int],
+        qubit_positions: Sequence[int],
+        qudit_positions: Sequence[int],
+        fermion_creation: object,
+        fermion_annihilation: object,
+        boson_blocks: object,
+        qubit_codes: object,
+        mapped_present: Sequence[bool],
+        mapped_codes: object,
+        qudit_present: Sequence[bool],
+        qudit_triples: object,
+        coefficients: object,
+        qudit_dimension: int,
+        max_bytes: int,
+    ) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 
 def charge_sector_plan(
     local_dimensions: Sequence[int],
     contributions: object,
+    target: Sequence[int],
+    max_bytes: int,
+) -> NativeChargeSectorPlan: ...
+def charge_sector_plan_compact(
+    local_dimensions: Sequence[int],
+    axis_kinds: Sequence[int],
+    axis_indices: Sequence[int],
+    fermion_weights: object,
+    boson_weights: object,
+    qubit_levels: object,
     target: Sequence[int],
     max_bytes: int,
 ) -> NativeChargeSectorPlan: ...
@@ -228,6 +287,14 @@ def majorana_to_fermion(
     Sequence[float],
     Sequence[float],
 ]: ...
+def fermion_to_majorana(
+    n_modes: int,
+    creation: object,
+    annihilation: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 
 class NativeMvpPlan:
     @property
@@ -493,6 +560,7 @@ def pauli_operator_binary(
     left: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
     right: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
     operation: int,
+    max_bytes: int,
 ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 def pauli_operator_scale(
     nqubits: int,

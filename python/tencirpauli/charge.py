@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import (
     Any,
     Dict,
+    Iterable,
     List,
     Mapping,
     Optional,
@@ -41,6 +43,22 @@ from .structured import (
 
 _I128_MIN = -(1 << 127)
 _I128_MAX = (1 << 127) - 1
+
+
+def _checked_float(value: Union[int, Fraction], name: str) -> float:
+    """Convert an exact scalar only when binary64 preserves it exactly."""
+    exact = value if isinstance(value, Fraction) else Fraction(value, 1)
+    try:
+        result = float(exact)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(
+            f"{name} is not representable exactly as a finite complex128 coefficient"
+        ) from error
+    if not math.isfinite(result) or Fraction.from_float(result) != exact:
+        raise ValueError(
+            f"{name} is not representable exactly as a finite complex128 coefficient"
+        )
+    return result
 
 
 def _exact_int(value: object, name: str) -> int:
@@ -195,7 +213,7 @@ class AdditiveCharge:
                     identity_qubits,
                     identity_qudit,
                     None,
-                    complex(self.offset),
+                    complex(_checked_float(self.offset, "charge offset")),
                 )
             )
         for mode, weight in enumerate(self.fermion_weights):
@@ -207,7 +225,7 @@ class AdditiveCharge:
                         identity_qubits,
                         identity_qudit,
                         None,
-                        complex(weight),
+                        complex(_checked_float(weight, "fermion charge weight")),
                     )
                 )
         for mode, weight in enumerate(self.boson_weights):
@@ -219,12 +237,12 @@ class AdditiveCharge:
                         identity_qubits,
                         identity_qudit,
                         None,
-                        complex(weight),
+                        complex(_checked_float(weight, "boson charge weight")),
                     )
                 )
         for index, (level_zero, level_one) in enumerate(self.qubit_levels):
-            identity_coefficient = (level_zero + level_one) / 2
-            z_coefficient = (level_zero - level_one) / 2
+            identity_coefficient = Fraction(level_zero + level_one, 2)
+            z_coefficient = Fraction(level_zero - level_one, 2)
             if identity_coefficient:
                 terms.append(
                     _Term(
@@ -233,7 +251,11 @@ class AdditiveCharge:
                         identity_qubits,
                         identity_qudit,
                         None,
-                        complex(identity_coefficient),
+                        complex(
+                            _checked_float(
+                                identity_coefficient, "qubit charge identity"
+                            )
+                        ),
                     )
                 )
             if z_coefficient:
@@ -246,7 +268,9 @@ class AdditiveCharge:
                         tuple(codes),
                         identity_qudit,
                         None,
-                        complex(z_coefficient),
+                        complex(
+                            _checked_float(z_coefficient, "qubit charge Z coefficient")
+                        ),
                     )
                 )
         return _make_operator(self.space, terms, max_bytes)
@@ -257,16 +281,37 @@ class AdditiveCharge:
             raise ValueError("as_pauli requires a pure qubit charge space")
         terms: List[Tuple[Tuple[int, ...], complex]] = []
         if self.offset:
-            terms.append(((0,) * self.space.qubits, complex(self.offset)))
+            terms.append(
+                (
+                    (0,) * self.space.qubits,
+                    complex(_checked_float(self.offset, "charge offset")),
+                )
+            )
         for index, (level_zero, level_one) in enumerate(self.qubit_levels):
-            identity_coefficient = (level_zero + level_one) / 2
-            z_coefficient = (level_zero - level_one) / 2
+            identity_coefficient = Fraction(level_zero + level_one, 2)
+            z_coefficient = Fraction(level_zero - level_one, 2)
             if identity_coefficient:
-                terms.append(((0,) * self.space.qubits, complex(identity_coefficient)))
+                terms.append(
+                    (
+                        (0,) * self.space.qubits,
+                        complex(
+                            _checked_float(
+                                identity_coefficient, "qubit charge identity"
+                            )
+                        ),
+                    )
+                )
             if z_coefficient:
                 codes = [0] * self.space.qubits
                 codes[index] = 3
-                terms.append((tuple(codes), complex(z_coefficient)))
+                terms.append(
+                    (
+                        tuple(codes),
+                        complex(
+                            _checked_float(z_coefficient, "qubit charge Z coefficient")
+                        ),
+                    )
+                )
         return PauliOperator.from_terms(self.space.qubits, terms)
 
     def sector(
@@ -452,39 +497,61 @@ class ChargeSector:
             raise ValueError("all charge constraints require the same OperatorSpace")
         cutoffs = _resolve_boson_cutoffs(normalized, boson_cutoffs)
         dimensions = _local_dimensions(space, cutoffs)
-        contribution_table: List[Tuple[Tuple[int, ...], ...]] = []
-        for axis, dimension in zip(space._axes, dimensions):
-            contribution_table.append(
-                tuple(
-                    tuple(
-                        _charge_contribution(charge, axis.domain, axis.index, value)
-                        for charge, _ in normalized
-                    )
-                    for value in range(dimension)
-                )
-            )
         target = tuple(value - charge.offset for charge, value in normalized)
         native_plan: Optional[Any] = None
-        suffix: List[Dict[Tuple[int, ...], int]] = []
-        if all(
+        contribution_entries = sum(dimensions)
+        contribution_upper_bound = (
+            contribution_entries * len(normalized) * 16
+            + len(dimensions) * 64
+            + len(normalized) * 16
+        )
+        _check_allocation(
+            contribution_upper_bound,
+            max_bytes,
+            "charge-sector contribution preflight",
+        )
+        axis_kinds = {
+            "fermion": 0,
+            "boson": 1,
+            "qubit": 2,
+            "qudit": 3,
+        }
+        compact_possible = all(
             _I128_MIN <= value <= _I128_MAX
-            for table in contribution_table
-            for contribution in table
-            for value in contribution
-        ) and all(_I128_MIN <= value <= _I128_MAX for value in target):
+            for charge, _ in normalized
+            for value in (
+                *charge.fermion_weights,
+                *charge.boson_weights,
+                *(level for levels in charge.qubit_levels for level in levels),
+            )
+        ) and all(_I128_MIN <= value <= _I128_MAX for value in target)
+        suffix: List[Dict[Tuple[int, ...], int]] = []
+        contribution_table: List[Tuple[Tuple[int, ...], ...]] = []
+        if compact_possible:
             try:
-                native_plan = _native.charge_sector_plan(
+                native_plan = _native.charge_sector_plan_compact(
                     list(dimensions),
-                    [
-                        [list(contribution) for contribution in table]
-                        for table in contribution_table
-                    ],
+                    [axis_kinds[axis.domain] for axis in space._axes],
+                    [axis.index for axis in space._axes],
+                    [list(charge.fermion_weights) for charge, _ in normalized],
+                    [list(charge.boson_weights) for charge, _ in normalized],
+                    [list(charge.qubit_levels) for charge, _ in normalized],
                     list(target),
                     _effective_max_bytes(max_bytes),
                 )
             except OverflowError:
                 native_plan = None
         if native_plan is None:
+            for axis, dimension in zip(space._axes, dimensions):
+                contribution_table.append(
+                    tuple(
+                        tuple(
+                            _charge_contribution(charge, axis.domain, axis.index, value)
+                            for charge, _ in normalized
+                        )
+                        for value in range(dimension)
+                    )
+                )
             zero = (0,) * len(normalized)
             suffix = [{} for _ in range(len(dimensions) + 1)]
             suffix[-1][zero] = 1
@@ -510,6 +577,7 @@ class ChargeSector:
                 )
             estimated_bytes = (
                 sum(len(table) * (64 + 24 * len(normalized)) for table in suffix)
+                + contribution_upper_bound
                 + len(dimensions) * 8
             )
             _check_allocation(estimated_bytes, max_bytes, "charge-sector plan")
@@ -857,14 +925,28 @@ def _compile_restricted_transitions(
         (axis.domain, axis.index): position
         for position, axis in enumerate(sector.space._axes)
     }
-    basis = sector.basis_states(max_bytes=max_bytes)
-    _check_allocation(int(basis.nbytes), max_bytes, "charge restricted basis workspace")
-    if max_bytes is None:
-        remaining: Optional[int] = None
+    basis: Optional[np.ndarray[Any, Any]] = None
+    if sector._native_plan is not None:
+        _check_allocation(
+            sector.estimated_bytes,
+            max_bytes,
+            "charge-sector rank/unrank plan",
+        )
+        if max_bytes is None:
+            remaining = None
+        else:
+            remaining = max_bytes - sector.estimated_bytes
     else:
-        if basis.nbytes > max_bytes:
-            raise MemoryError("charge restricted basis workspace exceeds max_bytes")
-        remaining = max_bytes - int(basis.nbytes)
+        basis = sector.basis_states(max_bytes=max_bytes)
+        _check_allocation(
+            int(basis.nbytes), max_bytes, "charge restricted basis workspace"
+        )
+        if max_bytes is None:
+            remaining = None
+        else:
+            if basis.nbytes > max_bytes:
+                raise MemoryError("charge restricted basis workspace exceeds max_bytes")
+            remaining = max_bytes - int(basis.nbytes)
 
     fermion_positions = [
         axis_positions[("fermion", index)] for index in range(sector.space.fermions)
@@ -944,7 +1026,6 @@ def _compile_restricted_transitions(
     if len(coefficients) != term_count:
         raise RuntimeError("restricted transition term serialization is inconsistent")
     coefficient_array = np.ascontiguousarray(coefficients, dtype=np.complex128)
-    basis_array = np.ascontiguousarray(basis, dtype=np.uint64)
     _check_allocation(
         int(coefficient_array.nbytes),
         remaining,
@@ -954,26 +1035,49 @@ def _compile_restricted_transitions(
         native_limit: Optional[int] = None
     else:
         native_limit = remaining - int(coefficient_array.nbytes)
-    rows, columns, real, imaginary = _native.charge_compile_transitions(
-        sector.dimension,
-        basis_array,
-        list(sector.local_dimensions),
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        fermion_creation,
-        fermion_annihilation,
-        boson_blocks,
-        qubit_codes,
-        mapped_present,
-        mapped_codes,
-        qudit_present,
-        qudit_triples,
-        coefficient_array,
-        sector.space.qudits[0] if sector.space.qudits else 0,
-        _effective_max_bytes(native_limit),
-    )
+    if sector._native_plan is not None:
+        rows, columns, real, imaginary = sector._native_plan.compile_transitions(
+            sector.dimension,
+            list(sector.local_dimensions),
+            fermion_positions,
+            boson_positions,
+            qubit_positions,
+            qudit_positions,
+            fermion_creation,
+            fermion_annihilation,
+            boson_blocks,
+            qubit_codes,
+            mapped_present,
+            mapped_codes,
+            qudit_present,
+            qudit_triples,
+            coefficient_array,
+            sector.space.qudits[0] if sector.space.qudits else 0,
+            _effective_max_bytes(native_limit),
+        )
+    else:
+        assert basis is not None
+        basis_array = np.ascontiguousarray(basis, dtype=np.uint64)
+        rows, columns, real, imaginary = _native.charge_compile_transitions(
+            sector.dimension,
+            basis_array,
+            list(sector.local_dimensions),
+            fermion_positions,
+            boson_positions,
+            qubit_positions,
+            qudit_positions,
+            fermion_creation,
+            fermion_annihilation,
+            boson_blocks,
+            qubit_codes,
+            mapped_present,
+            mapped_codes,
+            qudit_present,
+            qudit_triples,
+            coefficient_array,
+            sector.space.qudits[0] if sector.space.qudits else 0,
+            _effective_max_bytes(native_limit),
+        )
     return (
         np.asarray(rows, dtype=np.intp),
         np.asarray(columns, dtype=np.intp),
@@ -982,36 +1086,145 @@ def _compile_restricted_transitions(
     )
 
 
+def _add_exact_scaled(
+    aggregate: Dict[Tuple[object, ...], List[Fraction]],
+    key: Tuple[object, ...],
+    coefficient: complex,
+    real_scale: int,
+    imaginary_scale: int,
+) -> None:
+    """Accumulate a complex128 coefficient times exact integer scales."""
+    if real_scale == 0 and imaginary_scale == 0:
+        return
+    coefficient = complex(coefficient)
+    real = (
+        Fraction.from_float(coefficient.real) * real_scale
+        - Fraction.from_float(coefficient.imag) * imaginary_scale
+    )
+    imaginary = (
+        Fraction.from_float(coefficient.real) * imaginary_scale
+        + Fraction.from_float(coefficient.imag) * real_scale
+    )
+    current = aggregate.setdefault(key, [Fraction(0), Fraction(0)])
+    current[0] += real
+    current[1] += imaginary
+
+
+def _structured_charge_delta(term: _Term, charge: AdditiveCharge) -> int:
+    delta = 0
+    if term.fermion is not None:
+        delta += sum(
+            charge.fermion_weights[mode] for mode in term.fermion.creation_modes
+        )
+        delta -= sum(
+            charge.fermion_weights[mode] for mode in term.fermion.annihilation_modes
+        )
+    if term.boson is not None:
+        delta += sum(
+            charge.boson_weights[mode] * (creation - annihilation)
+            for mode, creation, annihilation in term.boson.blocks
+        )
+    return delta
+
+
+def _structured_commutator_key(
+    term: _Term, qubit_codes: Sequence[int]
+) -> Tuple[object, ...]:
+    key = list(term.key())
+    key[3] = tuple(qubit_codes)
+    return tuple(key)
+
+
+def _exact_charge_commutator(
+    operator: Union[_StructuredOperator, PauliOperator],
+    charge: AdditiveCharge,
+    max_bytes: Optional[int],
+) -> Tuple[bool, int]:
+    """Return conservation and term count using integer selection rules.
+
+    Fermion and boson monomials have a constant charge delta.  A qubit X/Y
+    factor is split into its exact local commutator with the diagonal Z part
+    of the charge.  The resulting canonical keys are aggregated with exact
+    binary-float coefficient fractions, so neither large integer weights nor
+    cancellation decisions pass through a lossy charge generator.
+    """
+    if isinstance(operator, PauliOperator):
+        expected_space = OperatorSpace(qubits=operator.nqubits)
+        if charge.space != expected_space:
+            raise ValueError("operator and charge layouts are incompatible")
+        term_count = len(operator.terms)
+        qubit_count = operator.nqubits
+        terms: Iterable[Tuple[Sequence[int], complex, Optional[_Term]]] = (
+            (term.word.to_codes(), term.coefficient, None) for term in operator.terms
+        )
+    elif isinstance(operator, _StructuredOperator):
+        if operator.space != charge.space:
+            raise ValueError("operator and charge layouts are incompatible")
+        if any(term.mapped_fermion is not None for term in operator._terms):
+            raise ValueError(
+                "charge analysis is defined before fermion-to-qubit mapping; "
+                "analyze the raw structured operator"
+            )
+        term_count = len(operator._terms)
+        qubit_count = operator.space.qubits
+        terms = ((term.qubit, term.coefficient, term) for term in operator._terms)
+    else:
+        raise TypeError("operator must be a structured or Pauli operator")
+
+    estimated = term_count * max(1, qubit_count + 1) * 128
+    _check_allocation(estimated, max_bytes, "exact additive-charge analysis")
+    aggregate: Dict[Tuple[object, ...], List[Fraction]] = {}
+    for codes, coefficient, structured_term in terms:
+        if structured_term is None:
+            base_key: Tuple[object, ...] = tuple(codes)
+            raw_delta = 0
+        else:
+            base_key = structured_term.key()
+            raw_delta = _structured_charge_delta(structured_term, charge)
+        if raw_delta:
+            _add_exact_scaled(aggregate, base_key, coefficient, -raw_delta, 0)
+        for index, code in enumerate(codes):
+            if code not in (1, 2):
+                continue
+            difference = charge.qubit_levels[index][0] - charge.qubit_levels[index][1]
+            if not difference:
+                continue
+            changed = list(codes)
+            changed[index] = 2 if code == 1 else 1
+            key = (
+                tuple(changed)
+                if structured_term is None
+                else _structured_commutator_key(structured_term, changed)
+            )
+            _add_exact_scaled(
+                aggregate,
+                key,
+                coefficient,
+                0,
+                -difference if code == 1 else difference,
+            )
+    nonzero = sum(1 for real, imaginary in aggregate.values() if real or imaginary)
+    return nonzero == 0, nonzero
+
+
 def analyze_charge(
     operator: Union[_StructuredOperator, PauliOperator],
     charge: AdditiveCharge,
     *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> AdditiveSymmetryAnalysis:
-    """Compute the complete canonical commutator without term-wise shortcuts."""
+    """Analyze an exact additive charge through integer selection rules."""
     if not isinstance(charge, AdditiveCharge):
         raise TypeError("charge must be an AdditiveCharge")
     _validate_max_bytes(max_bytes)
-    commutator: Union[_StructuredOperator, PauliOperator]
-    if isinstance(operator, PauliOperator):
-        pauli_generator = charge.as_pauli()
-        if operator.nqubits != pauli_generator.nqubits:
-            raise ValueError("operator and charge layouts are incompatible")
-        commutator = operator.commutator(pauli_generator)
-    elif isinstance(operator, _StructuredOperator):
-        if operator.space != charge.space:
-            raise ValueError("operator and charge layouts are incompatible")
-        structured_generator = charge.as_operator(max_bytes=max_bytes)
-        commutator = operator.commutator(structured_generator, max_bytes=max_bytes)
-    else:
-        raise TypeError("operator must be a structured or Pauli operator")
-    if not isinstance(commutator, (PauliOperator, _StructuredOperator)):
-        raise TypeError("commutator returned an incompatible operator type")
-    commutator_term_count = len(commutator.terms)
+    is_conserved, commutator_term_count = _exact_charge_commutator(
+        operator, charge, max_bytes
+    )
     return AdditiveSymmetryAnalysis(
         charge,
-        commutator_term_count == 0,
+        is_conserved,
         commutator_term_count,
+        method="exact_integer_selection_rules",
     )
 
 

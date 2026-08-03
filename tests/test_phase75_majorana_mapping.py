@@ -234,7 +234,50 @@ def test_mapping_plan_and_mapped_output_honor_memory_limits() -> None:
         plan.map_fermion_operator(operator, max_bytes=1)
 
 
-def test_hybrid_mapping_replaces_only_fermion_axes() -> None:
+def test_packed_majorana_support_crosses_multiple_u64_boundaries() -> None:
+    n_modes = 70
+    left = tcp.MajoranaWord(n_modes, (63, 64, 127, 128))
+    right = tcp.MajoranaWord(n_modes, (64, 65, 128, 129))
+    product = left.multiply(right)
+    assert product.word.indices == (63, 65, 127, 129)
+    assert product.sign == 1
+    operator = tcp.MajoranaOperator.from_terms(
+        n_modes, [((63, 64, 65, 127, 128, 129), 1.0)]
+    )
+    assert operator.term_count == 1
+    assert len(operator.map_fermions("jordan_wigner").terms) == 1
+
+
+@pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
+def test_direct_majorana_mapping_matches_encoded_dense_reference(name: str) -> None:
+    operator = tcp.MajoranaOperator.from_terms(4, [((0, 1, 2, 5, 6, 7), 0.25 - 0.1j)])
+    plan = tcp.FermionQubitMapping.from_name(name, 4)
+    encoded_basis = _encoded_basis_permutation(plan)
+    expected = (
+        encoded_basis
+        @ operator.map_fermions("jordan_wigner").compile("dense")
+        @ encoded_basis.conj().T
+    )
+    np.testing.assert_allclose(operator.map_fermions(plan).compile("dense"), expected)
+
+
+def test_majorana_mapping_does_not_call_exponential_fermion_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = tcp.MajoranaOperator.from_terms(32, [(tuple(range(32)), 1.0)])
+
+    def forbidden_conversion(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("direct mapping must not call to_fermion")
+
+    monkeypatch.setattr(tcp.MajoranaOperator, "to_fermion", forbidden_conversion)
+    for name in ("jordan_wigner", "parity", "bravyi_kitaev"):
+        mapped = operator.map_fermions(name)
+        assert len(mapped.terms) == 1
+
+
+@pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
+def test_hybrid_mapping_replaces_only_fermion_axes(name: str) -> None:
     space = tcp.OperatorSpace(fermions=2, bosons=1, qubits=1)
     operator = (
         (
@@ -244,7 +287,7 @@ def test_hybrid_mapping_replaces_only_fermion_axes() -> None:
         * space.boson.create(0)
         * space.qubit.z(0)
     )
-    plan = tcp.FermionQubitMapping.parity(2)
+    plan = tcp.FermionQubitMapping.from_name(name, 2)
     mapped = operator.map_fermions(plan)
     assert isinstance(mapped, tcp.HybridOperator)
     encoded = _encoded_basis_permutation(plan)

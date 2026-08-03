@@ -18,13 +18,15 @@ mod word;
 use pyo3::prelude::*;
 
 use charge::{charge_compile_transitions, charge_mvp_apply};
-use charge_sector::{charge_sector_plan, NativeChargeSectorPlan};
+use charge_sector::{charge_sector_plan, charge_sector_plan_compact, NativeChargeSectorPlan};
 use grouping::{pauli_compatibility_matrix, pauli_group, pauli_incompatibility_edges};
 use hamiltonian::{
     pauli_backend_plan, pauli_coo, pauli_coo_array, pauli_csr, pauli_csr_array, pauli_dense,
     pauli_dense_array, pauli_mvp_array, pauli_mvp_plan, NativeMvpPlan,
 };
-use majorana::{majorana_canonicalize, majorana_multiply, majorana_to_fermion};
+use majorana::{
+    fermion_to_majorana, majorana_canonicalize, majorana_multiply, majorana_to_fermion,
+};
 use mapping::{mapping_plan, NativeMappingPlan};
 use operator::{
     pauli_canonicalize, pauli_canonicalize_array, pauli_canonicalize_batch,
@@ -95,9 +97,11 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(charge_mvp_apply, module)?)?;
     module.add_function(wrap_pyfunction!(charge_compile_transitions, module)?)?;
     module.add_function(wrap_pyfunction!(charge_sector_plan, module)?)?;
+    module.add_function(wrap_pyfunction!(charge_sector_plan_compact, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_canonicalize, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_to_fermion, module)?)?;
+    module.add_function(wrap_pyfunction!(fermion_to_majorana, module)?)?;
     module.add_function(wrap_pyfunction!(mapping_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;

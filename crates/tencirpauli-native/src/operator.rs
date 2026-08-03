@@ -210,6 +210,7 @@ pub(crate) fn pauli_operator_binary(
     left: CanonicalizeInput,
     right: CanonicalizeInput,
     operation: u8,
+    max_bytes: u128,
 ) -> PyResult<CanonicalizeOutput> {
     if operation > 3 {
         return Err(PyValueError::new_err("unknown Pauli operator operation"));
@@ -218,10 +219,10 @@ pub(crate) fn pauli_operator_binary(
         let left_operator = build_canonical_operator(nqubits, &left.0, &left.1, &left.2)?;
         let right_operator = build_canonical_operator(nqubits, &right.0, &right.1, &right.2)?;
         match operation {
-            0 => left_operator.add(&right_operator),
-            1 => left_operator.multiply(&right_operator),
-            2 => left_operator.commutator(&right_operator),
-            3 => left_operator.anticommutator(&right_operator),
+            0 => left_operator.add_with_limit(&right_operator, max_bytes),
+            1 => left_operator.multiply_with_limit(&right_operator, max_bytes),
+            2 => left_operator.commutator_with_limit(&right_operator, max_bytes),
+            3 => left_operator.anticommutator_with_limit(&right_operator, max_bytes),
             _ => unreachable!("operation was validated before releasing the GIL"),
         }
         .map_err(map_error)

@@ -1,9 +1,8 @@
 //! Exact sparse Majorana word and operator kernels.
 
-use std::collections::BTreeMap;
-
 use crate::structured::{canonicalize_fermion_terms, FermionCanonicalResult};
 use crate::{Complex64, PauliError};
+use rustc_hash::FxHashMap;
 
 pub struct MajoranaBatch<'a> {
     pub indices: &'a [Vec<u64>],
@@ -11,6 +10,81 @@ pub struct MajoranaBatch<'a> {
 }
 
 pub type MajoranaCanonicalResult = (Vec<Vec<u64>>, Vec<Complex64>);
+
+/// Packed support for a canonical Majorana word.
+///
+/// The public representation is a sorted list of generator indices, but the
+/// algebraic hot paths only need support XOR and parity queries.  Keeping the
+/// support in fixed-width limbs avoids allocating and comparing one index
+/// vector for every intermediate aggregate key.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct PackedSupport {
+    limbs: Vec<u64>,
+}
+
+impl PackedSupport {
+    fn empty(n_modes: usize) -> Result<Self, PauliError> {
+        let generator_count = n_modes.checked_mul(2).ok_or(PauliError::Overflow {
+            context: "allocating packed Majorana support",
+        })?;
+        let limb_count = generator_count
+            .checked_add(63)
+            .ok_or(PauliError::Overflow {
+                context: "allocating packed Majorana support",
+            })?
+            / 64;
+        Ok(Self {
+            limbs: vec![0; limb_count],
+        })
+    }
+
+    fn toggle(&mut self, index: u64) {
+        let index = index as usize;
+        self.limbs[index / 64] ^= 1_u64 << (index % 64);
+    }
+
+    fn parity_above(&self, index: u64) -> u8 {
+        let index = index as usize;
+        let limb = index / 64;
+        let bit = index % 64;
+        let mut parity = if bit == 63 {
+            0
+        } else {
+            ((self.limbs[limb] >> (bit + 1)).count_ones() & 1) as u8
+        };
+        for &value in &self.limbs[limb + 1..] {
+            parity ^= (value.count_ones() & 1) as u8;
+        }
+        parity
+    }
+
+    fn from_canonical(n_modes: usize, word: &[u64]) -> Result<Self, PauliError> {
+        validate_canonical(n_modes, word)?;
+        let mut support = Self::empty(n_modes)?;
+        for &index in word {
+            support.toggle(index);
+        }
+        Ok(support)
+    }
+
+    fn to_indices(&self) -> Vec<u64> {
+        let capacity = self
+            .limbs
+            .iter()
+            .map(|value| value.count_ones() as usize)
+            .sum();
+        let mut indices = Vec::with_capacity(capacity);
+        for (limb_index, &limb) in self.limbs.iter().enumerate() {
+            let mut remaining = limb;
+            while remaining != 0 {
+                let bit = remaining.trailing_zeros() as usize;
+                indices.push((limb_index * 64 + bit) as u64);
+                remaining &= remaining - 1;
+            }
+        }
+        indices
+    }
+}
 
 fn invalid_word() -> PauliError {
     PauliError::InvalidSector {
@@ -50,26 +124,20 @@ fn max_index(n_modes: usize) -> Result<u64, PauliError> {
     })
 }
 
-fn canonicalize_indices(n_modes: usize, raw: &[u64]) -> Result<(Vec<u64>, i8), PauliError> {
+fn canonicalize_indices(n_modes: usize, raw: &[u64]) -> Result<(PackedSupport, i8), PauliError> {
     let limit = max_index(n_modes)?;
-    let mut values = Vec::with_capacity(raw.len());
+    let mut support = PackedSupport::empty(n_modes)?;
     let mut sign: i8 = 1;
     for &index in raw {
         if index >= limit {
             return Err(invalid_word());
         }
-        let inversions = values.iter().filter(|&&value| value > index).count();
-        if inversions & 1 != 0 {
+        if support.parity_above(index) != 0 {
             sign = -sign;
         }
-        if let Some(position) = values.iter().position(|&value| value == index) {
-            values.remove(position);
-        } else {
-            let position = values.partition_point(|&value| value < index);
-            values.insert(position, index);
-        }
+        support.toggle(index);
     }
-    Ok((values, sign))
+    Ok((support, sign))
 }
 
 fn validate_canonical(n_modes: usize, word: &[u64]) -> Result<(), PauliError> {
@@ -82,58 +150,42 @@ fn validate_canonical(n_modes: usize, word: &[u64]) -> Result<(), PauliError> {
     Ok(())
 }
 
-fn multiply_words(left: &[u64], right: &[u64]) -> (Vec<u64>, i8) {
-    let inversions = left
-        .iter()
-        .flat_map(|&left_index| {
-            right
-                .iter()
-                .filter(move |&&right_index| left_index > right_index)
-        })
-        .count();
-    let mut support = Vec::with_capacity(left.len() + right.len());
-    let mut left_index = 0;
-    let mut right_index = 0;
-    while left_index < left.len() || right_index < right.len() {
-        match (left.get(left_index), right.get(right_index)) {
-            (Some(&left_value), Some(&right_value)) if left_value < right_value => {
-                support.push(left_value);
-                left_index += 1;
-            }
-            (Some(&left_value), Some(&right_value)) if right_value < left_value => {
-                support.push(right_value);
-                right_index += 1;
-            }
-            (Some(_), Some(_)) => {
-                left_index += 1;
-                right_index += 1;
-            }
-            (Some(&value), None) => {
-                support.push(value);
-                left_index += 1;
-            }
-            (None, Some(&value)) => {
-                support.push(value);
-                right_index += 1;
-            }
-            (None, None) => break,
+fn multiply_words(left: &PackedSupport, right: &PackedSupport) -> (PackedSupport, i8) {
+    debug_assert_eq!(left.limbs.len(), right.limbs.len());
+    let mut inversions = 0_u8;
+    for (left_limb_index, &left_limb) in left.limbs.iter().enumerate() {
+        for &right_limb in &right.limbs[..left_limb_index] {
+            inversions ^= ((left_limb.count_ones() & 1) & (right_limb.count_ones() & 1)) as u8;
+        }
+        let mut remaining = left_limb;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros();
+            let lower_mask = if bit == 0 { 0 } else { (1_u64 << bit) - 1 };
+            inversions ^= ((right.limbs[left_limb_index] & lower_mask).count_ones() & 1) as u8;
+            remaining &= remaining - 1;
         }
     }
-    (support, if inversions & 1 == 0 { 1 } else { -1 })
+    let mut support = left.clone();
+    for (left_limb, &right_limb) in support.limbs.iter_mut().zip(&right.limbs) {
+        *left_limb ^= right_limb;
+    }
+    (support, if inversions == 0 { 1 } else { -1 })
 }
 
-fn finish(aggregate: BTreeMap<Vec<u64>, Complex64>) -> Result<MajoranaCanonicalResult, PauliError> {
-    let mut indices = Vec::with_capacity(aggregate.len());
-    let mut coefficients = Vec::with_capacity(aggregate.len());
+fn finish(
+    aggregate: FxHashMap<PackedSupport, Complex64>,
+) -> Result<MajoranaCanonicalResult, PauliError> {
+    let mut ordered = Vec::with_capacity(aggregate.len());
     for (word, coefficient) in aggregate {
         if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
             return Err(PauliError::NonFiniteCoefficient { index: 0 });
         }
         if coefficient.re != 0.0 || coefficient.im != 0.0 {
-            indices.push(word);
-            coefficients.push(coefficient);
+            ordered.push((word.to_indices(), coefficient));
         }
     }
+    ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    let (indices, coefficients): (Vec<_>, Vec<_>) = ordered.into_iter().unzip();
     Ok((indices, coefficients))
 }
 
@@ -149,7 +201,7 @@ pub fn canonicalize_majorana_terms(
             actual: coefficients.len(),
         });
     }
-    let mut aggregate = BTreeMap::new();
+    let mut aggregate = FxHashMap::default();
     for (index, (raw, &coefficient)) in indices.iter().zip(coefficients).enumerate() {
         if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
             return Err(PauliError::NonFiniteCoefficient { index });
@@ -250,6 +302,107 @@ pub fn majorana_to_fermion_terms(
     canonicalize_fermion_terms(n_modes, &factors, &expanded_coefficients, max_bytes)
 }
 
+/// Expand canonical fermion words into Majorana words in one native batch.
+pub fn fermion_to_majorana_terms(
+    n_modes: usize,
+    creation: &[Vec<u32>],
+    annihilation: &[Vec<u32>],
+    coefficients: &[Complex64],
+    max_bytes: u128,
+) -> Result<MajoranaCanonicalResult, PauliError> {
+    if creation.len() != annihilation.len() || creation.len() != coefficients.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: creation.len(),
+            actual: annihilation.len(),
+        });
+    }
+    let mut branch_count = 0_u128;
+    for (index, ((creates, annihilates), &coefficient)) in creation
+        .iter()
+        .zip(annihilation)
+        .zip(coefficients)
+        .enumerate()
+    {
+        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+        for &mode in creates.iter().chain(annihilates) {
+            if usize::try_from(mode)
+                .map(|mode| mode >= n_modes)
+                .unwrap_or(true)
+            {
+                return Err(PauliError::InvalidIndex {
+                    context: "fermion mode in fermion-to-Majorana conversion",
+                });
+            }
+        }
+        let degree = creates
+            .len()
+            .checked_add(annihilates.len())
+            .ok_or(PauliError::Overflow {
+                context: "estimating fermion-to-Majorana expansion",
+            })?;
+        let branches = 1_u128
+            .checked_shl(u32::try_from(degree).map_err(|_| PauliError::Overflow {
+                context: "estimating fermion-to-Majorana expansion",
+            })?)
+            .ok_or(PauliError::Overflow {
+                context: "estimating fermion-to-Majorana expansion",
+            })?;
+        branch_count = branch_count
+            .checked_add(branches)
+            .ok_or(PauliError::Overflow {
+                context: "estimating fermion-to-Majorana expansion",
+            })?;
+    }
+    check_bytes_u128(branch_count, 192, max_bytes)?;
+    let mut aggregate = FxHashMap::default();
+    for ((creates, annihilates), &coefficient) in
+        creation.iter().zip(annihilation).zip(coefficients)
+    {
+        let sequence = creates
+            .iter()
+            .map(|&mode| (mode, true))
+            .chain(annihilates.iter().map(|&mode| (mode, false)))
+            .collect::<Vec<_>>();
+        let branch_count = 1_usize
+            .checked_shl(
+                u32::try_from(sequence.len()).map_err(|_| PauliError::Overflow {
+                    context: "allocating fermion-to-Majorana expansion",
+                })?,
+            )
+            .ok_or(PauliError::Overflow {
+                context: "allocating fermion-to-Majorana expansion",
+            })?;
+        for mask in 0..branch_count {
+            let mut raw = Vec::with_capacity(sequence.len());
+            let mut branch_coefficient = coefficient;
+            for (position, &(mode, is_creation)) in sequence.iter().enumerate() {
+                let shift = u32::try_from(sequence.len() - position - 1).map_err(|_| {
+                    PauliError::Overflow {
+                        context: "allocating fermion-to-Majorana expansion",
+                    }
+                })?;
+                let component_is_odd = mask & (1_usize << shift) != 0;
+                let mode = u64::from(mode);
+                raw.push(2 * mode + u64::from(component_is_odd));
+                branch_coefficient *= Complex64::new(0.5, 0.0);
+                if component_is_odd {
+                    branch_coefficient *= if is_creation {
+                        Complex64::new(0.0, -1.0)
+                    } else {
+                        Complex64::new(0.0, 1.0)
+                    };
+                }
+            }
+            let (word, sign) = canonicalize_indices(n_modes, &raw)?;
+            *aggregate.entry(word).or_insert(Complex64::new(0.0, 0.0)) +=
+                branch_coefficient * f64::from(sign);
+        }
+    }
+    finish(aggregate)
+}
+
 pub fn multiply_majorana_terms(
     n_modes: usize,
     left: MajoranaBatch<'_>,
@@ -272,19 +425,26 @@ pub fn multiply_majorana_terms(
                 context: "estimating Majorana multiplication",
             })?;
     check_bytes(pair_count, 192, max_bytes)?;
-    let mut aggregate = BTreeMap::new();
+    let mut aggregate = FxHashMap::default();
+    let left_words = left
+        .indices
+        .iter()
+        .map(|word| PackedSupport::from_canonical(n_modes, word))
+        .collect::<Result<Vec<_>, _>>()?;
+    let right_words = right
+        .indices
+        .iter()
+        .map(|word| PackedSupport::from_canonical(n_modes, word))
+        .collect::<Result<Vec<_>, _>>()?;
     for (left_index, &left_coefficient) in left.coefficients.iter().enumerate() {
         if !left_coefficient.re.is_finite() || !left_coefficient.im.is_finite() {
             return Err(PauliError::NonFiniteCoefficient { index: left_index });
         }
-        validate_canonical(n_modes, &left.indices[left_index])?;
         for (right_index, &right_coefficient) in right.coefficients.iter().enumerate() {
             if !right_coefficient.re.is_finite() || !right_coefficient.im.is_finite() {
                 return Err(PauliError::NonFiniteCoefficient { index: right_index });
             }
-            validate_canonical(n_modes, &right.indices[right_index])?;
-            let (word, sign) =
-                multiply_words(&left.indices[left_index], &right.indices[right_index]);
+            let (word, sign) = multiply_words(&left_words[left_index], &right_words[right_index]);
             let value = left_coefficient * right_coefficient * f64::from(sign);
             *aggregate.entry(word).or_insert(Complex64::new(0.0, 0.0)) += value;
             check_bytes(aggregate.len(), 192, max_bytes)?;
@@ -320,5 +480,17 @@ mod tests {
         let error = majorana_to_fermion_terms(2, &[vec![0, 1]], &[Complex64::new(1.0, 0.0)], 192)
             .expect_err("the branch budget must reject the expansion");
         assert!(matches!(error, PauliError::MemoryLimit { .. }));
+    }
+
+    #[test]
+    fn packed_support_aggregate_is_sorted_by_public_index_tuples() {
+        let result = canonicalize_majorana_terms(
+            32,
+            &[vec![1], vec![0, 63]],
+            &[Complex64::new(1.0, 0.0), Complex64::new(1.0, 0.0)],
+            u128::MAX,
+        )
+        .expect("packed Majorana canonicalization");
+        assert_eq!(result.0, vec![vec![0, 63], vec![1]]);
     }
 }

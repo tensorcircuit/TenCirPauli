@@ -15,7 +15,7 @@ from .hamiltonian import (
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from .structured import FermionOperator, _fermion_from_native
+from .structured import FermionOperator, _fermion_arrays, _fermion_from_native
 
 
 def _exact_nonnegative(value: object, name: str) -> int:
@@ -33,41 +33,47 @@ def _finite_complex(value: object, name: str = "coefficient") -> complex:
     return result
 
 
+def _bit_count(value: int) -> int:
+    """Return an integer popcount on every supported Python version."""
+    return bin(value).count("1")
+
+
 def _canonicalize_indices(
     n_modes: int, indices: Sequence[object]
 ) -> Tuple[Tuple[int, ...], int]:
-    values: List[int] = []
+    support = 0
     sign = 1
     for raw_index in indices:
         index = _exact_nonnegative(raw_index, "Majorana index")
         if index >= 2 * n_modes:
             raise ValueError("Majorana index is outside 0..2*n_modes")
-        inversions = sum(existing > index for existing in values)
-        if inversions & 1:
+        if _bit_count(support >> (index + 1)) & 1:
             sign = -sign
-        if index in values:
-            values.remove(index)
-        else:
-            insert_at = 0
-            while insert_at < len(values) and values[insert_at] < index:
-                insert_at += 1
-            values.insert(insert_at, index)
+        support ^= 1 << index
+    values = []
+    while support:
+        low = support & -support
+        values.append(low.bit_length() - 1)
+        support ^= low
     return tuple(values), sign
 
 
 def _multiply_canonical(
     left: "MajoranaWord", right: "MajoranaWord"
 ) -> Tuple["MajoranaWord", int]:
+    left_support = sum(1 << index for index in left.indices)
+    right_support = sum(1 << index for index in right.indices)
     inversions = sum(
-        left_index > right_index
+        _bit_count(right_support & ((1 << left_index) - 1))
         for left_index in left.indices
-        for right_index in right.indices
     )
-    support = set(left.indices)
-    support.symmetric_difference_update(right.indices)
-    return MajoranaWord(left.n_modes, tuple(sorted(support))), (
-        -1 if inversions & 1 else 1
-    )
+    support = left_support ^ right_support
+    indices = []
+    while support:
+        low = support & -support
+        indices.append(low.bit_length() - 1)
+        support ^= low
+    return MajoranaWord(left.n_modes, tuple(indices)), (-1 if inversions & 1 else 1)
 
 
 def _guard_expansion(branches: int, max_bytes: Optional[int], context: str) -> None:
@@ -422,9 +428,7 @@ class MajoranaOperator:
         )
         if not isinstance(plan, FermionQubitMapping):
             raise TypeError("mapping must be a supported name or FermionQubitMapping")
-        return plan.map_fermion_operator(
-            self.to_fermion(max_bytes=max_bytes), max_bytes=max_bytes
-        )
+        return plan.map_majorana_operator(self, max_bytes=max_bytes)
 
     def compile(
         self,
@@ -444,9 +448,9 @@ class MajoranaOperator:
         )
         if not isinstance(plan, FermionQubitMapping):
             raise TypeError("mapping must be a supported name or FermionQubitMapping")
-        result = plan.map_fermion_operator(
-            self.to_fermion(max_bytes=max_bytes), max_bytes=max_bytes
-        ).compile(target, max_bytes=max_bytes)
+        result = plan.map_majorana_operator(self, max_bytes=max_bytes).compile(
+            target, max_bytes=max_bytes
+        )
         if target in {"native_mvp", "backend_mvp"} and isinstance(
             result, (NativeMVPPlan, BackendMVPPlan)
         ):
@@ -489,37 +493,18 @@ def fermion_to_majorana(
     *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> MajoranaOperator:
-    """Convert a canonical fermion operator through the frozen inverse map."""
+    """Convert a canonical fermion operator through one native batch call."""
     if not isinstance(operator, FermionOperator):
         raise TypeError("fermion_to_majorana expects a FermionOperator")
-    fermion_terms = [term for term in operator._terms if term.fermion is not None]
-    branches = sum(
-        1 << len(term.fermion.factors)
-        for term in fermion_terms
-        if term.fermion is not None
+    creation, annihilation, real, imaginary = _fermion_arrays(operator)
+    indices, result_real, result_imaginary = _native.fermion_to_majorana(
+        operator.space.fermions,
+        creation,
+        annihilation,
+        real,
+        imaginary,
+        _effective_max_bytes(max_bytes),
     )
-    _guard_expansion(branches, max_bytes, "Fermion-to-Majorana expansion")
-    aggregate: Dict[MajoranaWord, complex] = {}
-    for term in fermion_terms:
-        assert term.fermion is not None
-        word = term.fermion
-        current: Dict[Tuple[int, ...], complex] = {(): term.coefficient}
-        for mode, action in word.factors:
-            options = (
-                ((2 * mode,), 0.5 + 0j),
-                ((2 * mode + 1,), 0.5j if action == "annihilate" else -0.5j),
-            )
-            updated: Dict[Tuple[int, ...], complex] = {}
-            for raw, coefficient in current.items():
-                for factor, local in options:
-                    indices, sign = _canonicalize_indices(
-                        operator.space.fermions, raw + factor
-                    )
-                    updated[indices] = (
-                        updated.get(indices, 0j) + coefficient * local * sign
-                    )
-            current = updated
-        for indices, coefficient in current.items():
-            majorana_word = MajoranaWord(operator.space.fermions, indices)
-            aggregate[majorana_word] = aggregate.get(majorana_word, 0j) + coefficient
-    return MajoranaOperator._from_canonical(operator.space.fermions, aggregate)
+    return MajoranaOperator._from_native(
+        operator.space.fermions, indices, result_real, result_imaginary
+    )

@@ -458,7 +458,13 @@ class PauliOperator:
         _ensure_operator_compatible(self, other)
         left = self._arrays()
         right = other._arrays()
-        result = _native.pauli_operator_binary(self.nqubits, left, right, 0)
+        result = _native.pauli_operator_binary(
+            self.nqubits,
+            left,
+            right,
+            0,
+            _effective_max_bytes(max_bytes),
+        )
         return self._from_native(self.nqubits, result)
 
     def scale(
@@ -491,7 +497,7 @@ class PauliOperator:
     ) -> "PauliOperator":
         """Multiply operators, absorbing exact Pauli phases into coefficients."""
         _validate_max_bytes(max_bytes)
-        return self._binary(other, 1)
+        return self._binary(other, 1, max_bytes)
 
     def commutator(
         self,
@@ -501,7 +507,7 @@ class PauliOperator:
     ) -> "PauliOperator":
         """Return ``self * other - other * self``."""
         _validate_max_bytes(max_bytes)
-        return self._binary(other, 2)
+        return self._binary(other, 2, max_bytes)
 
     def anticommutator(
         self,
@@ -511,7 +517,7 @@ class PauliOperator:
     ) -> "PauliOperator":
         """Return ``self * other + other * self``."""
         _validate_max_bytes(max_bytes)
-        return self._binary(other, 3)
+        return self._binary(other, 3, max_bytes)
 
     def adjoint(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -838,10 +844,20 @@ class PauliOperator:
             "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
         )
 
-    def _binary(self, other: "PauliOperator", operation: int) -> "PauliOperator":
+    def _binary(
+        self,
+        other: "PauliOperator",
+        operation: int,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
+        _validate_max_bytes(max_bytes)
         _ensure_operator_compatible(self, other)
         result = _native.pauli_operator_binary(
-            self.nqubits, self._arrays(), other._arrays(), operation
+            self.nqubits,
+            self._arrays(),
+            other._arrays(),
+            operation,
+            _effective_max_bytes(max_bytes),
         )
         return self._from_native(self.nqubits, result)
 

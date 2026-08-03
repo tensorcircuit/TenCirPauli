@@ -52,12 +52,15 @@ def _mapping_plan_python_reference(
 def _mapping_ab_workload(n_modes: int, term_count: int) -> tcp.PauliOperator:
     terms = []
     for term_index in range(term_count):
-        codes = tuple(
-            (term_index * 7 + qubit * 3 + term_index // 5) % 4
-            for qubit in range(n_modes)
-        )
+        code_number = term_index
+        codes = []
+        for _ in range(n_modes):
+            codes.append(code_number % 4)
+            code_number //= 4
         terms.append((codes, complex(1.0 + 0.001 * term_index, -0.01)))
-    return tcp.PauliOperator.from_terms(n_modes, terms)
+    operator = tcp.PauliOperator.from_terms(n_modes, terms)
+    assert len(operator.terms) == term_count
+    return operator
 
 
 def _map_pauli_python_reference(
@@ -118,6 +121,23 @@ def _charge_workload() -> tuple[tcp.ChargeSector, tcp.ChargeRestrictedOperator]:
     return sector, operator.restrict_charge(sector)
 
 
+def _restricted_scaling_workload(
+    n_modes: int, particle_number: int
+) -> tuple[tcp.FermionOperator, tcp.ChargeSector]:
+    space = tcp.OperatorSpace(fermions=n_modes)
+    charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
+    terms = [
+        (((index, "create"), (index + 1, "annihilate")), 1.0)
+        for index in range(n_modes - 1)
+    ] + [
+        (((index + 1, "create"), (index, "annihilate")), 1.0)
+        for index in range(n_modes - 1)
+    ]
+    return tcp.FermionOperator.from_terms(n_modes, terms), charge.sector(
+        particle_number
+    )
+
+
 def _charge_setup_workload(n_modes: int) -> tcp.AdditiveCharge:
     space = tcp.OperatorSpace(fermions=n_modes)
     return tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
@@ -158,6 +178,19 @@ def test_phase75_majorana_fermion_conversion(benchmark: BenchmarkFixture) -> Non
     operator = _majorana_workload()
     _record(benchmark, input_terms=operator.term_count, n_modes=operator.n_modes)
     benchmark(operator.to_fermion)
+
+
+def test_phase75_fermion_majorana_conversion(benchmark: BenchmarkFixture) -> None:
+    operator = _fermion_workload()
+    expected = operator.to_majorana()
+    _record(
+        benchmark,
+        operation="fermion_to_majorana",
+        input_terms=operator.term_count,
+        output_terms=expected.term_count,
+        n_modes=operator.space.fermions,
+    )
+    benchmark(operator.to_majorana)
 
 
 @pytest.mark.parametrize(
@@ -312,6 +345,43 @@ def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
     benchmark(operator.map_fermions, mapping)
 
 
+@pytest.mark.parametrize("degree", [4, 8, 16, 32])
+def test_phase75_direct_majorana_mapping_scaling(
+    benchmark: BenchmarkFixture, degree: int
+) -> None:
+    operator = tcp.MajoranaOperator.from_terms(64, [(tuple(range(degree)), 1.0)])
+    mapping = tcp.FermionQubitMapping.parity(64)
+    expected = mapping.map_majorana_operator(operator)
+    assert len(expected.terms) == 1
+    _record(
+        benchmark,
+        operation="direct_majorana_mapping",
+        degree=degree,
+        n_modes=64,
+        input_terms=operator.term_count,
+        output_terms=len(expected.terms),
+        mapped_weight=expected.terms[0].word.weight,
+        plan_bytes=mapping.estimated_bytes,
+    )
+    benchmark(operator.map_fermions, mapping)
+
+
+def test_phase75_charge_analysis_setup(benchmark: BenchmarkFixture) -> None:
+    space = tcp.OperatorSpace(fermions=8)
+    charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(8)})
+    operator = _fermion_workload()
+    analysis = operator.analyze_charge(charge)
+    assert analysis.is_conserved
+    _record(
+        benchmark,
+        operation="charge_analysis",
+        n_modes=8,
+        input_terms=operator.term_count,
+        output_terms=analysis.commutator_term_count,
+    )
+    benchmark(operator.analyze_charge, charge)
+
+
 @pytest.mark.parametrize(
     ("mapping", "scale", "n_modes", "term_count"),
     [
@@ -332,6 +402,7 @@ def test_phase75_mapping_ab_python(
 ) -> None:
     plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
     operator = _mapping_ab_workload(n_modes, term_count)
+    assert len(operator.terms) == term_count
     expected = _map_pauli_python_reference(plan, operator)
     _record(
         benchmark,
@@ -366,6 +437,7 @@ def test_phase75_mapping_ab_native(
 ) -> None:
     plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
     operator = _mapping_ab_workload(n_modes, term_count)
+    assert len(operator.terms) == term_count
     expected = _map_pauli_python_reference(plan, operator)
     actual = plan.map_pauli(operator)
     assert actual.terms == expected.terms
@@ -391,7 +463,12 @@ def test_phase75_sector_setup(benchmark: BenchmarkFixture) -> None:
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_setup_ab_python(
     benchmark: BenchmarkFixture,
@@ -402,7 +479,7 @@ def test_phase75_charge_sector_setup_ab_python(
 ) -> None:
     charge = _charge_setup_workload(n_modes)
     monkeypatch.setattr(
-        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+        charge_module._native, "charge_sector_plan_compact", _python_charge_dispatch
     )
     sector = charge.sector(particle_number)
     assert sector.dimension == math.comb(n_modes, particle_number)
@@ -420,7 +497,12 @@ def test_phase75_charge_sector_setup_ab_python(
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_setup_ab_native(
     benchmark: BenchmarkFixture,
@@ -445,7 +527,12 @@ def test_phase75_charge_sector_setup_ab_native(
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_rank_ab_python(
     benchmark: BenchmarkFixture,
@@ -456,7 +543,7 @@ def test_phase75_charge_sector_rank_ab_python(
 ) -> None:
     charge = _charge_setup_workload(n_modes)
     monkeypatch.setattr(
-        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+        charge_module._native, "charge_sector_plan_compact", _python_charge_dispatch
     )
     sector = charge.sector(particle_number)
     occupation = _balanced_occupation(n_modes)
@@ -476,7 +563,12 @@ def test_phase75_charge_sector_rank_ab_python(
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_rank_ab_native(
     benchmark: BenchmarkFixture,
@@ -503,7 +595,12 @@ def test_phase75_charge_sector_rank_ab_native(
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_unrank_ab_python(
     benchmark: BenchmarkFixture,
@@ -514,7 +611,7 @@ def test_phase75_charge_sector_unrank_ab_python(
 ) -> None:
     charge = _charge_setup_workload(n_modes)
     monkeypatch.setattr(
-        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+        charge_module._native, "charge_sector_plan_compact", _python_charge_dispatch
     )
     sector = charge.sector(particle_number)
     index = sector.dimension // 2
@@ -534,7 +631,12 @@ def test_phase75_charge_sector_unrank_ab_python(
 
 @pytest.mark.parametrize(
     ("scale", "n_modes", "particle_number"),
-    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+    [
+        ("small", 8, 4),
+        ("medium", 12, 6),
+        ("large", 16, 8),
+        ("xlarge", 20, 10),
+    ],
 )
 def test_phase75_charge_sector_unrank_ab_native(
     benchmark: BenchmarkFixture,
@@ -572,7 +674,7 @@ def test_phase75_charge_sector_basis_ab_python(
 ) -> None:
     charge = _charge_setup_workload(n_modes)
     monkeypatch.setattr(
-        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+        charge_module._native, "charge_sector_plan_compact", _python_charge_dispatch
     )
     sector = charge.sector(particle_number)
     basis = sector.basis_states()
@@ -714,6 +816,27 @@ def test_phase75_restricted_setup_against_u1(benchmark: BenchmarkFixture) -> Non
         return operator.restrict_charge(sector)
 
     benchmark(phase75_setup)
+
+
+@pytest.mark.parametrize(
+    ("n_modes", "particle_number"),
+    [(8, 4), (12, 6), (16, 8), (20, 10)],
+)
+def test_phase75_restricted_setup_scaling(
+    benchmark: BenchmarkFixture, n_modes: int, particle_number: int
+) -> None:
+    operator, sector = _restricted_scaling_workload(n_modes, particle_number)
+    expected = operator.restrict_charge(sector)
+    _record(
+        benchmark,
+        operation="restricted_setup",
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        input_terms=operator.term_count,
+        transitions=expected.mvp_plan().transition_count,
+        plan_bytes=expected.estimated_bytes,
+    )
+    benchmark(operator.restrict_charge, sector)
 
 
 def test_phase75_existing_u1_reference_setup(benchmark: BenchmarkFixture) -> None:

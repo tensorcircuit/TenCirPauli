@@ -21,7 +21,13 @@ from .hamiltonian import (
     _validate_max_bytes,
 )
 from .pauli import PauliOperator
-from .structured import _PAULI_PRODUCT, HybridOperator, _Term
+from .structured import (
+    _PAULI_PRODUCT,
+    HybridOperator,
+    _hybrid_arrays,
+    _hybrid_from_native,
+    _Term,
+)
 
 
 _CONVENTION = "tencirpauli.gf2_occupation.v1"
@@ -421,6 +427,57 @@ class FermionQubitMapping:
         jordan_wigner = operator.map_fermions("jordan_wigner", max_bytes=max_bytes)
         return self.map_pauli(jordan_wigner, max_bytes=max_bytes)
 
+    def map_majorana_operator(
+        self, operator: Any, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> PauliOperator:
+        """Map a Majorana operator without materializing a fermion expansion."""
+        from .majorana import MajoranaOperator
+
+        if not isinstance(operator, MajoranaOperator):
+            raise TypeError("mapping expects a MajoranaOperator")
+        if operator.n_modes != self.n_modes:
+            raise ValueError("mapping plan and Majorana mode counts are incompatible")
+        _validate_max_bytes(max_bytes)
+        if self._native_plan is not None:
+            result = self._native_plan.transform_majorana(
+                [list(term.word.indices) for term in operator.terms],
+                [term.coefficient.real for term in operator.terms],
+                [term.coefficient.imag for term in operator.terms],
+                _effective_max_bytes(max_bytes),
+            )
+            return PauliOperator._from_native(self.n_modes, result)
+
+        # The non-native constructor is a private/reference path.  Keep it
+        # semantically complete while normal public plans use the Rust batch
+        # kernel above.
+        from .pauli import PauliWord
+
+        def local_codes(index: int) -> Tuple[int, ...]:
+            mode, odd = divmod(index, 2)
+            return tuple(
+                (
+                    3
+                    if qubit < mode
+                    else 2 if qubit == mode and odd else 1 if qubit == mode else 0
+                )
+                for qubit in range(self.n_modes)
+            )
+
+        terms = []
+        for term in operator.terms:
+            word = PauliWord.from_codes((0,) * self.n_modes)
+            phase = 1.0 + 0j
+            for majorana_index in term.word.indices:
+                local = PauliWord.from_codes(local_codes(majorana_index))
+                product = word.multiply(local)
+                word = product.word
+                phase *= product.phase.value_complex
+            transformed, mapping_phase = self._transform_codes_with_phase(
+                word.to_codes()
+            )
+            terms.append((transformed, term.coefficient * phase * mapping_phase))
+        return PauliOperator.from_terms(self.n_modes, terms)
+
     def map_hybrid(
         self, operator: HybridOperator, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> Union[HybridOperator, PauliOperator]:
@@ -451,6 +508,20 @@ class FermionQubitMapping:
                     )
                 ),
             )
+        if self._native_plan is not None:
+            if not isinstance(jordan_wigner, HybridOperator):
+                raise TypeError(
+                    "native hybrid mapping received an incompatible operator"
+                )
+            result = self._native_plan.transform_hybrid(
+                operator.space.bosons,
+                operator.space.qubits,
+                len(operator.space.qudits),
+                operator.space.qudits[0] if operator.space.qudits else 0,
+                _hybrid_arrays(jordan_wigner),
+                _effective_max_bytes(max_bytes),
+            )
+            return _hybrid_from_native(jordan_wigner.space, result)
         terms = []
         for term in jordan_wigner._terms:
             mapped = term.mapped_fermion

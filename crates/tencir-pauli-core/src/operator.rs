@@ -89,6 +89,33 @@ fn canonicalize(
     })
 }
 
+fn check_operator_bytes(
+    entries: u128,
+    nqubits: usize,
+    max_bytes: u128,
+    context: &'static str,
+) -> Result<(), PauliError> {
+    let word_count = nqubits
+        .checked_add(63)
+        .ok_or(PauliError::Overflow { context })?
+        / 64;
+    let bytes_per_entry = (word_count as u128)
+        .checked_mul(16)
+        .and_then(|value| value.checked_add(16))
+        .ok_or(PauliError::Overflow { context })?;
+    let requested = entries
+        .max(1)
+        .checked_mul(bytes_per_entry)
+        .ok_or(PauliError::Overflow { context })?;
+    if requested > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested,
+            limit: max_bytes,
+        });
+    }
+    Ok(())
+}
+
 impl PauliOperator {
     /// Construct an operator, aggregate duplicate words, sort by code tuple,
     /// and remove only exact-zero coefficients.
@@ -198,7 +225,22 @@ impl PauliOperator {
 
     /// Add two operators by merging their canonical term streams.
     pub fn add(&self, other: &Self) -> Result<Self, PauliError> {
+        self.add_with_limit(other, u128::MAX)
+    }
+
+    /// Add two operators with a checked output/workspace estimate.
+    pub fn add_with_limit(&self, other: &Self, max_bytes: u128) -> Result<Self, PauliError> {
         self.ensure_compatible(other)?;
+        check_operator_bytes(
+            (self.terms.len() as u128)
+                .checked_add(other.terms.len() as u128)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating Pauli operator addition",
+                })?,
+            self.nqubits,
+            max_bytes,
+            "estimating Pauli operator addition",
+        )?;
         let mut terms = Vec::with_capacity(self.terms.len() + other.terms.len());
         let mut left = 0;
         let mut right = 0;
@@ -265,13 +307,25 @@ impl PauliOperator {
 
     /// Multiply two canonical operators with exact Pauli phases.
     pub fn multiply(&self, other: &Self) -> Result<Self, PauliError> {
+        self.multiply_with_limit(other, u128::MAX)
+    }
+
+    /// Multiply two operators with a checked product workspace estimate.
+    pub fn multiply_with_limit(&self, other: &Self, max_bytes: u128) -> Result<Self, PauliError> {
         self.ensure_compatible(other)?;
-        self.terms
-            .len()
-            .checked_mul(other.terms.len())
-            .ok_or(PauliError::Overflow {
-                context: "estimating operator product terms",
-            })?;
+        let pair_count =
+            self.terms
+                .len()
+                .checked_mul(other.terms.len())
+                .ok_or(PauliError::Overflow {
+                    context: "estimating operator product terms",
+                })?;
+        check_operator_bytes(
+            pair_count as u128,
+            self.nqubits,
+            max_bytes,
+            "estimating Pauli operator product",
+        )?;
         let mut aggregate = FxHashMap::<PauliWord, Vec<Complex64>>::default();
         let mut product_index = 0;
         for left in &self.terms {
@@ -312,13 +366,32 @@ impl PauliOperator {
 
     /// Compute `[self, other]`.
     pub fn commutator(&self, other: &Self) -> Result<Self, PauliError> {
-        self.multiply(other)?
-            .add(&other.multiply(self)?.scale(Complex64::new(-1.0, 0.0))?)
+        self.commutator_with_limit(other, u128::MAX)
+    }
+
+    /// Compute `[self, other]` with checked intermediate estimates.
+    pub fn commutator_with_limit(&self, other: &Self, max_bytes: u128) -> Result<Self, PauliError> {
+        self.multiply_with_limit(other, max_bytes)?.add_with_limit(
+            &other
+                .multiply_with_limit(self, max_bytes)?
+                .scale(Complex64::new(-1.0, 0.0))?,
+            max_bytes,
+        )
     }
 
     /// Compute `{self, other}`.
     pub fn anticommutator(&self, other: &Self) -> Result<Self, PauliError> {
-        self.multiply(other)?.add(&other.multiply(self)?)
+        self.anticommutator_with_limit(other, u128::MAX)
+    }
+
+    /// Compute `{self, other}` with checked intermediate estimates.
+    pub fn anticommutator_with_limit(
+        &self,
+        other: &Self,
+        max_bytes: u128,
+    ) -> Result<Self, PauliError> {
+        self.multiply_with_limit(other, max_bytes)?
+            .add_with_limit(&other.multiply_with_limit(self, max_bytes)?, max_bytes)
     }
 
     /// Return the adjoint operator.

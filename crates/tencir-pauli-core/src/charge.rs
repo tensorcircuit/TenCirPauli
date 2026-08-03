@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::charge_sector::ChargeSectorPlan;
 use crate::{Complex64, PauliError};
+use rustc_hash::FxHashMap;
 
 /// One canonical structured term in a finite charge-sector layout.
 #[derive(Clone, Debug)]
@@ -25,6 +27,18 @@ pub type ChargeTransitionResult = (Vec<u64>, Vec<u64>, Vec<Complex64>);
 pub struct ChargeTransitionLayout<'a> {
     pub dimension: usize,
     pub basis: &'a [u64],
+    pub local_dimensions: &'a [u64],
+    pub fermion_positions: &'a [u64],
+    pub boson_positions: &'a [u64],
+    pub qubit_positions: &'a [u64],
+    pub qudit_positions: &'a [u64],
+    pub qudit_dimension: u64,
+    pub max_bytes: u128,
+}
+
+/// Layout for direct restricted compilation against a reusable charge plan.
+pub struct ChargeTransitionPlanLayout<'a> {
+    pub dimension: usize,
     pub local_dimensions: &'a [u64],
     pub fermion_positions: &'a [u64],
     pub boson_positions: &'a [u64],
@@ -398,6 +412,226 @@ pub fn compile_charge_transitions(
             columns.push(column);
             coefficients.push(value);
         }
+    }
+    Ok((rows, columns, coefficients))
+}
+
+fn encode_occupation(occupation: &[u64], local_dimensions: &[u64]) -> Result<u64, PauliError> {
+    if occupation.len() != local_dimensions.len() {
+        return Err(invalid_sector());
+    }
+    let mut key = 0_u64;
+    for (&value, &dimension) in occupation.iter().zip(local_dimensions) {
+        if dimension == 0 || value >= dimension {
+            return Err(invalid_sector());
+        }
+        key = key
+            .checked_mul(dimension)
+            .and_then(|key| key.checked_add(value))
+            .ok_or(PauliError::Overflow {
+                context: "encoding charge-sector occupation",
+            })?;
+    }
+    Ok(key)
+}
+
+fn decode_occupation(
+    mut key: u64,
+    occupation: &mut [u64],
+    local_dimensions: &[u64],
+) -> Result<(), PauliError> {
+    if occupation.len() != local_dimensions.len() {
+        return Err(invalid_sector());
+    }
+    for position in (0..local_dimensions.len()).rev() {
+        let dimension = local_dimensions[position];
+        if dimension == 0 {
+            return Err(invalid_sector());
+        }
+        occupation[position] = key % dimension;
+        key /= dimension;
+    }
+    if key != 0 {
+        return Err(invalid_sector());
+    }
+    Ok(())
+}
+
+/// Compile transitions directly against a reusable rank/unrank plan.
+///
+/// A mixed-radix occupation key replaces the old ``HashMap<Vec<u64>, ...>``.
+/// Source and destination occupation buffers are reused for every term, while
+/// destination aggregation still happens before sector membership is checked.
+pub fn compile_charge_transitions_from_plan(
+    plan: &ChargeSectorPlan,
+    layout: ChargeTransitionPlanLayout<'_>,
+    terms: &[ChargeTransitionTerm],
+) -> Result<ChargeTransitionResult, PauliError> {
+    let ChargeTransitionPlanLayout {
+        dimension,
+        local_dimensions,
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        qudit_dimension,
+        max_bytes,
+    } = layout;
+    let axis_count = local_dimensions.len();
+    if dimension != plan.dimension()
+        || plan.local_dimensions().len() != axis_count
+        || plan
+            .local_dimensions()
+            .iter()
+            .zip(local_dimensions)
+            .any(|(&left, &right)| u64::try_from(left).ok() != Some(right))
+    {
+        return Err(invalid_sector());
+    }
+    for &local_dimension in local_dimensions {
+        if local_dimension == 0 {
+            return Err(invalid_sector());
+        }
+    }
+    let mut full_dimension = 1_u64;
+    for &local_dimension in local_dimensions {
+        full_dimension =
+            full_dimension
+                .checked_mul(local_dimension)
+                .ok_or(PauliError::Overflow {
+                    context: "encoding charge-sector occupation",
+                })?;
+    }
+    let _ = full_dimension;
+    let scratch_bytes = axis_count
+        .checked_mul(std::mem::size_of::<u64>())
+        .and_then(|value| value.checked_add(terms.len().checked_mul(64)?))
+        .and_then(|value| value.checked_add(32))
+        .ok_or(PauliError::Overflow {
+            context: "estimating charge-sector transition workspace",
+        })?;
+    check_bytes(1, scratch_bytes, max_bytes)?;
+    let fermion_positions = positions(fermion_positions, axis_count, max_bytes)?;
+    let boson_positions = positions(boson_positions, axis_count, max_bytes)?;
+    let qubit_positions = positions(qubit_positions, axis_count, max_bytes)?;
+    let qudit_positions = positions(qudit_positions, axis_count, max_bytes)?;
+    for term in terms {
+        if term.qubit_codes.len() != qubit_positions.len()
+            || term.mapped_codes.len() != fermion_positions.len()
+            || (term.mapped_present
+                && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
+            || (!term.qudit_present && !term.qudit_triples.is_empty())
+        {
+            return Err(invalid_sector());
+        }
+        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index: 0 });
+        }
+    }
+
+    let mut source = vec![0_u64; axis_count];
+    let mut destination = vec![0_u64; axis_count];
+    let mut remaining = vec![0_i128; plan.constraint_count()];
+    let mut candidate_remaining = vec![0_i128; plan.constraint_count()];
+    let mut transitions: FxHashMap<(u64, u64), Complex64> = FxHashMap::default();
+    let mut destinations: FxHashMap<u64, Complex64> =
+        FxHashMap::with_capacity_and_hasher(terms.len(), Default::default());
+    for column in 0..dimension {
+        plan.unrank_into_with_scratch(
+            u64::try_from(column).map_err(|_| PauliError::Overflow {
+                context: "indexing charge-sector transitions",
+            })?,
+            &mut source,
+            &mut remaining,
+            &mut candidate_remaining,
+        )?;
+        destinations.clear();
+        for term in terms {
+            destination.copy_from_slice(&source);
+            let mut value = term.coefficient;
+            if !apply_fermions(
+                &mut destination,
+                &term.fermion_creation,
+                &term.fermion_annihilation,
+                &fermion_positions,
+                &mut value,
+            )? {
+                continue;
+            }
+            if !apply_bosons(
+                &mut destination,
+                &term.boson_blocks,
+                &boson_positions,
+                local_dimensions,
+                &mut value,
+            )? {
+                continue;
+            }
+            apply_pauli(
+                &mut destination,
+                &term.qubit_codes,
+                &qubit_positions,
+                &mut value,
+            )?;
+            if term.mapped_present {
+                apply_pauli(
+                    &mut destination,
+                    &term.mapped_codes,
+                    &fermion_positions,
+                    &mut value,
+                )?;
+            }
+            if term.qudit_present {
+                apply_qudits(
+                    &mut destination,
+                    &term.qudit_triples,
+                    &qudit_positions,
+                    qudit_dimension,
+                    &mut value,
+                )?;
+            }
+            if value.re == 0.0 && value.im == 0.0 {
+                continue;
+            }
+            let key = encode_occupation(&destination, local_dimensions)?;
+            *destinations.entry(key).or_insert(Complex64::new(0.0, 0.0)) += value;
+            check_bytes(destinations.len(), 64, max_bytes)?;
+        }
+        for (key, value) in destinations.drain() {
+            if value.re == 0.0 && value.im == 0.0 {
+                continue;
+            }
+            decode_occupation(key, &mut destination, local_dimensions)?;
+            let row = match plan.rank_into(&destination, &mut remaining, &mut candidate_remaining) {
+                Ok(row) => row,
+                Err(PauliError::InvalidSector { .. }) => {
+                    return Err(PauliError::InvalidSector {
+                        context: "operator leaks outside the selected charge sector",
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            let column_index = u64::try_from(column).map_err(|_| PauliError::Overflow {
+                context: "indexing charge-sector transitions",
+            })?;
+            *transitions
+                .entry((row, column_index))
+                .or_insert(Complex64::new(0.0, 0.0)) += value;
+            check_bytes(transitions.len(), 40, max_bytes)?;
+        }
+    }
+    let mut entries: Vec<_> = transitions
+        .into_iter()
+        .filter(|(_, value)| value.re != 0.0 || value.im != 0.0)
+        .collect();
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    let mut rows = Vec::with_capacity(entries.len());
+    let mut columns = Vec::with_capacity(entries.len());
+    let mut coefficients = Vec::with_capacity(entries.len());
+    for ((row, column), value) in entries {
+        rows.push(row);
+        columns.push(column);
+        coefficients.push(value);
     }
     Ok((rows, columns, coefficients))
 }

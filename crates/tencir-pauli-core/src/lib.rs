@@ -20,10 +20,12 @@ mod u1_circuit;
 mod word;
 
 pub use charge::{
-    compile_charge_transitions, ChargeTransitionLayout, ChargeTransitionResult,
-    ChargeTransitionTerm,
+    compile_charge_transitions, compile_charge_transitions_from_plan, ChargeTransitionLayout,
+    ChargeTransitionPlanLayout, ChargeTransitionResult, ChargeTransitionTerm,
 };
-pub use charge_sector::{build_charge_sector_plan, ChargeSectorPlan};
+pub use charge_sector::{
+    build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,
+};
 pub use circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode, CIRCUIT_SCHEMA_VERSION};
 pub use error::PauliError;
 pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};
@@ -33,8 +35,8 @@ pub use grouping::{
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
 pub use majorana::{
-    canonicalize_majorana_terms, majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch,
-    MajoranaCanonicalResult,
+    canonicalize_majorana_terms, fermion_to_majorana_terms, majorana_to_fermion_terms,
+    multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,
 };
 pub use mapping::{build_mapping_plan, MappingPlan};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};

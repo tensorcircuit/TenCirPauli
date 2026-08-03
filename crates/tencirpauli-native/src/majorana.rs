@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    canonicalize_majorana_terms, majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch,
+    canonicalize_majorana_terms, fermion_to_majorana_terms, majorana_to_fermion_terms,
+    multiply_majorana_terms, MajoranaBatch,
 };
 
 use crate::convert::{complex_coefficients, map_error, split_complex};
@@ -75,4 +76,24 @@ pub(crate) fn majorana_to_fermion(
         .map_err(map_error)?;
     let (real, imaginary) = split_complex(&result.2);
     Ok((result.0, result.1, real, imaginary))
+}
+
+#[pyfunction]
+pub(crate) fn fermion_to_majorana(
+    py: Python<'_>,
+    n_modes: usize,
+    creation: Vec<Vec<u32>>,
+    annihilation: Vec<Vec<u32>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: u128,
+) -> PyResult<MajoranaOutput> {
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+    let result = py
+        .allow_threads(|| {
+            fermion_to_majorana_terms(n_modes, &creation, &annihilation, &coefficients, max_bytes)
+        })
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&result.1);
+    Ok((result.0, real, imaginary))
 }
