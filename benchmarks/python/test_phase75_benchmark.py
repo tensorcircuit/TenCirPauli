@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
+from typing import Any
+
 import numpy as np
 import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli import charge as charge_module
 from tencirpauli.majorana import _guard_expansion
 from tencirpauli.mapping import _mapping_matrix
 
@@ -112,6 +116,32 @@ def _charge_workload() -> tuple[tcp.ChargeSector, tcp.ChargeRestrictedOperator]:
     operator = _fermion_workload()
     sector = charge.sector(4)
     return sector, operator.restrict_charge(sector)
+
+
+def _charge_setup_workload(n_modes: int) -> tcp.AdditiveCharge:
+    space = tcp.OperatorSpace(fermions=n_modes)
+    return tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
+
+
+def _python_charge_dispatch(*args: object, **kwargs: object) -> None:
+    del args, kwargs
+    return None
+
+
+def _balanced_occupation(n_modes: int) -> tuple[int, ...]:
+    return tuple(index % 2 for index in range(n_modes))
+
+
+def _assert_basis_boundary(
+    basis: np.ndarray[Any, Any], n_modes: int, particle_number: int
+) -> None:
+    assert basis.shape == (math.comb(n_modes, particle_number), n_modes)
+    np.testing.assert_array_equal(
+        basis[0], np.asarray([0] * (n_modes - particle_number) + [1] * particle_number)
+    )
+    np.testing.assert_array_equal(
+        basis[-1], np.asarray([1] * particle_number + [0] * (n_modes - particle_number))
+    )
 
 
 def _record(benchmark: BenchmarkFixture, **metadata: object) -> None:
@@ -357,6 +387,234 @@ def test_phase75_sector_setup(benchmark: BenchmarkFixture) -> None:
     charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(12)})
     _record(benchmark, n_modes=12, sector_value=6, plan_bytes=0)
     benchmark(charge.sector, 6)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_setup_ab_python(
+    benchmark: BenchmarkFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    monkeypatch.setattr(
+        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+    )
+    sector = charge.sector(particle_number)
+    assert sector.dimension == math.comb(n_modes, particle_number)
+    _record(
+        benchmark,
+        path="python_reference",
+        operation="setup",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(charge.sector, particle_number)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_setup_ab_native(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    sector = charge.sector(particle_number)
+    assert sector.dimension == math.comb(n_modes, particle_number)
+    _record(
+        benchmark,
+        path="rust_native",
+        operation="setup",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(charge.sector, particle_number)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_rank_ab_python(
+    benchmark: BenchmarkFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    monkeypatch.setattr(
+        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+    )
+    sector = charge.sector(particle_number)
+    occupation = _balanced_occupation(n_modes)
+    expected = sector.rank(occupation)
+    assert sector.unrank(expected) == occupation
+    _record(
+        benchmark,
+        path="python_reference",
+        operation="rank",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(sector.rank, occupation)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_rank_ab_native(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    sector = charge.sector(particle_number)
+    occupation = _balanced_occupation(n_modes)
+    expected = sector.rank(occupation)
+    assert sector.unrank(expected) == occupation
+    _record(
+        benchmark,
+        path="rust_native",
+        operation="rank",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(sector.rank, occupation)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_unrank_ab_python(
+    benchmark: BenchmarkFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    monkeypatch.setattr(
+        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+    )
+    sector = charge.sector(particle_number)
+    index = sector.dimension // 2
+    occupation = sector.unrank(index)
+    assert sector.rank(occupation) == index
+    _record(
+        benchmark,
+        path="python_reference",
+        operation="unrank",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(sector.unrank, index)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 12, 6), ("medium", 32, 16), ("large", 60, 30)],
+)
+def test_phase75_charge_sector_unrank_ab_native(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    sector = charge.sector(particle_number)
+    index = sector.dimension // 2
+    occupation = sector.unrank(index)
+    assert sector.rank(occupation) == index
+    _record(
+        benchmark,
+        path="rust_native",
+        operation="unrank",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+    )
+    benchmark(sector.unrank, index)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 8, 4), ("medium", 16, 8), ("large", 20, 10)],
+)
+def test_phase75_charge_sector_basis_ab_python(
+    benchmark: BenchmarkFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    monkeypatch.setattr(
+        charge_module._native, "charge_sector_plan", _python_charge_dispatch
+    )
+    sector = charge.sector(particle_number)
+    basis = sector.basis_states()
+    _assert_basis_boundary(basis, n_modes, particle_number)
+    _record(
+        benchmark,
+        path="python_reference",
+        operation="basis_states",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+        output_bytes=basis.nbytes,
+    )
+    benchmark(sector.basis_states)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "particle_number"),
+    [("small", 8, 4), ("medium", 16, 8), ("large", 20, 10)],
+)
+def test_phase75_charge_sector_basis_ab_native(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    particle_number: int,
+) -> None:
+    charge = _charge_setup_workload(n_modes)
+    sector = charge.sector(particle_number)
+    basis = sector.basis_states()
+    _assert_basis_boundary(basis, n_modes, particle_number)
+    _record(
+        benchmark,
+        path="rust_native",
+        operation="basis_states",
+        scale=scale,
+        n_modes=n_modes,
+        sector_dimension=sector.dimension,
+        plan_bytes=sector.estimated_bytes,
+        output_bytes=basis.nbytes,
+    )
+    benchmark(sector.basis_states)
 
 
 def test_phase75_restricted_setup(benchmark: BenchmarkFixture) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -34,6 +35,36 @@ def _qubit_matrix(codes: tuple[int, ...]) -> np.ndarray:
     return result
 
 
+def _independent_charge_value(
+    charge: tcp.AdditiveCharge, occupations: tuple[int, ...]
+) -> int:
+    total = charge.offset
+    for (domain, index, _), value in zip(charge.space.axes, occupations):
+        if domain == "fermion":
+            total += charge.fermion_weights[index] * value
+        elif domain == "boson":
+            total += charge.boson_weights[index] * value
+        elif domain == "qubit":
+            total += charge.qubit_levels[index][value]
+    return total
+
+
+def _independent_sector_basis(
+    sector: tcp.ChargeSector,
+) -> list[tuple[int, ...]]:
+    constraints = sector.constraints
+    return [
+        occupations
+        for occupations in itertools.product(
+            *(range(dimension) for dimension in sector.local_dimensions)
+        )
+        if all(
+            _independent_charge_value(charge, occupations) == target
+            for charge, target in constraints
+        )
+    ]
+
+
 def test_charge_equality_ignores_name_and_sector_rank_unrank() -> None:
     space = tcp.OperatorSpace(fermions=3)
     first = tcp.AdditiveCharge(
@@ -49,6 +80,32 @@ def test_charge_equality_ignores_name_and_sector_rank_unrank() -> None:
     for index, state in enumerate(states):
         assert sector.rank(state) == index
     assert sector.basis_ordering == "operator_space_axis0_msb_mixed_radix"
+
+
+def test_native_charge_plan_matches_independent_mixed_basis_reference() -> None:
+    space = tcp.OperatorSpace(fermions=2, bosons=1, qubits=1, qudits=(3,))
+    total = tcp.AdditiveCharge(
+        space,
+        fermions={0: 1, 1: 1},
+        bosons={0: 1},
+        qubits={0: (0, 1)},
+    )
+    balance = tcp.AdditiveCharge(
+        space,
+        fermions={0: 1, 1: -1},
+        qubits={0: (0, 1)},
+    )
+    sector = tcp.ChargeSector(
+        ((total, 2), (balance, 0)),
+        boson_cutoffs={0: 3},
+    )
+    expected = _independent_sector_basis(sector)
+    actual = [tuple(int(value) for value in row) for row in sector.basis_states()]
+    assert actual == expected
+    assert sector.dimension == len(expected)
+    for index, occupations in enumerate(expected):
+        assert sector.rank(occupations) == index
+        assert sector.unrank(index) == occupations
 
 
 def test_inferred_boson_sector_and_zero_charge_qudit_spectator() -> None:

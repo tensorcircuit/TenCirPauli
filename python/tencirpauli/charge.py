@@ -39,6 +39,10 @@ from .structured import (
 )
 
 
+_I128_MIN = -(1 << 127)
+_I128_MAX = (1 << 127) - 1
+
+
 def _exact_int(value: object, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
@@ -412,6 +416,7 @@ class ChargeSector:
     __slots__ = (
         "_contributions",
         "_locked",
+        "_native_plan",
         "_suffix_counts",
         "basis_ordering",
         "boson_cutoffs",
@@ -430,6 +435,7 @@ class ChargeSector:
     estimated_bytes: int
     _suffix_counts: Tuple[Dict[Tuple[int, ...], int], ...]
     _contributions: Tuple[Tuple[Tuple[int, ...], ...], ...]
+    _native_plan: Optional[Any]
     _locked: bool
 
     def __init__(
@@ -457,37 +463,59 @@ class ChargeSector:
                     for value in range(dimension)
                 )
             )
-        zero = (0,) * len(normalized)
-        suffix: List[Dict[Tuple[int, ...], int]] = [
-            {} for _ in range(len(dimensions) + 1)
-        ]
-        suffix[-1][zero] = 1
-        for position in range(len(dimensions) - 1, -1, -1):
-            table: Dict[Tuple[int, ...], int] = {}
-            for contribution in contribution_table[position]:
-                for remainder, count in suffix[position + 1].items():
-                    key = tuple(
-                        contribution[index] + remainder[index]
-                        for index in range(len(normalized))
-                    )
-                    table[key] = table.get(key, 0) + count
-            suffix[position] = table
-            _check_allocation(
-                len(table) * (64 + 24 * len(normalized)),
-                max_bytes,
-                "charge-sector dynamic-programming plan",
-            )
         target = tuple(value - charge.offset for charge, value in normalized)
-        dimension = suffix[0].get(target, 0)
-        if dimension > int(np.iinfo(np.intp).max):
-            raise OverflowError(
-                "charge-sector dimension cannot be represented by platform indices"
+        native_plan: Optional[Any] = None
+        suffix: List[Dict[Tuple[int, ...], int]] = []
+        if all(
+            _I128_MIN <= value <= _I128_MAX
+            for table in contribution_table
+            for contribution in table
+            for value in contribution
+        ) and all(_I128_MIN <= value <= _I128_MAX for value in target):
+            try:
+                native_plan = _native.charge_sector_plan(
+                    list(dimensions),
+                    [
+                        [list(contribution) for contribution in table]
+                        for table in contribution_table
+                    ],
+                    list(target),
+                    _effective_max_bytes(max_bytes),
+                )
+            except OverflowError:
+                native_plan = None
+        if native_plan is None:
+            zero = (0,) * len(normalized)
+            suffix = [{} for _ in range(len(dimensions) + 1)]
+            suffix[-1][zero] = 1
+            for position in range(len(dimensions) - 1, -1, -1):
+                table: Dict[Tuple[int, ...], int] = {}
+                for contribution in contribution_table[position]:
+                    for remainder, count in suffix[position + 1].items():
+                        key = tuple(
+                            contribution[index] + remainder[index]
+                            for index in range(len(normalized))
+                        )
+                        table[key] = table.get(key, 0) + count
+                suffix[position] = table
+                _check_allocation(
+                    len(table) * (64 + 24 * len(normalized)),
+                    max_bytes,
+                    "charge-sector dynamic-programming plan",
+                )
+            dimension = suffix[0].get(target, 0)
+            if dimension > int(np.iinfo(np.intp).max):
+                raise OverflowError(
+                    "charge-sector dimension cannot be represented by platform indices"
+                )
+            estimated_bytes = (
+                sum(len(table) * (64 + 24 * len(normalized)) for table in suffix)
+                + len(dimensions) * 8
             )
-        estimated_bytes = (
-            sum(len(table) * (64 + 24 * len(normalized)) for table in suffix)
-            + len(dimensions) * 8
-        )
-        _check_allocation(estimated_bytes, max_bytes, "charge-sector plan")
+            _check_allocation(estimated_bytes, max_bytes, "charge-sector plan")
+        else:
+            dimension = int(native_plan.dimension)
+            estimated_bytes = int(native_plan.estimated_bytes)
         object.__setattr__(self, "constraints", normalized)
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "boson_cutoffs", tuple(sorted(cutoffs.items())))
@@ -496,7 +524,12 @@ class ChargeSector:
         object.__setattr__(self, "dimension", int(dimension))
         object.__setattr__(self, "estimated_bytes", int(estimated_bytes))
         object.__setattr__(self, "_suffix_counts", tuple(suffix))
-        object.__setattr__(self, "_contributions", tuple(contribution_table))
+        object.__setattr__(
+            self,
+            "_contributions",
+            tuple(contribution_table) if native_plan is None else (),
+        )
+        object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -521,6 +554,8 @@ class ChargeSector:
     def rank(self, occupations: Sequence[object]) -> int:
         """Return the lexicographic rank of one selected basis state."""
         values = self._validate_occupations(occupations)
+        if self._native_plan is not None:
+            return int(self._native_plan.rank(values))
         remaining = self._target()
         rank = 0
         for position, value in enumerate(values):
@@ -544,6 +579,8 @@ class ChargeSector:
         index = _exact_nonnegative(index, "sector index")
         if index >= self.dimension:
             raise IndexError("sector index is out of range")
+        if self._native_plan is not None:
+            return tuple(int(value) for value in self._native_plan.unrank(index))
         remaining = self._target()
         values: List[int] = []
         for position, dimension in enumerate(self.local_dimensions):
@@ -574,6 +611,13 @@ class ChargeSector:
             max_bytes,
             "charge-sector basis states",
         )
+        if self._native_plan is not None:
+            native_values: np.ndarray[Any, Any] = np.asarray(
+                self._native_plan.basis_states(_effective_max_bytes(max_bytes)),
+                dtype=np.uint64,
+            ).reshape((self.dimension, axis_count))
+            native_values.setflags(write=False)
+            return native_values
         values: np.ndarray[Any, Any] = np.asarray(
             [self.unrank(index) for index in range(self.dimension)], dtype=np.uint64
         ).reshape((self.dimension, axis_count))

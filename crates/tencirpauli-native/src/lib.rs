@@ -1,6 +1,7 @@
 //! Private PyO3 extension for the public `tencirpauli` Python package.
 
 mod charge;
+mod charge_sector;
 mod convert;
 mod grouping;
 mod hamiltonian;
@@ -17,6 +18,7 @@ mod word;
 use pyo3::prelude::*;
 
 use charge::{charge_compile_transitions, charge_mvp_apply};
+use charge_sector::{charge_sector_plan, NativeChargeSectorPlan};
 use grouping::{pauli_compatibility_matrix, pauli_group, pauli_incompatibility_edges};
 use hamiltonian::{
     pauli_backend_plan, pauli_coo, pauli_coo_array, pauli_csr, pauli_csr_array, pauli_dense,
@@ -55,6 +57,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<StructuredMvpPlan>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<NativeMvpPlan>()?;
+    module.add_class::<NativeChargeSectorPlan>()?;
     module.add_class::<NativeZ2TaperingPlan>()?;
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;
@@ -91,6 +94,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_mvp_plan, module)?)?;
     module.add_function(wrap_pyfunction!(charge_mvp_apply, module)?)?;
     module.add_function(wrap_pyfunction!(charge_compile_transitions, module)?)?;
+    module.add_function(wrap_pyfunction!(charge_sector_plan, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_canonicalize, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_to_fermion, module)?)?;

@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完成；当前 checkpoint 是 Phase 7.5 P5 handoff。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完成；当前工作是 Phase 7.5 handoff 后的 native performance slice，所有迁移均以 correctness 和 small/medium/large 端到端 A/B 为门槛。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
 
 ## Active status
 
@@ -14,7 +14,7 @@ Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
 | Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P5 implemented; accepted 2026-08-03 | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, cancellation, and restricted-target references pass; Majorana canonicalization/multiplication and charge transition construction are pure-Rust core calls behind thin PyO3 boundaries. Guarded dense/COO/CSR/MVP targets, mapping memory checks, executable example, full quality gate, and clean focused release evidence are complete. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P5 implemented; accepted 2026-08-03; native performance slice in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, cancellation, and restricted-target references pass. Majorana expansion, mapping transforms/plans, ChargeSector DP/rank/unrank/basis generation, and charge transition construction are pure-Rust core calls behind thin PyO3 boundaries; Python retains validation, compact transformations, and compatibility fallback. The new ChargeSector A/B is complete; clean post-commit manifest is the next gate. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -89,6 +89,23 @@ The restricted transition path is implemented in `crates/tencir-pauli-core/src/c
 The pure-Rust restricted compiler checkpoint is commit `535de7f`, and the native Majorana checkpoint is `5ae2ee0`; the final local smoke evidence is 31 Rust tests, 251 Python tests, and 183 selected benchmark-smoke cases with all quality checks passing. The executable `examples/phase75_majorana_charge.py` also passes.
 
 Clean focused release benchmark record `phase75-p5-native-majorana-20260803` at commit `5ae2ee0` completed 18 cases with `git_dirty=false` on the local arm64/macOS release environment. Median timings were approximately 27.0 µs for 8-mode Majorana construction, 136.2 µs for fermion conversion, 93.1 µs for the 196-pair Majorana multiplication workload, 122.0/158.9/139.8 µs for JW/parity/BK mapping, 46.5 µs for 12-mode sector setup, 1.41 ms for restricted setup, 1.41 ms for first apply including setup, 1.46 µs for steady native apply at sector dimension 70, 2.92–3.08 µs for dense/CSR materialization and 0.38 µs for COO array materialization. The existing U1 setup reference was approximately 30.2 µs on the matched 70-state sector. These are informational release measurements, not wall-time gates.
+
+## Phase 7.5 native performance checkpoint
+
+The post-handoff performance slice applies the same coarse-boundary rule to the remaining hot paths. Majorana-to-fermion expansion is implemented in the pure Rust core at `d8d4664`; parity/Bravyi–Kitaev plan construction, CNOT transforms, and batch aggregation are implemented in Rust at `17e691e`. ChargeSector now builds checked suffix-count plans in Rust, uses reusable scratch buffers for rank/unrank and basis materialization, and returns the basis buffer directly as a NumPy array. Python continues to own friendly input/finiteness validation, contribution-table construction, compact public result shaping, and a Python DP fallback when exact integer contributions do not fit the Rust `i128` transport contract.
+
+The independent ChargeSector differential uses a mixed fermion/boson/qubit/qutrit layout with two simultaneous constraints and enumerates the finite reference basis directly. The full local gate after this slice passes 36 Rust tests, 255 Python tests, Black, Ruff, strict mypy, Clippy, release maturin build, and the existing benchmark smoke workflow.
+
+The first release end-to-end A/B (public Python method, validation, FFI packing, Rust kernel, and result wrapping) gives the following medians. Setup/rank/unrank use 12/6, 32/16, and 60/30 fermion modes/particles; the large setup remains below the existing `2**n` platform-index guard. Basis materialization uses 8/4, 16/8, and 20/10 because it measures an actual output rather than allocating a combinatorially impractical array.
+
+| ChargeSector operation | Small Python → Rust | Medium Python → Rust | Large Python → Rust |
+| --- | ---: | ---: | ---: |
+| Setup | 0.0503 → 0.0202 ms | 0.2569 → 0.0693 ms | 0.8541 → 0.1755 ms |
+| Rank | 0.0061 → 0.0020 ms | 0.0146 → 0.0043 ms | 0.0272 → 0.0075 ms |
+| Unrank | 0.0052 → 0.0008 ms | 0.0129 → 0.0016 ms | 0.0240 → 0.0029 ms |
+| Basis states | 0.2667 → 0.0086 ms | 92.18 → 2.59 ms | 1622.58 → 47.80 ms |
+
+These measurements are informational and were taken on the local arm64/macOS release environment; the clean post-commit benchmark manifest remains the final evidence gate. The current result supports keeping the migration: every tested operation and scale improved, so no small-workload Python dispatch fallback is justified by this A/B. Further Phase 7.5 migrations must retain the same independent differential and three-scale end-to-end measurement requirement.
 
 ## Frozen owner decisions
 
