@@ -1,14 +1,55 @@
-# TenCirPauli
+<div align="center">
+  <img src="docs/assets/tencirpauli-logo.png" alt="TenCirPauli logo" width="180">
+  <h1>TenCirPauli</h1>
+  <p><strong>Fast, Rust-native Pauli algebra and quantum-circuit primitives for TensorCircuit.</strong></p>
+  <p>
+    <a href="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml"><img src="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+    <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/v/tencirpauli.svg" alt="PyPI version"></a>
+    <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/pyversions/tencirpauli.svg" alt="Python versions"></a>
+    <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/dm/tencirpauli.svg" alt="PyPI downloads"></a>
+    <a href="https://github.com/tensorcircuit/TenCirPauli/stargazers"><img src="https://img.shields.io/github/stars/tensorcircuit/TenCirPauli.svg?style=flat" alt="GitHub stars"></a>
+    <a href="https://github.com/tensorcircuit/TenCirPauli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/tensorcircuit/TenCirPauli.svg" alt="Apache 2.0 license"></a>
+  </p>
+</div>
 
-TenCirPauli is TensorCircuit's Rust-native companion for Pauli algebra, Hamiltonian construction, measurement grouping, symmetry reduction, U(1) restricted circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. The Python package targets TensorCircuit users; TensorCircuit is a required runtime dependency, while the Rust core remains independent of both Python and TensorCircuit.
+TenCirPauli brings a compact Rust core and a Python-first API to the Pauli-heavy parts of quantum workflows. Build Hamiltonians, group measurements, reduce symmetries, work in fixed-particle-number sectors, and propagate observables without leaving the TensorCircuit ecosystem.
+
+## Why TenCirPauli?
+
+| Workflow | What you get |
+| --- | --- |
+| **Pauli algebra** | Canonical words, products, phases, commutation, support, and deterministic term aggregation. |
+| **Hamiltonians** | Dense, COO, CSR, matrix-vector products, and reusable native or TensorCircuit backend plans. |
+| **Measurement and symmetry** | QWC/general commuting groups, Z2 tapering, and U(1) sector restriction. |
+| **Native circuit execution** | Fixed-particle-number circuits, deterministic Pauli propagation, gradients, and stochastic Pauli-path estimates. |
 
 ## Install
 
 ```bash
-pip install tencirpauli
+python -m pip install tencirpauli
 ```
 
-Released wheels target CPython 3.9+ on Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x64. A matching wheel does not require a local Rust toolchain. Source builds require Rust 1.85+, Cargo, and maturin.
+Released wheels target CPython 3.9+ on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows x64. A matching wheel does not require a local Rust toolchain.
+
+## Quick start
+
+```python
+import tencirpauli as tcp
+
+hamiltonian = tcp.PauliOperator.from_terms(
+    2,
+    (("XX", 0.5), ("ZI", -1.25j)),
+)
+
+matrix = hamiltonian.dense()
+print(matrix.shape)  # (4, 4)
+```
+
+For a complete circuit example, see [`examples/`](examples/) and the TensorCircuit integration guide below.
+
+## Built for the ecosystem
+
+TenCirPauli is designed for TensorCircuit users, while its Rust core remains independent of Python and TensorCircuit. The public package is distributed on PyPI with wheels and an sdist; source builds require Rust 1.85+, Cargo, and maturin.
 
 ## Architecture
 
