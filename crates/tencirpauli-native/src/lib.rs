@@ -4,6 +4,7 @@ mod charge;
 mod convert;
 mod grouping;
 mod hamiltonian;
+mod majorana;
 mod operator;
 mod propagation;
 mod spps;
@@ -20,6 +21,7 @@ use hamiltonian::{
     pauli_backend_plan, pauli_coo, pauli_coo_array, pauli_csr, pauli_csr_array, pauli_dense,
     pauli_dense_array, pauli_mvp_array, pauli_mvp_plan, NativeMvpPlan,
 };
+use majorana::{majorana_canonicalize, majorana_multiply};
 use operator::{
     pauli_canonicalize, pauli_canonicalize_array, pauli_canonicalize_batch,
     pauli_canonicalize_batch_array, pauli_canonicalize_batch_numpy, pauli_operator_adjoint,
@@ -86,6 +88,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_mvp_plan, module)?)?;
     module.add_function(wrap_pyfunction!(charge_mvp_apply, module)?)?;
     module.add_function(wrap_pyfunction!(charge_compile_transitions, module)?)?;
+    module.add_function(wrap_pyfunction!(majorana_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(majorana_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;

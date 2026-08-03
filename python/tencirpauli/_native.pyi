@@ -163,6 +163,23 @@ def charge_compile_transitions(
     qudit_dimension: int,
     max_bytes: int,
 ) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def majorana_canonicalize(
+    n_modes: int,
+    indices: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[object, Sequence[float], Sequence[float]]: ...
+def majorana_multiply(
+    n_modes: int,
+    left_indices: object,
+    left_coefficients_re: Sequence[float],
+    left_coefficients_im: Sequence[float],
+    right_indices: object,
+    right_coefficients_re: Sequence[float],
+    right_coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[object, Sequence[float], Sequence[float]]: ...
 
 class NativeMvpPlan:
     @property

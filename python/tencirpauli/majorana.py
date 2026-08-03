@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 
+from . import _native
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     BackendMVPPlan,
     NativeMVPPlan,
     _check_allocation,
+    _effective_max_bytes,
     _validate_max_bytes,
 )
 from .structured import FermionOperator
@@ -166,13 +168,31 @@ class MajoranaOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         n_modes = _exact_nonnegative(n_modes, "n_modes")
-        aggregate: Dict[MajoranaWord, complex] = {}
-        for raw_indices, coefficient in terms:
-            value = _finite_complex(coefficient)
-            word, sign = _canonicalize_indices(n_modes, raw_indices)
-            canonical = MajoranaWord(n_modes, word)
-            aggregate[canonical] = aggregate.get(canonical, 0j) + sign * value
-            _guard_expansion(len(aggregate), max_bytes, "Majorana canonicalization")
+        raw_indices: List[List[int]] = []
+        coefficients: List[complex] = []
+        for indices, coefficient in terms:
+            normalized_indices: List[int] = []
+            for raw_index in indices:
+                index = _exact_nonnegative(raw_index, "Majorana index")
+                if index >= 2 * n_modes:
+                    raise ValueError("Majorana index is outside 0..2*n_modes")
+                normalized_indices.append(index)
+            raw_indices.append(normalized_indices)
+            coefficients.append(_finite_complex(coefficient))
+        canonical_indices, real, imaginary = cast(
+            Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
+            _native.majorana_canonicalize(
+                n_modes,
+                raw_indices,
+                [value.real for value in coefficients],
+                [value.imag for value in coefficients],
+                _effective_max_bytes(max_bytes),
+            ),
+        )
+        aggregate = {
+            MajoranaWord(n_modes, tuple(indices)): complex(re, im)
+            for indices, re, im in zip(canonical_indices, real, imaginary)
+        }
         self._initialize(n_modes, aggregate)
 
     def _initialize(self, n_modes: int, aggregate: Dict[MajoranaWord, complex]) -> None:
@@ -224,6 +244,20 @@ class MajoranaOperator:
         instance = object.__new__(cls)
         instance._initialize(n_modes, aggregate)
         return instance
+
+    @classmethod
+    def _from_native(
+        cls,
+        n_modes: int,
+        indices: Sequence[Sequence[int]],
+        real: Sequence[float],
+        imaginary: Sequence[float],
+    ) -> "MajoranaOperator":
+        aggregate = {
+            MajoranaWord(n_modes, tuple(word)): complex(re, im)
+            for word, re, im in zip(indices, real, imaginary)
+        }
+        return cls._from_canonical(n_modes, aggregate)
 
     @property
     def terms(self) -> Tuple[MajoranaTerm, ...]:
@@ -282,15 +316,22 @@ class MajoranaOperator:
         other = self._check_other(other)
         pair_count = len(self._terms) * len(other._terms)
         _guard_expansion(pair_count, max_bytes, "Majorana multiplication")
-        aggregate: Dict[MajoranaWord, complex] = {}
-        for left in self._terms:
-            for right in other._terms:
-                word, sign = _multiply_canonical(left.word, right.word)
-                aggregate[word] = (
-                    aggregate.get(word, 0j)
-                    + left.coefficient * right.coefficient * sign
-                )
-        return self._from_canonical(self.n_modes, aggregate)
+        left_coefficients = [term.coefficient for term in self._terms]
+        right_coefficients = [term.coefficient for term in other._terms]
+        indices, real, imaginary = cast(
+            Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
+            _native.majorana_multiply(
+                self.n_modes,
+                [list(term.word.indices) for term in self._terms],
+                [value.real for value in left_coefficients],
+                [value.imag for value in left_coefficients],
+                [list(term.word.indices) for term in other._terms],
+                [value.real for value in right_coefficients],
+                [value.imag for value in right_coefficients],
+                _effective_max_bytes(max_bytes),
+            ),
+        )
+        return self._from_native(self.n_modes, indices, real, imaginary)
 
     def commutator(
         self,

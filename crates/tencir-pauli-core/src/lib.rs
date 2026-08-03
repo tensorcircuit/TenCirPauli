@@ -6,6 +6,7 @@ mod error;
 mod gate;
 mod grouping;
 mod hamiltonian;
+mod majorana;
 mod operator;
 mod propagation;
 mod scalar;
@@ -28,6 +29,9 @@ pub use grouping::{
     GroupingAlgorithm, GroupingMode, DEFAULT_MAX_GROUPING_ENTRIES,
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
+pub use majorana::{
+    canonicalize_majorana_terms, multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,
+};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
 pub use propagation::{
     ProductState, PropagationBatch, PropagationBatchValueAndGradient, PropagationEngine,
