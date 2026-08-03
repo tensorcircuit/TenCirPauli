@@ -135,6 +135,14 @@ def structured_hybrid_jordan_wigner(
     Sequence[float],
     Sequence[float],
 ]: ...
+def charge_mvp_apply(
+    dimension: int,
+    rows: object,
+    columns: object,
+    coefficients: object,
+    state: object,
+    max_bytes: int,
+) -> object: ...
 
 class NativeMvpPlan:
     @property

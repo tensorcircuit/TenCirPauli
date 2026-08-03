@@ -1,5 +1,6 @@
 //! Private PyO3 extension for the public `tencirpauli` Python package.
 
+mod charge;
 mod convert;
 mod grouping;
 mod hamiltonian;
@@ -13,6 +14,7 @@ mod word;
 
 use pyo3::prelude::*;
 
+use charge::charge_mvp_apply;
 use grouping::{pauli_compatibility_matrix, pauli_group, pauli_incompatibility_edges};
 use hamiltonian::{
     pauli_backend_plan, pauli_coo, pauli_coo_array, pauli_csr, pauli_csr_array, pauli_dense,
@@ -82,6 +84,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_csr_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_mvp_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_mvp_plan, module)?)?;
+    module.add_function(wrap_pyfunction!(charge_mvp_apply, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;

@@ -14,7 +14,7 @@ Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
 | Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P3 implemented; P4 in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, and restricted-target references pass; native restricted-plan and performance handoff remain. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P4 slice implemented; acceptance in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, and restricted-target references pass; the restricted apply kernel is now one GIL-released PyO3/Rust call, while native sector construction and final release evidence remain. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -83,6 +83,8 @@ The final local evidence is `conda run -p .conda python scripts/check.py --bench
 The first Phase 7.5 slice exports immutable `MajoranaWord`, `MajoranaProduct`, `MajoranaTerm`, `MajoranaOperator`, and `FermionQubitMapping` values. Majorana raw sequences canonicalize with exact signs; conversion to and from Phase 7 fermions is batched through the existing canonical native boundary and guarded by `max_bytes`. Jordan–Wigner, parity, and Fenwick Bravyi–Kitaev plans expose schema, convention, binary/inverse matrices, canonical CNOT provenance, basis metadata, and reusable pure-operator/hybrid mapping.
 
 Exact `AdditiveCharge` values ignore display names in equality, analyze complete aggregated commutators, infer simple finite boson bounds, preserve zero-charge qudit spectators, and build simultaneous-constraint `ChargeSector` rank/unrank plans. `ChargeRestrictedOperator` validates conservation before compiling deterministic restricted transitions and exposes dense, COO, CSR, and matrix-free MVP targets without allocating a full-space state or matrix. Focused Phase 7.5 coverage is 16 tests; the next gate is a release-profiled native restricted plan and the P4/P5 overflow, memory, and delivery matrix.
+
+The restricted MVP apply path is now backed by `crates/tencirpauli-native/src/charge.rs`: Python owns one immutable contiguous transition schema, while Rust validates bounded indices, releases the GIL, and accumulates the complex128 output in one call. `benchmarks/python/test_phase75_benchmark.py` records Majorana construction/conversion, all three mapping plans, sector setup, restricted setup/apply, input terms, CNOT count, sector dimension, transitions, and numerical-boundary metadata; the separate `phase75` harness suite is ready for a clean release record.
 
 ## Frozen owner decisions
 

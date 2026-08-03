@@ -4,16 +4,29 @@ from __future__ import annotations
 
 import cmath
 import math
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 
+from . import _native
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     MIXED_RADIX_BASIS_ORDERING,
     COOMatrix,
     CSRMatrix,
     _check_allocation,
+    _effective_max_bytes,
     _validate_max_bytes,
 )
 from .pauli import PauliOperator
@@ -605,8 +618,8 @@ class ChargeMvpPlan:
         columns: np.ndarray[Any, Any],
         coefficients: np.ndarray[Any, Any],
     ) -> None:
-        row_values = np.ascontiguousarray(rows, dtype=np.intp)
-        column_values = np.ascontiguousarray(columns, dtype=np.intp)
+        row_values = np.ascontiguousarray(rows, dtype=np.uint64)
+        column_values = np.ascontiguousarray(columns, dtype=np.uint64)
         coefficient_values = np.ascontiguousarray(coefficients, dtype=np.complex128)
         for value in (row_values, column_values, coefficient_values):
             value.setflags(write=False)
@@ -643,9 +656,20 @@ class ChargeMvpPlan:
                 f"state must have shape ({self.dimension},), got {values.shape}"
             )
         _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
-        output: np.ndarray[Any, Any] = np.zeros(self.dimension, dtype=np.complex128)
-        np.add.at(output, self.rows, self.coefficients * values[self.columns])
-        return output
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(
+                _native.charge_mvp_apply(
+                    self.dimension,
+                    self.rows,
+                    self.columns,
+                    self.coefficients,
+                    np.ascontiguousarray(values),
+                    _effective_max_bytes(max_bytes),
+                ),
+                dtype=np.complex128,
+            ),
+        )
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         return self.apply(state)

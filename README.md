@@ -22,6 +22,7 @@ TenCirPauli brings a compact Rust core and a Python-first API to the Pauli-heavy
 | **Hamiltonians** | Dense, COO, CSR, matrix-vector products, and reusable native or TensorCircuit backend plans. |
 | **Measurement and symmetry** | QWC/general commuting groups, Z2 tapering, and U(1) sector restriction. |
 | **Native circuit execution** | Fixed-particle-number circuits, deterministic Pauli propagation, gradients, and stochastic Pauli-path estimates. |
+| **Structured fermion workflows** | Majorana algebra, Jordan–Wigner/parity/Bravyi–Kitaev plans, exact additive charges, and guarded restricted sectors. |
 
 ## Install
 
@@ -59,7 +60,8 @@ TensorCircuit / Python facade
         ├── PauliOperator, grouping, symmetry, backend MVP
         ├── U1Circuit
         ├── PropagationCircuit       (deterministic native facade)
-        └── SPPSCircuit              (stochastic native facade)
+        ├── SPPSCircuit              (stochastic native facade)
+        └── Majorana/mapping/charge  (structured Phase 7.5 facade)
         │
         ▼
 PyO3 batch boundary
@@ -87,12 +89,16 @@ External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use q
 | Z2 symmetry/tapering | `.find_z2_symmetries()`, `.taper_z2()` |
 | Fixed-particle-number operator | `U1Sector`, `.restrict_u1()` |
 | Fixed-particle-number circuit | `U1Circuit` |
+| Majorana algebra and fermion mappings | `MajoranaOperator`, `FermionQubitMapping` |
+| Additive-charge sectors | `AdditiveCharge`, `ChargeSector`, `.restrict_charge()` |
 | Deterministic Pauli propagation | `PropagationCircuit` (low-level `GateTape`/`PropagationEngine` remains available) |
 | Stochastic Pauli-path estimation | `SPPSCircuit` (low-level `SPPSEngine` remains available) |
 
 ## Structured operator algebra
 
 Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `OperatorSpace`, and `OperatorBuilder` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention.
+
+Phase 7.5 adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/phase75_majorana_charge.py`](examples/phase75_majorana_charge.py) and the frozen [`phase-7.5-spec.md`](docs/vibe/phase-7.5-spec.md).
 
 Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See [`examples/structured_algebra.py`](examples/structured_algebra.py) for an executable example.
 

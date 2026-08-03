@@ -20,7 +20,7 @@ RESULTS_ROOT = ROOT / ".benchmarks"
 RUST_TARGET = RESULTS_ROOT / "rust-target"
 PYTHON_STORAGE = RESULTS_ROOT / "python"
 RUNS_ROOT = RESULTS_ROOT / "runs"
-SUITES = ("all", "rust", "python", "phase7")
+SUITES = ("all", "rust", "python", "phase7", "phase75")
 
 
 def command_environment() -> Dict[str, str]:
@@ -194,6 +194,8 @@ def record(label: str, suite: str) -> None:
             record_python(
                 label, ["benchmarks/python/test_phase7_structured_benchmark.py"]
             )
+        if suite == "phase75":
+            record_python(label, ["benchmarks/python/test_phase75_benchmark.py"])
     except (OSError, subprocess.CalledProcessError):
         data["status"] = "failed"
         write_manifest(data)
@@ -265,6 +267,8 @@ def compare(label: str, suite: Optional[str]) -> None:
         compare_python(label)
     if selected_suite == "phase7":
         compare_python(label, ["benchmarks/python/test_phase7_structured_benchmark.py"])
+    if selected_suite == "phase75":
+        compare_python(label, ["benchmarks/python/test_phase75_benchmark.py"])
 
 
 def list_runs() -> None:
