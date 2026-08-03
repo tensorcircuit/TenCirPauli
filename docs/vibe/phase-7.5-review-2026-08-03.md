@@ -356,3 +356,9 @@ M5 closes when the complete focused quality gate and the repaired release benchm
 - Restricted setup probe — measured generic ChargeSector and specialized U1 setup through 20 modes and sector dimension 184,756.
 
 All probes were read-only with respect to production source. Benchmark numbers are informational same-machine release measurements, not CI wall-time gates.
+
+## Remediation closure
+
+The C1–M5 remediation was completed on 2026-08-03. C1 now uses exact integer selection rules with exact binary-float coefficient cancellation; C2 maps canonical Majorana words directly to one packed Pauli word per input; M1 uses packed native Majorana supports and native fermion-to-Majorana batching; M2 preflights compact charge metadata before level expansion and threads the budget through Pauli analysis; M3 separates public CNOT provenance from packed GF(2) execution, batches hybrid mapping, and verifies actual canonical benchmark term counts; M4 compiles restricted transitions through reusable rank/unrank scratch and mixed-radix keys; and M5 adds the mapping/restriction ordering differential plus simultaneous-spin, Bose-Hubbard, and mixed-excitation coverage.
+
+Clean release manifest `phase75-remediation-20260803-80be5fc` was recorded at commit `80be5fc67d69f8d350df991abba45969a7c904f9` with `git_dirty=false`. The focused quality gate passed 38 Rust tests, 272 Python tests, and 256 selected benchmark-smoke cases; the dedicated Phase 7.5 release suite passed 91/91 cases. The closure record and same-machine medians are maintained in `docs/vibe/implementation-status.md`; benchmark artifacts remain local and untracked.
