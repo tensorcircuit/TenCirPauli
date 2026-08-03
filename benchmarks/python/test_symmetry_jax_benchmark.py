@@ -83,7 +83,7 @@ def _transition_table(
         source_value = int(source)
         for x_mask, z_mask, weighted in terms:
             destination = source_value ^ x_mask
-            sign = -1.0 if (z_mask & source_value).bit_count() & 1 else 1.0
+            sign = -1.0 if bin(z_mask & source_value).count("1") & 1 else 1.0
             aggregate[destination] = aggregate.get(destination, 0.0) + weighted * sign
         for destination, value in aggregate.items():
             if value == 0.0:

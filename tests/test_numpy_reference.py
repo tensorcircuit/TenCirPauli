@@ -42,7 +42,9 @@ def test_adjoint_commutation_weight_and_support_vectors() -> None:
     x_right, z_right = codes_to_symplectic((1, 0, 0, 3))
     assert tuple(index for index, code in enumerate(codes) if code) == (0, 1, 3)
     assert commutes(codes, (1, 0, 0, 3))
-    assert ((x_left & z_right).bit_count() + (z_left & x_right).bit_count()) % 2 == 0
+    assert (
+        bin(x_left & z_right).count("1") + bin(z_left & x_right).count("1")
+    ) % 2 == 0
 
 
 def test_qubit_zero_is_msb_while_reference_packed_bit_zero_is_lsb() -> None:

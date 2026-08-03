@@ -65,7 +65,7 @@ def _reference_sparse(
                 if code in "YZ":
                     z_mask |= bit
                 y_count += code == "Y"
-            phase = (1j**y_count) * ((-1) ** ((z_mask & source).bit_count()))
+            phase = (1j**y_count) * ((-1) ** bin(z_mask & source).count("1"))
             destination = source ^ x_mask
             aggregate[destination] = (
                 aggregate.get(destination, 0j) + coefficient * phase
@@ -73,7 +73,7 @@ def _reference_sparse(
         for destination, value in aggregate.items():
             if value == 0j:
                 continue
-            if destination.bit_count() != particle_number:
+            if bin(destination).count("1") != particle_number:
                 raise AssertionError(
                     "reference operator leaks from the selected sector"
                 )
