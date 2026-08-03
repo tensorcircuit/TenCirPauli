@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade "black>=24.10,<26" "mypy>=1.14,<2" "ruff>=0.9,<1" "numpy>=1.23"
+      - run: python -m pip install --upgrade "black>=24.10,<26" "mypy>=1.14,<2" "ruff>=0.9,<1" "numpy>=1.23,<2.5"
       - run: black --check python tests benchmarks scripts
       - run: ruff check python tests benchmarks scripts
       - run: mypy
@@ -42,7 +42,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
       - run: python -m pip install --upgrade pip maturin pytest numpy "tensorcircuit-ng>=1.8,<2"
-      - run: maturin develop --release
+      - run: maturin build --release --locked --out dist
+      - name: Install built wheel
+        run: >-
+          python -c "import glob, subprocess, sys; wheels = glob.glob('dist/*.whl'); assert len(wheels) == 1, wheels; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', wheels[0]])"
       - run: pytest
 
   examples:
@@ -54,7 +57,10 @@ jobs:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
       - run: python -m pip install --upgrade pip maturin numpy "tensorcircuit-ng>=1.8,<2"
-      - run: maturin develop --release
+      - run: maturin build --release --locked --out dist
+      - name: Install built wheel
+        run: >-
+          python -c "import glob, subprocess, sys; wheels = glob.glob('dist/*.whl'); assert len(wheels) == 1, wheels; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', wheels[0]])"
       - run: python examples/vqe_u1.py
       - run: python examples/vqe_propagation.py
       - run: python examples/vqe_spps.py
