@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完成；当前工作是 Phase 7.5 handoff 后的 native performance slice，所有迁移均以 correctness 和 small/medium/large 端到端 A/B 为门槛。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完成；当前 checkpoint 是 Phase 7.5 native performance slice `546ee50`，所有迁移均以 correctness 和 small/medium/large 端到端 A/B 为门槛。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
 
 ## Active status
 
@@ -14,7 +14,7 @@ Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
 | Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P5 implemented; accepted 2026-08-03; native performance slice in progress | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, cancellation, and restricted-target references pass. Majorana expansion, mapping transforms/plans, ChargeSector DP/rank/unrank/basis generation, and charge transition construction are pure-Rust core calls behind thin PyO3 boundaries; Python retains validation, compact transformations, and compatibility fallback. The new ChargeSector A/B is complete; clean post-commit manifest is the next gate. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0–P5 and native performance slice implemented; accepted 2026-08-03 | Independent Majorana/Fock, GF(2)/encoded-basis, charge, simultaneous-sector, qudit-spectator, cancellation, and restricted-target references pass. Majorana expansion, mapping transforms/plans, ChargeSector DP/rank/unrank/basis generation, and charge transition construction are pure-Rust core calls behind thin PyO3 boundaries; Python retains validation, compact transformations, and compatibility fallback. Clean release manifest `phase75-charge-rust-clean-20260803` at `546ee50` is complete. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -96,16 +96,16 @@ The post-handoff performance slice applies the same coarse-boundary rule to the 
 
 The independent ChargeSector differential uses a mixed fermion/boson/qubit/qutrit layout with two simultaneous constraints and enumerates the finite reference basis directly. The full local gate after this slice passes 36 Rust tests, 255 Python tests, Black, Ruff, strict mypy, Clippy, release maturin build, and the existing benchmark smoke workflow.
 
-The first release end-to-end A/B (public Python method, validation, FFI packing, Rust kernel, and result wrapping) gives the following medians. Setup/rank/unrank use 12/6, 32/16, and 60/30 fermion modes/particles; the large setup remains below the existing `2**n` platform-index guard. Basis materialization uses 8/4, 16/8, and 20/10 because it measures an actual output rather than allocating a combinatorially impractical array.
+The clean release end-to-end A/B (public Python method, validation, FFI packing, Rust kernel, and result wrapping) gives the following medians. Setup/rank/unrank use 12/6, 32/16, and 60/30 fermion modes/particles; the large setup remains below the existing `2**n` platform-index guard. Basis materialization uses 8/4, 16/8, and 20/10 because it measures an actual output rather than allocating a combinatorially impractical array.
 
 | ChargeSector operation | Small Python → Rust | Medium Python → Rust | Large Python → Rust |
 | --- | ---: | ---: | ---: |
-| Setup | 0.0503 → 0.0202 ms | 0.2569 → 0.0693 ms | 0.8541 → 0.1755 ms |
-| Rank | 0.0061 → 0.0020 ms | 0.0146 → 0.0043 ms | 0.0272 → 0.0075 ms |
-| Unrank | 0.0052 → 0.0008 ms | 0.0129 → 0.0016 ms | 0.0240 → 0.0029 ms |
-| Basis states | 0.2667 → 0.0086 ms | 92.18 → 2.59 ms | 1622.58 → 47.80 ms |
+| Setup | 0.0500 → 0.0203 ms | 0.2578 → 0.0700 ms | 0.8452 → 0.1778 ms |
+| Rank | 0.0061 → 0.0021 ms | 0.0148 → 0.0045 ms | 0.0272 → 0.0078 ms |
+| Unrank | 0.0052 → 0.0008 ms | 0.0130 → 0.0016 ms | 0.0243 → 0.0029 ms |
+| Basis states | 0.2658 → 0.0087 ms | 92.86 → 2.62 ms | 1634.43 → 42.56 ms |
 
-These measurements are informational and were taken on the local arm64/macOS release environment; the clean post-commit benchmark manifest remains the final evidence gate. The current result supports keeping the migration: every tested operation and scale improved, so no small-workload Python dispatch fallback is justified by this A/B. Further Phase 7.5 migrations must retain the same independent differential and three-scale end-to-end measurement requirement.
+Clean manifest `phase75-charge-rust-clean-20260803` at commit `546ee50` completed all 72 Phase 7.5 benchmark cases with `git_dirty=false` on the local arm64/macOS release environment. These measurements are informational, not wall-time CI gates. Every tested operation and scale improved, so no small-workload Python dispatch fallback is justified by this A/B; further Phase 7.5 migrations must retain the same independent differential and three-scale end-to-end measurement requirement.
 
 ## Frozen owner decisions
 
