@@ -189,3 +189,23 @@ def test_restriction_rejects_leakage_and_memory_guards() -> None:
         conserved.restrict_charge(sector, max_bytes=1)
     with pytest.raises(ValueError, match="shape"):
         conserved.restrict_charge(sector).apply(np.zeros(3))
+
+
+def test_sector_zero_negative_weights_overflow_and_memory_boundaries() -> None:
+    zero_weight = tcp.AdditiveCharge(tcp.OperatorSpace(bosons=1), bosons={0: 0})
+    with pytest.raises(ValueError, match="finiteness"):
+        zero_weight.sector(0)
+    finite_zero_weight = zero_weight.sector(0, boson_cutoffs={0: 2})
+    assert finite_zero_weight.dimension == 3
+
+    negative = tcp.AdditiveCharge(tcp.OperatorSpace(bosons=1), bosons={0: -1})
+    with pytest.raises(ValueError, match="finiteness"):
+        negative.sector(0)
+    assert negative.sector(0, boson_cutoffs={0: 2}).dimension == 1
+
+    with pytest.raises(OverflowError):
+        tcp.AdditiveCharge(tcp.OperatorSpace(qudits=(3,) * 50)).sector(0)
+    with pytest.raises(MemoryError):
+        tcp.AdditiveCharge(tcp.OperatorSpace(fermions=4), fermions={0: 1}).sector(
+            0, max_bytes=1
+        )

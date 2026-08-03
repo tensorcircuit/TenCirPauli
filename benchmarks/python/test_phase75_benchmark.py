@@ -38,6 +38,7 @@ def _charge_workload() -> tuple[tcp.ChargeSector, tcp.ChargeRestrictedOperator]:
 
 
 def _record(benchmark: BenchmarkFixture, **metadata: object) -> None:
+    metadata.setdefault("numerical_error", 0.0)
     benchmark.extra_info.update(metadata)
 
 
@@ -52,6 +53,21 @@ def test_phase75_majorana_fermion_conversion(benchmark: BenchmarkFixture) -> Non
     benchmark(operator.to_fermion)
 
 
+def test_phase75_majorana_multiplication(benchmark: BenchmarkFixture) -> None:
+    left = _majorana_workload()
+    right = left.adjoint()
+    _record(benchmark, input_terms=left.term_count * right.term_count, n_modes=8)
+    benchmark(left.multiply, right)
+
+
+@pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
+def test_phase75_mapping_plan_construction(
+    benchmark: BenchmarkFixture, name: str
+) -> None:
+    _record(benchmark, mapping=name, n_modes=8)
+    benchmark(tcp.FermionQubitMapping.from_name, name, 8)
+
+
 @pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
 def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
     operator = _fermion_workload()
@@ -62,6 +78,7 @@ def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
         input_terms=operator.term_count,
         n_modes=8,
         cnot_count=len(mapping.cnot_operations),
+        plan_bytes=mapping.estimated_bytes,
     )
     benchmark(operator.map_fermions, mapping)
 
@@ -69,7 +86,7 @@ def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
 def test_phase75_sector_setup(benchmark: BenchmarkFixture) -> None:
     space = tcp.OperatorSpace(fermions=12)
     charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(12)})
-    _record(benchmark, n_modes=12, sector_value=6)
+    _record(benchmark, n_modes=12, sector_value=6, plan_bytes=0)
     benchmark(charge.sector, 6)
 
 
@@ -81,6 +98,7 @@ def test_phase75_restricted_setup(benchmark: BenchmarkFixture) -> None:
         n_modes=8,
         sector_dimension=sector.dimension,
         input_terms=operator.term_count,
+        plan_bytes=sector.estimated_bytes,
     )
     benchmark(operator.restrict_charge, sector)
 
@@ -93,5 +111,6 @@ def test_phase75_restricted_apply(benchmark: BenchmarkFixture) -> None:
         n_modes=8,
         sector_dimension=sector.dimension,
         transitions=restricted.mvp_plan().transition_count,
+        plan_bytes=restricted.mvp_plan().estimated_bytes,
     )
     benchmark(restricted.apply, state)

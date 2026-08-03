@@ -1,6 +1,6 @@
 # Phase 7.5 specification: Majorana algebra, fermion mappings, and additive-charge sectors
 
-Status: frozen implementation contract, approved by the owner on 2026-08-03. Implementation has not started. Phase 7 acceptance remains the prerequisite described in Section 2.
+Status: frozen implementation contract, approved by the owner on 2026-08-03. P0–P4 initial implementation is present and under acceptance review; the clean Phase 7 prerequisite is recorded in `implementation-status.md`.
 
 ## 1. Purpose
 
