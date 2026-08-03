@@ -138,6 +138,73 @@ def _restricted_scaling_workload(
     )
 
 
+def _simultaneous_spin_workload(
+    spin_orbitals_per_sector: int,
+) -> tuple[tcp.FermionOperator, tcp.ChargeSector]:
+    n_modes = 2 * spin_orbitals_per_sector
+    space = tcp.OperatorSpace(fermions=n_modes)
+    number = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
+    spin = tcp.AdditiveCharge(
+        space,
+        fermions={
+            index: (1 if index < spin_orbitals_per_sector else -1)
+            for index in range(n_modes)
+        },
+    )
+    terms = []
+    for offset in (0, spin_orbitals_per_sector):
+        for index in range(spin_orbitals_per_sector - 1):
+            terms.extend(
+                (
+                    (
+                        (
+                            (offset + index, "create"),
+                            (offset + index + 1, "annihilate"),
+                        ),
+                        1.0,
+                    ),
+                    (
+                        (
+                            (offset + index + 1, "create"),
+                            (offset + index, "annihilate"),
+                        ),
+                        1.0,
+                    ),
+                )
+            )
+    return tcp.FermionOperator.from_terms(n_modes, terms), tcp.ChargeSector(
+        ((number, spin_orbitals_per_sector), (spin, 0))
+    )
+
+
+def _bose_hubbard_workload(
+    n_modes: int, total_occupation: int
+) -> tuple[tcp.BosonOperator, tcp.ChargeSector]:
+    space = tcp.OperatorSpace(bosons=n_modes)
+    number = tcp.AdditiveCharge(space, bosons={index: 1 for index in range(n_modes)})
+    terms = []
+    for index in range(n_modes - 1):
+        terms.extend(
+            (
+                (((index, "create"), (index + 1, "annihilate")), 1.0),
+                (((index + 1, "create"), (index, "annihilate")), 1.0),
+            )
+        )
+    return tcp.BosonOperator.from_terms(n_modes, terms), number.sector(total_occupation)
+
+
+def _mixed_excitation_workload() -> tuple[tcp.HybridOperator, tcp.ChargeSector]:
+    space = tcp.OperatorSpace(fermions=2, bosons=1)
+    charge = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1}, bosons={0: 1})
+    operator = (
+        space.fermion.create(0) * space.boson.annihilate(0)
+        + space.fermion.annihilate(0) * space.boson.create(0)
+        + space.fermion.create(1) * space.boson.annihilate(0)
+        + space.fermion.annihilate(1) * space.boson.create(0)
+    )
+    return operator, charge.sector(1)
+
+
 def _charge_setup_workload(n_modes: int) -> tcp.AdditiveCharge:
     space = tcp.OperatorSpace(fermions=n_modes)
     return tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
@@ -835,6 +902,32 @@ def test_phase75_restricted_setup_scaling(
         input_terms=operator.term_count,
         transitions=expected.mvp_plan().transition_count,
         plan_bytes=expected.estimated_bytes,
+    )
+    benchmark(operator.restrict_charge, sector)
+
+
+@pytest.mark.parametrize(
+    "workload", ["simultaneous_spin", "bose_hubbard", "mixed_excitation"]
+)
+def test_phase75_restricted_domain_workloads(
+    benchmark: BenchmarkFixture, workload: str
+) -> None:
+    if workload == "simultaneous_spin":
+        operator, sector = _simultaneous_spin_workload(6)
+    elif workload == "bose_hubbard":
+        operator, sector = _bose_hubbard_workload(3, 4)
+    else:
+        operator, sector = _mixed_excitation_workload()
+    expected = operator.restrict_charge(sector)
+    _record(
+        benchmark,
+        operation="restricted_domain_setup",
+        workload=workload,
+        sector_dimension=sector.dimension,
+        input_terms=operator.term_count,
+        transitions=expected.mvp_plan().transition_count,
+        plan_bytes=expected.estimated_bytes,
+        workspace_bytes=sector.estimated_bytes,
     )
     benchmark(operator.restrict_charge, sector)
 

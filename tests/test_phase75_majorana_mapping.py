@@ -261,6 +261,45 @@ def test_direct_majorana_mapping_matches_encoded_dense_reference(name: str) -> N
     np.testing.assert_allclose(operator.map_fermions(plan).compile("dense"), expected)
 
 
+@pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
+def test_mapping_and_restriction_ordering_differential(name: str) -> None:
+    space = tcp.OperatorSpace(fermions=4)
+    number = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
+    operator = tcp.FermionOperator.from_terms(
+        4,
+        [
+            (((0, "create"), (1, "annihilate")), 0.7 + 0.1j),
+            (((1, "create"), (0, "annihilate")), -0.2j),
+            (
+                (
+                    (0, "create"),
+                    (1, "create"),
+                    (3, "annihilate"),
+                    (2, "annihilate"),
+                ),
+                0.3,
+            ),
+        ],
+    )
+    sector = number.sector(2)
+    restricted = operator.restrict_charge(sector).dense()
+    plan = tcp.FermionQubitMapping.from_name(name, 4)
+    mapped = operator.map_fermions(plan).compile("dense")
+    encoded_indices = []
+    for index in range(sector.dimension):
+        encoded = plan.encode_occupation(sector.unrank(index))
+        encoded_integer = 0
+        for bit in encoded:
+            encoded_integer = (encoded_integer << 1) | bit
+        encoded_indices.append(encoded_integer)
+    np.testing.assert_allclose(
+        mapped[np.ix_(encoded_indices, encoded_indices)],
+        restricted,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 def test_majorana_mapping_does_not_call_exponential_fermion_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
