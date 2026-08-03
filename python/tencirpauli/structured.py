@@ -33,6 +33,7 @@ from .pauli import PauliOperator
 
 
 _U32_MAX = 2**32 - 1
+_STRUCTURED_NATIVE_SPARSE_WORK_THRESHOLD = 64
 _IDENTITY_CODES = {"I": 0, "X": 1, "Y": 2, "Z": 3}
 _PAULI_PRODUCT: Tuple[Tuple[Tuple[int, complex], ...], ...] = (
     ((0, 1), (1, 1), (2, 1), (3, 1)),
@@ -2173,6 +2174,67 @@ def _compile_finite(
             return np.asarray(values, dtype=np.complex128).reshape(
                 (native_dimension, native_dimension)
             )
+    if _prefer_native_structured_sparse(dimension, len(operator._terms)) and hasattr(
+        _native, "structured_sparse"
+    ):
+        if target == "native_mvp" and hasattr(_native, "structured_sparse_plan"):
+            native_plan = _native_structured_mvp_plan(
+                operator, dimensions, cutoffs, max_bytes
+            )
+            return NativeMVPPlan(
+                0,
+                len(operator._terms),
+                "structured_sparse_native",
+                native_plan,
+                local_dimensions=dimensions,
+                estimated_bytes=dimension * 16,
+            )
+        native_dimension, rows, columns, values = _native_structured_sparse(
+            operator, dimensions, cutoffs, max_bytes
+        )
+        if target == "coo":
+            _check_allocation(
+                int(rows.nbytes + columns.nbytes + values.nbytes),
+                max_bytes,
+                "COO structured matrix",
+            )
+            return COOMatrix(
+                rows, columns, values, (native_dimension, native_dimension)
+            )
+        if target == "csr":
+            indptr = np.zeros(native_dimension + 1, dtype=np.uint64)
+            for row in rows:
+                indptr[int(row) + 1] += 1
+            np.cumsum(indptr, out=indptr)
+            _check_allocation(
+                int(indptr.nbytes + columns.nbytes + values.nbytes),
+                max_bytes,
+                "CSR structured matrix",
+            )
+            return CSRMatrix(
+                indptr, columns, values, (native_dimension, native_dimension)
+            )
+        generic = (dimensions, rows, columns, values)
+        if target == "native_mvp":
+            return NativeMVPPlan(
+                0,
+                len(operator._terms),
+                "structured_sparse",
+                None,
+                local_dimensions=dimensions,
+                generic_entries=generic,
+            )
+        if target == "backend_mvp":
+            return BackendMVPPlan(
+                1,
+                0,
+                len(operator._terms),
+                np.empty((0, 0), dtype=np.uint64),
+                np.empty((0, 0), dtype=np.uint64),
+                np.empty(0, dtype=np.complex128),
+                local_dimensions=dimensions,
+                _generic_entries=generic,
+            )
     entries = _finite_entries(operator, dimensions, cutoffs, max_bytes)
     if target == "dense":
         matrix: np.ndarray[Any, Any] = np.zeros(
@@ -2269,6 +2331,57 @@ def _native_term_arrays(
         real.append(term.coefficient.real)
         imaginary.append(term.coefficient.imag)
     return operations, real, imaginary
+
+
+def _prefer_native_structured_sparse(dimension: int, term_count: int) -> bool:
+    """Select the Rust transition kernel only after enough work amortizes FFI."""
+    return (
+        term_count > 0
+        and dimension * term_count >= _STRUCTURED_NATIVE_SPARSE_WORK_THRESHOLD
+    )
+
+
+def _native_structured_sparse(
+    operator: _StructuredOperator,
+    dimensions: Tuple[int, ...],
+    cutoffs: Mapping[int, int],
+    max_bytes: Optional[int],
+) -> Tuple[int, np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    operations, coefficients_re, coefficients_im = _native_term_arrays(
+        operator, dimensions, cutoffs
+    )
+    native_dimension, rows, columns, real, imaginary = _native.structured_sparse(
+        list(dimensions),
+        operations,
+        coefficients_re,
+        coefficients_im,
+        _effective_max_bytes(max_bytes),
+    )
+    return (
+        native_dimension,
+        np.asarray(rows, dtype=np.uint64),
+        np.asarray(columns, dtype=np.uint64),
+        np.asarray(real, dtype=np.float64)
+        + 1j * np.asarray(imaginary, dtype=np.float64),
+    )
+
+
+def _native_structured_mvp_plan(
+    operator: _StructuredOperator,
+    dimensions: Tuple[int, ...],
+    cutoffs: Mapping[int, int],
+    max_bytes: Optional[int],
+) -> Any:
+    operations, coefficients_re, coefficients_im = _native_term_arrays(
+        operator, dimensions, cutoffs
+    )
+    return _native.structured_sparse_plan(
+        list(dimensions),
+        operations,
+        coefficients_re,
+        coefficients_im,
+        _effective_max_bytes(max_bytes),
+    )
 
 
 def _finite_entries(

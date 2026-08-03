@@ -2,6 +2,9 @@ from typing import Sequence
 
 __version__: str
 
+class StructuredMvpPlan:
+    def apply(self, state: object, max_bytes: int) -> object: ...
+
 def structured_dense(
     local_dimensions: Sequence[int],
     operations: object,
@@ -9,6 +12,20 @@ def structured_dense(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, object]: ...
+def structured_sparse(
+    local_dimensions: Sequence[int],
+    operations: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def structured_sparse_plan(
+    local_dimensions: Sequence[int],
+    operations: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> StructuredMvpPlan: ...
 def structured_fermion_canonicalize(
     n_modes: int,
     factors: object,

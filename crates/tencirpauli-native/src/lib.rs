@@ -32,6 +32,7 @@ use structured::{
     structured_boson_canonicalize, structured_boson_multiply, structured_dense,
     structured_fermion_canonicalize, structured_fermion_jordan_wigner, structured_fermion_multiply,
     structured_hybrid_canonicalize, structured_hybrid_jordan_wigner, structured_hybrid_multiply,
+    structured_sparse, structured_sparse_plan, StructuredMvpPlan,
 };
 use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
@@ -45,6 +46,7 @@ use word::{
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<StructuredMvpPlan>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<NativeMvpPlan>()?;
     module.add_class::<NativeZ2TaperingPlan>()?;
@@ -93,6 +95,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_propagation_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine, module)?)?;
     module.add_function(wrap_pyfunction!(structured_dense, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_sparse, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_sparse_plan, module)?)?;
     module.add_function(wrap_pyfunction!(structured_fermion_canonicalize, module)?)?;
     module.add_function(wrap_pyfunction!(structured_fermion_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(structured_fermion_jordan_wigner, module)?)?;

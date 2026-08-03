@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from itertools import product
+from typing import Dict, List, Tuple
 
 import numpy as np
+import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
@@ -73,6 +75,38 @@ def boson_workload() -> Tuple[tcp.HybridOperator, dict[int, int]]:
     return operator, {0: 3, 1: 3}
 
 
+def structured_sparse_operator(term_count: int) -> tcp.BosonOperator:
+    """Build a pure-boson workload with a controlled finite work size."""
+    local_monomials = ((0, 0), (1, 0), (0, 1), (1, 1))
+    terms: List[Tuple[Tuple[Tuple[int, str], ...], complex]] = []
+    for index, ((create0, annihilate0), (create1, annihilate1)) in enumerate(
+        product(local_monomials, repeat=2)
+    ):
+        factors = (
+            ((0, "create"),) * create0
+            + ((0, "annihilate"),) * annihilate0
+            + ((1, "create"),) * create1
+            + ((1, "annihilate"),) * annihilate1
+        )
+        terms.append((factors, 1.0 + 0.01j * index))
+        if len(terms) == term_count:
+            break
+    return tcp.BosonOperator.from_terms(2, terms)
+
+
+STRUCTURED_SPARSE_CASES = (
+    (
+        "small_python",
+        tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)]),
+        {0: 1},
+    ),
+    ("threshold_64", structured_sparse_operator(8), {0: 1, 1: 3}),
+    ("medium_rust", structured_sparse_operator(16), {0: 3, 1: 3}),
+    ("large_rust", structured_sparse_operator(8), {0: 7, 1: 7}),
+)
+STRUCTURED_SPARSE_CASE_IDS = tuple(case[0] for case in STRUCTURED_SPARSE_CASES)
+
+
 def test_phase7_fermion_jordan_wigner(
     benchmark: BenchmarkFixture,
 ) -> None:
@@ -120,6 +154,84 @@ def test_phase7_boson_native_mvp(
     expected = plan.apply(state)
     result = benchmark(plan.apply, state)
     np.testing.assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("case", "operator", "cutoffs"),
+    STRUCTURED_SPARSE_CASES,
+    ids=STRUCTURED_SPARSE_CASE_IDS,
+)
+@pytest.mark.parametrize("target", ("coo", "csr"))
+def test_phase7_structured_sparse_scaling(
+    benchmark: BenchmarkFixture,
+    case: str,
+    operator: tcp.BosonOperator,
+    cutoffs: Dict[int, int],
+    target: str,
+) -> None:
+    """Measure adaptive Python/Rust sparse compilation over several scales."""
+    dense = operator.compile("dense", boson_cutoffs=cutoffs)
+    expected = operator.compile(target, boson_cutoffs=cutoffs)
+    result = benchmark(operator.compile, target, boson_cutoffs=cutoffs)
+    if target == "coo":
+        reconstructed = np.zeros_like(dense)
+        reconstructed[result.row, result.column] = result.data
+        np.testing.assert_array_equal(reconstructed, dense)
+        assert result.row.shape == expected.row.shape
+    else:
+        reconstructed = np.zeros_like(dense)
+        for row in range(dense.shape[0]):
+            start, stop = int(result.indptr[row]), int(result.indptr[row + 1])
+            reconstructed[row, result.indices[start:stop]] = result.data[start:stop]
+        np.testing.assert_array_equal(reconstructed, dense)
+        assert result.indices.shape == expected.indices.shape
+    benchmark.extra_info.update({"case": case, "target": target})
+
+
+@pytest.mark.parametrize(
+    ("case", "operator", "cutoffs"),
+    STRUCTURED_SPARSE_CASES,
+    ids=STRUCTURED_SPARSE_CASE_IDS,
+)
+def test_phase7_structured_mvp_construction(
+    benchmark: BenchmarkFixture,
+    case: str,
+    operator: tcp.BosonOperator,
+    cutoffs: Dict[int, int],
+) -> None:
+    """Measure plan construction, including the adaptive dispatch decision."""
+    expected = operator.compile("native_mvp", boson_cutoffs=cutoffs)
+    result = benchmark(operator.compile, "native_mvp", boson_cutoffs=cutoffs)
+    assert result.strategy == expected.strategy
+    benchmark.extra_info.update({"case": case, "strategy": result.strategy})
+
+
+@pytest.mark.parametrize(
+    ("case", "operator", "cutoffs"),
+    (
+        STRUCTURED_SPARSE_CASES[0],
+        STRUCTURED_SPARSE_CASES[2],
+        STRUCTURED_SPARSE_CASES[3],
+    ),
+    ids=("small_python", "medium_rust", "large_rust"),
+)
+def test_phase7_structured_mvp_apply(
+    benchmark: BenchmarkFixture,
+    case: str,
+    operator: tcp.BosonOperator,
+    cutoffs: Dict[int, int],
+) -> None:
+    """Measure steady reusable MVP apply for Python and Rust plans."""
+    plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
+    state = (
+        np.random.default_rng(20260803)
+        .normal(size=plan.dimension)
+        .astype(np.complex128)
+    )
+    expected = plan.apply(state)
+    result = benchmark(plan.apply, state)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update({"case": case, "strategy": plan.strategy})
 
 
 def test_phase7_hybrid_native_multiply(benchmark: BenchmarkFixture) -> None:

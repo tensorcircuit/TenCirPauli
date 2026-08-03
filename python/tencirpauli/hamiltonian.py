@@ -107,7 +107,7 @@ class NativeMVPPlan:
         """Apply the precompiled Rust plan without rebuilding its structure."""
         if self._generic_entries is not None:
             return _apply_generic_entries(self._generic_entries, state, max_bytes)
-        dimension = _dimension(self.nqubits)
+        dimension = self.dimension
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1 or values.shape[0] != dimension:
             raise ValueError(

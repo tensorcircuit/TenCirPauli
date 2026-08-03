@@ -204,6 +204,64 @@ def test_operator_builder_batch_canonicalization() -> None:
     )
 
 
+def test_adaptive_rust_sparse_targets_and_native_mvp() -> None:
+    space = tcp.OperatorSpace(bosons=2)
+    operator = space.boson.create(0)
+    for term in (
+        space.boson.create(1),
+        space.boson.annihilate(0),
+        space.boson.annihilate(1),
+        space.boson.create(0) * space.boson.create(1),
+        space.boson.create(0) * space.boson.annihilate(1),
+        space.boson.annihilate(0) * space.boson.create(1),
+        space.boson.annihilate(0) * space.boson.annihilate(1),
+    ):
+        operator = operator + term
+    cutoffs = {0: 7, 1: 7}
+    dense = operator.compile("dense", boson_cutoffs=cutoffs)
+    coo = operator.compile("coo", boson_cutoffs=cutoffs)
+    csr = operator.compile("csr", boson_cutoffs=cutoffs)
+    plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
+    assert plan.strategy == "structured_sparse_native"
+    reconstructed_coo = np.zeros_like(dense)
+    reconstructed_coo[coo.row, coo.column] = coo.data
+    np.testing.assert_array_equal(reconstructed_coo, dense)
+    reconstructed_csr = np.zeros_like(dense)
+    for row in range(64):
+        start, stop = int(csr.indptr[row]), int(csr.indptr[row + 1])
+        reconstructed_csr[row, csr.indices[start:stop]] = csr.data[start:stop]
+    np.testing.assert_array_equal(reconstructed_csr, dense)
+    state = np.arange(64, dtype=np.complex128)
+    np.testing.assert_allclose(plan.apply(state), dense @ state)
+
+    small = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
+    assert (
+        small.compile("native_mvp", boson_cutoffs={0: 1}).strategy
+        == "structured_sparse"
+    )
+
+
+def test_adaptive_rust_sparse_weyl_targets_match_dense() -> None:
+    terms = [
+        (((0, a, b),), 1.0 + 0.01j * (a * 4 + b)) for a in range(4) for b in range(4)
+    ]
+    operator = tcp.QuditWeylOperator.from_terms(5, terms)
+    dense = operator.compile("dense")
+    expected = sum(
+        (coefficient * _weyl_matrix(5, a, b) for ((_, a, b),), coefficient in terms),
+        start=np.zeros((5, 5), dtype=np.complex128),
+    )
+    np.testing.assert_allclose(dense, expected)
+    coo = operator.compile("coo")
+    plan = operator.compile("native_mvp")
+    assert plan.strategy == "structured_sparse_native"
+    reconstructed = np.zeros_like(dense)
+    reconstructed[coo.row, coo.column] = coo.data
+    np.testing.assert_array_equal(reconstructed, dense)
+    state = np.arange(5, dtype=np.complex128)
+    np.testing.assert_allclose(plan.apply(state), dense @ state)
+
+
 def test_tensor_product_grading_and_layout_compatibility() -> None:
     left = tcp.OperatorSpace(fermions=1).fermion.annihilate(0)
     right = tcp.OperatorSpace(fermions=1).fermion.create(0)

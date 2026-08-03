@@ -1,11 +1,11 @@
-use numpy::{Complex64 as NumpyComplex128, PyArray1};
-use pyo3::exceptions::PyValueError;
+use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
+use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
     jordan_wigner_hybrid_terms, jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms,
-    multiply_hybrid_terms, structured_dense_matrix, Complex64, FermionBatch, HybridBatch,
-    HybridLayout, HybridRawBatch, StructuredOperation,
+    multiply_hybrid_terms, structured_dense_matrix, structured_sparse_matrix, Complex64,
+    FermionBatch, HybridBatch, HybridLayout, HybridRawBatch, StructuredOperation,
 };
 
 use crate::convert::{complex_coefficients, map_error, split_complex};
@@ -52,6 +52,54 @@ type HybridRawInput = (
     Vec<f64>,
     Vec<f64>,
 );
+type StructuredSparseOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct StructuredMvpPlan {
+    dimension: usize,
+    rows: Vec<u64>,
+    columns: Vec<u64>,
+    values: Vec<Complex64>,
+}
+
+#[pymethods]
+impl StructuredMvpPlan {
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        if state_slice.len() != self.dimension {
+            return Err(PyValueError::new_err(format!(
+                "state must have shape ({},), got ({},)",
+                self.dimension,
+                state_slice.len()
+            )));
+        }
+        let output_bytes = (self.dimension as u128)
+            .checked_mul(std::mem::size_of::<Complex64>() as u128)
+            .ok_or_else(|| PyValueError::new_err("structured MVP output size overflow"))?;
+        if output_bytes > max_bytes {
+            return Err(PyMemoryError::new_err(format!(
+                "requested {output_bytes} bytes exceeds memory limit {max_bytes}"
+            )));
+        }
+        let output = py.allow_threads(|| {
+            let mut output = vec![Complex64::default(); self.dimension];
+            for ((&row, &column), &coefficient) in
+                self.rows.iter().zip(&self.columns).zip(&self.values)
+            {
+                output[row as usize] += coefficient * state_slice[column as usize];
+            }
+            output
+        });
+        Ok(PyArray1::from_vec(py, output))
+    }
+}
 
 #[pyfunction]
 pub(crate) fn structured_fermion_canonicalize(
@@ -439,4 +487,68 @@ pub(crate) fn structured_dense(
         })
         .map_err(map_error)?;
     Ok((dimension, PyArray1::from_vec(py, values)))
+}
+
+#[pyfunction]
+pub(crate) fn structured_sparse(
+    py: Python<'_>,
+    local_dimensions: Vec<usize>,
+    operations: Vec<Vec<(usize, u8, u32, u32)>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: u128,
+) -> PyResult<StructuredSparseOutput> {
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+    let operations = operations
+        .into_iter()
+        .map(|term| {
+            term.into_iter()
+                .map(|(axis, kind, p, q)| StructuredOperation { axis, kind, p, q })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let result = py
+        .allow_threads(|| {
+            structured_sparse_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
+        })
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&result.values);
+    Ok((
+        result.dimension,
+        result.rows,
+        result.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn structured_sparse_plan(
+    py: Python<'_>,
+    local_dimensions: Vec<usize>,
+    operations: Vec<Vec<(usize, u8, u32, u32)>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: u128,
+) -> PyResult<StructuredMvpPlan> {
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+    let operations = operations
+        .into_iter()
+        .map(|term| {
+            term.into_iter()
+                .map(|(axis, kind, p, q)| StructuredOperation { axis, kind, p, q })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let result = py
+        .allow_threads(|| {
+            structured_sparse_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
+        })
+        .map_err(map_error)?;
+    Ok(StructuredMvpPlan {
+        dimension: result.dimension,
+        rows: result.rows,
+        columns: result.columns,
+        values: result.values,
+    })
 }

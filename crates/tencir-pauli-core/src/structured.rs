@@ -1,6 +1,6 @@
 //! Native finite-basis kernels shared by structured Python operators.
 
-use std::collections::BTreeMap;
+use std::collections::{hash_map::Entry, BTreeMap};
 use std::mem::size_of;
 
 use crate::{Complex64, PauliError};
@@ -1119,6 +1119,89 @@ pub struct StructuredOperation {
     pub q: u32,
 }
 
+pub struct StructuredSparseResult {
+    pub dimension: usize,
+    pub rows: Vec<u64>,
+    pub columns: Vec<u64>,
+    pub values: Vec<Complex64>,
+}
+
+/// Compile canonical structured terms into deterministic sparse COO arrays.
+///
+/// This shares the exact transition convention with the dense kernel while
+/// avoiding Python basis-state and dictionary loops for larger finite spaces.
+pub fn structured_sparse_matrix(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    max_bytes: u128,
+) -> Result<StructuredSparseResult, PauliError> {
+    validate_structured_inputs(local_dimensions, terms, coefficients)?;
+    let dimension = mixed_radix_dimension(local_dimensions)?;
+    let mut entries: FxHashMap<(usize, usize), Complex64> = FxHashMap::default();
+    let mut digits = vec![0usize; local_dimensions.len()];
+    let mut output_digits = vec![0usize; local_dimensions.len()];
+    for column in 0..dimension {
+        decode_index(column, local_dimensions, &mut digits);
+        for (term_index, (term, &coefficient)) in terms.iter().zip(coefficients).enumerate() {
+            output_digits.copy_from_slice(&digits);
+            let mut amplitude = coefficient;
+            let mut valid = true;
+            for operation in term {
+                if !apply_structured_operation(
+                    operation,
+                    local_dimensions,
+                    &mut output_digits,
+                    &mut amplitude,
+                )? {
+                    valid = false;
+                    break;
+                }
+            }
+            if !valid {
+                continue;
+            }
+            if !amplitude.re.is_finite() || !amplitude.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index: term_index });
+            }
+            let row = encode_index(&output_digits, local_dimensions);
+            let key = (row, column);
+            let next_entry_count = entries.len().saturating_add(1);
+            match entries.entry(key) {
+                Entry::Occupied(mut entry) => *entry.get_mut() += amplitude,
+                Entry::Vacant(entry) => {
+                    check_sparse_entry_bytes(next_entry_count, max_bytes)?;
+                    entry.insert(amplitude);
+                }
+            }
+        }
+    }
+    let mut ordered: Vec<_> = entries.into_iter().collect();
+    ordered.sort_by_key(|(key, _)| *key);
+    let mut rows = Vec::with_capacity(ordered.len());
+    let mut columns = Vec::with_capacity(ordered.len());
+    let mut values = Vec::with_capacity(ordered.len());
+    for ((row, column), value) in ordered {
+        if value.re == 0.0 && value.im == 0.0 {
+            continue;
+        }
+        rows.push(u64::try_from(row).map_err(|_| PauliError::Overflow {
+            context: "converting structured sparse row index",
+        })?);
+        columns.push(u64::try_from(column).map_err(|_| PauliError::Overflow {
+            context: "converting structured sparse column index",
+        })?);
+        values.push(value);
+    }
+    check_sparse_output_bytes(rows.len(), max_bytes)?;
+    Ok(StructuredSparseResult {
+        dimension,
+        rows,
+        columns,
+        values,
+    })
+}
+
 /// Compile canonical structured terms into a row-major mixed-radix matrix.
 pub fn structured_dense_matrix(
     local_dimensions: &[usize],
@@ -1126,23 +1209,8 @@ pub fn structured_dense_matrix(
     coefficients: &[Complex64],
     max_bytes: u128,
 ) -> Result<(usize, Vec<Complex64>), PauliError> {
-    if terms.len() != coefficients.len() {
-        return Err(PauliError::InvalidStructureLength {
-            expected: terms.len(),
-            actual: coefficients.len(),
-        });
-    }
-    if local_dimensions.contains(&0) {
-        return Err(PauliError::InvalidStructureLength {
-            expected: 1,
-            actual: 0,
-        });
-    }
-    let dimension = local_dimensions.iter().try_fold(1usize, |value, &factor| {
-        value.checked_mul(factor).ok_or(PauliError::Overflow {
-            context: "computing mixed-radix basis dimension",
-        })
-    })?;
+    validate_structured_inputs(local_dimensions, terms, coefficients)?;
+    let dimension = mixed_radix_dimension(local_dimensions)?;
     let entries = dimension
         .checked_mul(dimension)
         .ok_or(PauliError::Overflow {
@@ -1166,71 +1234,22 @@ pub fn structured_dense_matrix(
     }
     let mut matrix = vec![Complex64::default(); entries];
     let mut digits = vec![0usize; local_dimensions.len()];
+    let mut output_digits = vec![0usize; local_dimensions.len()];
     for column in 0..dimension {
         decode_index(column, local_dimensions, &mut digits);
         for (term, &coefficient) in terms.iter().zip(coefficients) {
-            let mut output_digits = digits.clone();
+            output_digits.copy_from_slice(&digits);
             let mut amplitude = coefficient;
             let mut valid = true;
             for operation in term {
-                if operation.axis >= local_dimensions.len() {
-                    return Err(PauliError::InvalidIndex {
-                        context: "structured operation axis",
-                    });
-                }
-                let local_dimension = local_dimensions[operation.axis];
-                let digit = output_digits[operation.axis];
-                match operation.kind {
-                    0 => {
-                        if local_dimension != 2 {
-                            return Err(PauliError::InvalidIndex {
-                                context: "Pauli operation requires a two-level axis",
-                            });
-                        }
-                        apply_pauli(
-                            operation.p as u8,
-                            digit,
-                            &mut output_digits[operation.axis],
-                            &mut amplitude,
-                        )?;
-                    }
-                    1 => {
-                        let annihilation = operation.q as usize;
-                        let creation = operation.p as usize;
-                        if digit < annihilation {
-                            valid = false;
-                            break;
-                        }
-                        let destination = digit - annihilation + creation;
-                        if destination >= local_dimension {
-                            valid = false;
-                            break;
-                        }
-                        let mut ladder_amplitude = 1.0;
-                        for offset in 0..annihilation {
-                            ladder_amplitude *= (digit - offset) as f64;
-                        }
-                        let remaining = digit - annihilation;
-                        for offset in 0..creation {
-                            ladder_amplitude *= (remaining + offset + 1) as f64;
-                        }
-                        amplitude *= ladder_amplitude.sqrt();
-                        output_digits[operation.axis] = destination;
-                    }
-                    2 => {
-                        let a = (operation.p as usize) % local_dimension;
-                        let b = operation.q as usize;
-                        output_digits[operation.axis] = (digit + a) % local_dimension;
-                        let angle = 2.0 * std::f64::consts::PI * (b * digit) as f64
-                            / local_dimension as f64;
-                        amplitude *= Complex64::new(angle.cos(), angle.sin());
-                    }
-                    _ => {
-                        return Err(PauliError::InvalidCode {
-                            code: operation.kind,
-                            index: operation.axis,
-                        });
-                    }
+                if !apply_structured_operation(
+                    operation,
+                    local_dimensions,
+                    &mut output_digits,
+                    &mut amplitude,
+                )? {
+                    valid = false;
+                    break;
                 }
             }
             if valid {
@@ -1269,6 +1288,145 @@ fn apply_pauli(
     Ok(())
 }
 
+fn validate_structured_inputs(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+) -> Result<(), PauliError> {
+    if terms.len() != coefficients.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: terms.len(),
+            actual: coefficients.len(),
+        });
+    }
+    if local_dimensions.contains(&0) {
+        return Err(PauliError::InvalidStructureLength {
+            expected: 1,
+            actual: 0,
+        });
+    }
+    for (index, &coefficient) in coefficients.iter().enumerate() {
+        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+    }
+    Ok(())
+}
+
+fn mixed_radix_dimension(local_dimensions: &[usize]) -> Result<usize, PauliError> {
+    local_dimensions.iter().try_fold(1usize, |value, &factor| {
+        value.checked_mul(factor).ok_or(PauliError::Overflow {
+            context: "computing mixed-radix basis dimension",
+        })
+    })
+}
+
+fn check_sparse_entry_bytes(count: usize, max_bytes: u128) -> Result<(), PauliError> {
+    let requested = (count as u128)
+        .checked_mul(64)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured sparse workspace",
+        })?;
+    if requested > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested,
+            limit: max_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn check_sparse_output_bytes(count: usize, max_bytes: u128) -> Result<(), PauliError> {
+    let requested = (count as u128)
+        .checked_mul(32)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured sparse output",
+        })?;
+    if requested > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested,
+            limit: max_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn apply_structured_operation(
+    operation: &StructuredOperation,
+    local_dimensions: &[usize],
+    output_digits: &mut [usize],
+    amplitude: &mut Complex64,
+) -> Result<bool, PauliError> {
+    if operation.axis >= local_dimensions.len() {
+        return Err(PauliError::InvalidIndex {
+            context: "structured operation axis",
+        });
+    }
+    let local_dimension = local_dimensions[operation.axis];
+    let digit = output_digits[operation.axis];
+    match operation.kind {
+        0 => {
+            if local_dimension != 2 {
+                return Err(PauliError::InvalidIndex {
+                    context: "Pauli operation requires a two-level axis",
+                });
+            }
+            if operation.p > 3 {
+                return Err(PauliError::InvalidCode {
+                    code: operation.p as u8,
+                    index: operation.axis,
+                });
+            }
+            apply_pauli(
+                operation.p as u8,
+                digit,
+                &mut output_digits[operation.axis],
+                amplitude,
+            )?;
+        }
+        1 => {
+            let annihilation = operation.q as usize;
+            let creation = operation.p as usize;
+            if digit < annihilation {
+                return Ok(false);
+            }
+            let destination = digit
+                .checked_sub(annihilation)
+                .and_then(|remaining| remaining.checked_add(creation))
+                .ok_or(PauliError::Overflow {
+                    context: "computing boson transition destination",
+                })?;
+            if destination >= local_dimension {
+                return Ok(false);
+            }
+            let mut ladder_amplitude = 1.0;
+            for offset in 0..annihilation {
+                ladder_amplitude *= (digit - offset) as f64;
+            }
+            let remaining = digit - annihilation;
+            for offset in 0..creation {
+                ladder_amplitude *= (remaining + offset + 1) as f64;
+            }
+            *amplitude *= ladder_amplitude.sqrt();
+            output_digits[operation.axis] = destination;
+        }
+        2 => {
+            let a = (operation.p as usize) % local_dimension;
+            let b_digit = u128::from(operation.q) * digit as u128;
+            output_digits[operation.axis] = (digit + a) % local_dimension;
+            let angle = 2.0 * std::f64::consts::PI * b_digit as f64 / local_dimension as f64;
+            *amplitude *= Complex64::new(angle.cos(), angle.sin());
+        }
+        _ => {
+            return Err(PauliError::InvalidCode {
+                code: operation.kind,
+                index: operation.axis,
+            });
+        }
+    }
+    Ok(true)
+}
+
 fn decode_index(mut index: usize, dimensions: &[usize], digits: &mut [usize]) {
     for position in (0..dimensions.len()).rev() {
         digits[position] = index % dimensions[position];
@@ -1289,7 +1447,7 @@ fn encode_index(digits: &[usize], dimensions: &[usize]) -> usize {
 mod tests {
     use super::{
         canonicalize_boson_terms, canonicalize_fermion_terms, jordan_wigner_terms,
-        structured_dense_matrix, StructuredOperation,
+        structured_dense_matrix, structured_sparse_matrix, StructuredOperation,
     };
     use crate::Complex64;
 
@@ -1384,5 +1542,35 @@ mod tests {
         assert_eq!(words, vec![vec![0], vec![3]]);
         assert_eq!(coefficients[0], Complex64::new(0.5, 0.0));
         assert_eq!(coefficients[1], Complex64::new(-0.5, 0.0));
+    }
+
+    #[test]
+    fn sparse_structured_kernel_matches_dense_mixed_radix_output() {
+        let dimensions = [2, 3];
+        let terms = vec![
+            vec![StructuredOperation {
+                axis: 0,
+                kind: 0,
+                p: 1,
+                q: 0,
+            }],
+            vec![StructuredOperation {
+                axis: 1,
+                kind: 1,
+                p: 1,
+                q: 0,
+            }],
+        ];
+        let coefficients = [Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)];
+        let (dimension, dense) =
+            structured_dense_matrix(&dimensions, &terms, &coefficients, u128::MAX).unwrap();
+        let sparse =
+            structured_sparse_matrix(&dimensions, &terms, &coefficients, u128::MAX).unwrap();
+        let mut reconstructed = vec![Complex64::default(); dense.len()];
+        for ((&row, &column), &value) in sparse.rows.iter().zip(&sparse.columns).zip(&sparse.values)
+        {
+            reconstructed[row as usize * dimension + column as usize] = value;
+        }
+        assert_eq!(reconstructed, dense);
     }
 }
