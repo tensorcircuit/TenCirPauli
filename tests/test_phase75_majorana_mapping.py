@@ -118,6 +118,27 @@ def test_majorana_anticommutation_adjoint_and_fock_differential() -> None:
     assert tcp.MajoranaOperator.from_terms(2, [((0,), 1.0)]).is_hermitian()
 
 
+def test_native_majorana_fermion_expansion_matches_python_reference() -> None:
+    operator = tcp.MajoranaOperator.from_terms(
+        3,
+        [
+            ((0, 1, 4, 5), 0.3 - 0.2j),
+            ((1, 2, 3), -0.4j),
+            ((), 0.7),
+        ],
+    )
+    actual = operator.to_fermion().compile("dense")
+    expected = sum(
+        coefficient * _majorana_reference(3, indices)
+        for indices, coefficient in (
+            ((0, 1, 4, 5), 0.3 - 0.2j),
+            ((1, 2, 3), -0.4j),
+            ((), 0.7),
+        )
+    )
+    np.testing.assert_allclose(actual, expected)
+
+
 def test_majorana_operator_aggregation_and_expansion_guard() -> None:
     operator = tcp.MajoranaOperator.from_terms(2, [((1, 0, 1), 1.0), ((0,), 1.0)])
     assert operator.term_count == 0

@@ -7,6 +7,35 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli.majorana import _guard_expansion
+
+
+def _majorana_to_fermion_python_reference(
+    operator: tcp.MajoranaOperator,
+) -> tcp.FermionOperator:
+    branches = sum(1 << term.word.degree for term in operator.terms)
+    _guard_expansion(branches, tcp.DEFAULT_MAX_BYTES, "Majorana-to-fermion expansion")
+    raw_terms = []
+    for term in operator.terms:
+        current = [((), term.coefficient)]
+        for index in term.word.indices:
+            mode, component = divmod(index, 2)
+            options = (
+                ((mode, "create"), 1.0 + 0j),
+                ((mode, "annihilate"), 1.0 + 0j),
+            )
+            if component:
+                options = (
+                    ((mode, "create"), 1.0j),
+                    ((mode, "annihilate"), -1.0j),
+                )
+            current = [
+                ((*factors, factor), coefficient * local)
+                for factors, coefficient in current
+                for factor, local in options
+            ]
+        raw_terms.extend(current)
+    return tcp.FermionOperator.from_terms(operator.n_modes, raw_terms)
 
 
 def _majorana_workload() -> tcp.MajoranaOperator:
@@ -27,6 +56,21 @@ def _fermion_workload() -> tcp.FermionOperator:
             )
         )
     return tcp.FermionOperator.from_terms(8, terms)
+
+
+def _majorana_ab_workload(
+    n_modes: int, term_count: int, degree: int
+) -> tcp.MajoranaOperator:
+    terms = []
+    for start in range(term_count):
+        indices = tuple(
+            sorted(
+                2 * ((start + offset) % n_modes) + (offset & 1)
+                for offset in range(degree)
+            )
+        )
+        terms.append((indices, complex(1.0 + 0.01 * start, -0.02 * (start % 3))))
+    return tcp.MajoranaOperator.from_terms(n_modes, terms)
 
 
 def _charge_workload() -> tuple[tcp.ChargeSector, tcp.ChargeRestrictedOperator]:
@@ -50,6 +94,68 @@ def test_phase75_majorana_construction(benchmark: BenchmarkFixture) -> None:
 def test_phase75_majorana_fermion_conversion(benchmark: BenchmarkFixture) -> None:
     operator = _majorana_workload()
     _record(benchmark, input_terms=operator.term_count, n_modes=operator.n_modes)
+    benchmark(operator.to_fermion)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "term_count", "degree"),
+    [
+        ("small", 8, 8, 4),
+        ("medium", 24, 16, 6),
+        ("large", 64, 32, 8),
+    ],
+)
+def test_phase75_majorana_conversion_ab_python(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    term_count: int,
+    degree: int,
+) -> None:
+    operator = _majorana_ab_workload(n_modes, term_count, degree)
+    expected = _majorana_to_fermion_python_reference(operator)
+    _record(
+        benchmark,
+        path="python_reference",
+        scale=scale,
+        n_modes=n_modes,
+        input_terms=term_count,
+        degree=degree,
+        branches=term_count * (1 << degree),
+        output_terms=expected.term_count,
+    )
+    benchmark(_majorana_to_fermion_python_reference, operator)
+
+
+@pytest.mark.parametrize(
+    ("scale", "n_modes", "term_count", "degree"),
+    [
+        ("small", 8, 8, 4),
+        ("medium", 24, 16, 6),
+        ("large", 64, 32, 8),
+    ],
+)
+def test_phase75_majorana_conversion_ab_native(
+    benchmark: BenchmarkFixture,
+    scale: str,
+    n_modes: int,
+    term_count: int,
+    degree: int,
+) -> None:
+    operator = _majorana_ab_workload(n_modes, term_count, degree)
+    expected = _majorana_to_fermion_python_reference(operator)
+    actual = operator.to_fermion()
+    assert actual.terms == expected.terms
+    _record(
+        benchmark,
+        path="rust_native",
+        scale=scale,
+        n_modes=n_modes,
+        input_terms=term_count,
+        degree=degree,
+        branches=term_count * (1 << degree),
+        output_terms=actual.term_count,
+    )
     benchmark(operator.to_fermion)
 
 

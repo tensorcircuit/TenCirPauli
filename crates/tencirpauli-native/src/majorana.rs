@@ -1,9 +1,12 @@
 use pyo3::prelude::*;
-use tencir_pauli_core::{canonicalize_majorana_terms, multiply_majorana_terms, MajoranaBatch};
+use tencir_pauli_core::{
+    canonicalize_majorana_terms, majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch,
+};
 
 use crate::convert::{complex_coefficients, map_error, split_complex};
 
 type MajoranaOutput = (Vec<Vec<u64>>, Vec<f64>, Vec<f64>);
+type FermionOutput = (Vec<Vec<u32>>, Vec<Vec<u32>>, Vec<f64>, Vec<f64>);
 
 #[pyfunction]
 pub(crate) fn majorana_canonicalize(
@@ -55,4 +58,21 @@ pub(crate) fn majorana_multiply(
         .map_err(map_error)?;
     let (real, imaginary) = split_complex(&result.1);
     Ok((result.0, real, imaginary))
+}
+
+#[pyfunction]
+pub(crate) fn majorana_to_fermion(
+    py: Python<'_>,
+    n_modes: usize,
+    indices: Vec<Vec<u64>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    max_bytes: u128,
+) -> PyResult<FermionOutput> {
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+    let result = py
+        .allow_threads(|| majorana_to_fermion_terms(n_modes, &indices, &coefficients, max_bytes))
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&result.2);
+    Ok((result.0, result.1, real, imaginary))
 }

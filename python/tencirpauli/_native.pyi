@@ -180,6 +180,18 @@ def majorana_multiply(
     right_coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+def majorana_to_fermion(
+    n_modes: int,
+    indices: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[
+    Sequence[Sequence[int]],
+    Sequence[Sequence[int]],
+    Sequence[float],
+    Sequence[float],
+]: ...
 
 class NativeMvpPlan:
     @property

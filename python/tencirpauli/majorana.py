@@ -15,7 +15,7 @@ from .hamiltonian import (
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from .structured import FermionOperator
+from .structured import FermionOperator, _fermion_from_native
 
 
 def _exact_nonnegative(value: object, name: str) -> int:
@@ -388,29 +388,23 @@ class MajoranaOperator:
         """Expand exactly into the Phase 7 canonical fermion algebra."""
         branches = sum(1 << term.word.degree for term in self._terms)
         _guard_expansion(branches, max_bytes, "Majorana-to-fermion expansion")
-        raw_terms: List[Tuple[Tuple[Tuple[int, str], ...], complex]] = []
-        for term in self._terms:
-            current: List[Tuple[Tuple[Tuple[int, str], ...], complex]] = [
-                ((), term.coefficient)
-            ]
-            for index in term.word.indices:
-                mode, component = divmod(index, 2)
-                options = (
-                    ((mode, "create"), 1.0 + 0j),
-                    ((mode, "annihilate"), 1.0 + 0j),
-                )
-                if component:
-                    options = (
-                        ((mode, "create"), 1.0j),
-                        ((mode, "annihilate"), -1.0j),
-                    )
-                current = [
-                    ((*factors, factor), coefficient * local)
-                    for factors, coefficient in current
-                    for factor, local in options
-                ]
-            raw_terms.extend(current)
-        return FermionOperator.from_terms(self.n_modes, raw_terms, max_bytes=max_bytes)
+        result = _native.majorana_to_fermion(
+            self.n_modes,
+            [list(term.word.indices) for term in self._terms],
+            [term.coefficient.real for term in self._terms],
+            [term.coefficient.imag for term in self._terms],
+            _effective_max_bytes(max_bytes),
+        )
+        creation, annihilation, real, imaginary = result
+        return _fermion_from_native(
+            FermionOperator,
+            self.n_modes,
+            (
+                creation,
+                annihilation,
+                tuple(complex(re, im) for re, im in zip(real, imaginary)),
+            ),
+        )
 
     def map_fermions(
         self,

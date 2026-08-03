@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::structured::{canonicalize_fermion_terms, FermionCanonicalResult};
 use crate::{Complex64, PauliError};
 
 pub struct MajoranaBatch<'a> {
@@ -18,8 +19,16 @@ fn invalid_word() -> PauliError {
 }
 
 fn check_bytes(entries: usize, bytes_per_entry: usize, max_bytes: u128) -> Result<(), PauliError> {
-    let requested = (entries as u128)
-        .checked_mul(bytes_per_entry as u128)
+    check_bytes_u128(entries as u128, bytes_per_entry as u128, max_bytes)
+}
+
+fn check_bytes_u128(
+    entries: u128,
+    bytes_per_entry: u128,
+    max_bytes: u128,
+) -> Result<(), PauliError> {
+    let requested = entries
+        .checked_mul(bytes_per_entry)
         .ok_or(PauliError::Overflow {
             context: "estimating Majorana expansion",
         })?;
@@ -153,6 +162,94 @@ pub fn canonicalize_majorana_terms(
     finish(aggregate)
 }
 
+/// Expand canonical Majorana words into canonical fermion words in one batch.
+///
+/// The expansion is performed entirely in Rust and then passed directly to
+/// the existing CAR canonicalizer.  This keeps the unavoidable branch count,
+/// intermediate factors, and contraction work on the native side of the FFI
+/// boundary.
+pub fn majorana_to_fermion_terms(
+    n_modes: usize,
+    indices: &[Vec<u64>],
+    coefficients: &[Complex64],
+    max_bytes: u128,
+) -> Result<FermionCanonicalResult, PauliError> {
+    if indices.len() != coefficients.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: indices.len(),
+            actual: coefficients.len(),
+        });
+    }
+
+    let mut branch_count = 0_u128;
+    for (index, (word, &coefficient)) in indices.iter().zip(coefficients).enumerate() {
+        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+        validate_canonical(n_modes, word)?;
+        let degree = u32::try_from(word.len()).map_err(|_| PauliError::Overflow {
+            context: "estimating Majorana-to-fermion expansion",
+        })?;
+        let branches = 1_u128.checked_shl(degree).ok_or(PauliError::Overflow {
+            context: "estimating Majorana-to-fermion expansion",
+        })?;
+        branch_count = branch_count
+            .checked_add(branches)
+            .ok_or(PauliError::Overflow {
+                context: "estimating Majorana-to-fermion expansion",
+            })?;
+    }
+    check_bytes_u128(branch_count, 192, max_bytes)?;
+    let branch_capacity = usize::try_from(branch_count).map_err(|_| PauliError::Overflow {
+        context: "allocating Majorana-to-fermion expansion",
+    })?;
+    let mut factors = Vec::with_capacity(branch_capacity);
+    let mut expanded_coefficients = Vec::with_capacity(branch_capacity);
+
+    for (word, &coefficient) in indices.iter().zip(coefficients) {
+        let branch_count = 1_usize
+            .checked_shl(u32::try_from(word.len()).map_err(|_| PauliError::Overflow {
+                context: "allocating Majorana-to-fermion expansion",
+            })?)
+            .ok_or(PauliError::Overflow {
+                context: "allocating Majorana-to-fermion expansion",
+            })?;
+        for mask in 0..branch_count {
+            let mut branch = Vec::with_capacity(word.len());
+            let mut branch_coefficient = coefficient;
+            for (position, &majorana_index) in word.iter().enumerate() {
+                let mode_u32 =
+                    u32::try_from(majorana_index / 2).map_err(|_| PauliError::Overflow {
+                        context: "converting Majorana mode to fermion mode",
+                    })?;
+                let mode = usize::try_from(mode_u32).map_err(|_| PauliError::Overflow {
+                    context: "converting Majorana mode to fermion mode",
+                })?;
+                let shift =
+                    u32::try_from(word.len() - position - 1).map_err(|_| PauliError::Overflow {
+                        context: "allocating Majorana-to-fermion expansion",
+                    })?;
+                let bit = 1_usize.checked_shl(shift).ok_or(PauliError::Overflow {
+                    context: "allocating Majorana-to-fermion expansion",
+                })?;
+                let create = mask & bit == 0;
+                branch.push((mode, if create { 0 } else { 1 }));
+                if majorana_index & 1 != 0 {
+                    branch_coefficient *= if create {
+                        Complex64::new(0.0, 1.0)
+                    } else {
+                        Complex64::new(0.0, -1.0)
+                    };
+                }
+            }
+            factors.push(branch);
+            expanded_coefficients.push(branch_coefficient);
+        }
+    }
+
+    canonicalize_fermion_terms(n_modes, &factors, &expanded_coefficients, max_bytes)
+}
+
 pub fn multiply_majorana_terms(
     n_modes: usize,
     left: MajoranaBatch<'_>,
@@ -194,4 +291,34 @@ pub fn multiply_majorana_terms(
         }
     }
     finish(aggregate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn majorana_to_fermion_expansion_preserves_phase_convention() {
+        let result =
+            majorana_to_fermion_terms(1, &[vec![1]], &[Complex64::new(1.0, 0.0)], u128::MAX)
+                .expect("Majorana expansion should succeed");
+        assert_eq!(result.0.len(), 2);
+        assert!(result.0.iter().any(|word| word == &vec![0]));
+        assert!(result.1.iter().any(|word| word == &vec![0]));
+        assert!(result
+            .2
+            .iter()
+            .any(|value| { value.re == 0.0 && value.im == 1.0 }));
+        assert!(result
+            .2
+            .iter()
+            .any(|value| { value.re == 0.0 && value.im == -1.0 }));
+    }
+
+    #[test]
+    fn majorana_to_fermion_expansion_checks_branch_budget_before_allocating() {
+        let error = majorana_to_fermion_terms(2, &[vec![0, 1]], &[Complex64::new(1.0, 0.0)], 192)
+            .expect_err("the branch budget must reject the expansion");
+        assert!(matches!(error, PauliError::MemoryLimit { .. }));
+    }
 }

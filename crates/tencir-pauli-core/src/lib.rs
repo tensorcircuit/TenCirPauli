@@ -30,7 +30,8 @@ pub use grouping::{
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
 pub use majorana::{
-    canonicalize_majorana_terms, multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,
+    canonicalize_majorana_terms, majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch,
+    MajoranaCanonicalResult,
 };
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
 pub use propagation::{
