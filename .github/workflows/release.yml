@@ -90,4 +90,44 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify release artifacts
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          expected = tag[1:] if tag.startswith("v") else tag
+          artifacts = [path for path in Path("dist").rglob("*") if path.is_file()]
+          wheels = [path for path in artifacts if path.suffix == ".whl"]
+          sdists = [path for path in artifacts if path.name.endswith(".tar.gz")]
+          assert len(wheels) == 5, f"expected 5 wheels, found {len(wheels)}"
+          assert len(sdists) == 1, f"expected 1 sdist, found {len(sdists)}"
+
+          for wheel in wheels:
+              with zipfile.ZipFile(wheel) as archive:
+                  names = set(archive.namelist())
+                  metadata_name = next(
+                      name for name in names if name.endswith(".dist-info/METADATA")
+                  )
+                  metadata = archive.read(metadata_name).decode()
+                  assert f"Name: tencirpauli\n" in metadata
+                  assert f"Version: {expected}\n" in metadata
+                  assert any(name.endswith("/LICENSE") for name in names)
+
+          with tarfile.open(sdists[0], "r:gz") as archive:
+              names = archive.getnames()
+              pkg_info = next(name for name in names if name.endswith("/PKG-INFO"))
+              metadata = archive.extractfile(pkg_info).read().decode()
+              assert f"Name: tencirpauli\n" in metadata
+              assert f"Version: {expected}\n" in metadata
+              assert any(name.endswith("/LICENSE") for name in names)
+          PY
       - uses: pypa/gh-action-pypi-publish@release/v1

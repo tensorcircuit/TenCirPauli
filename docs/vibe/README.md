@@ -6,6 +6,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 
 - [Phase Alpha Python facade specification](phase-alpha-spec.md): implemented unified user-facing circuit contract for `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, parameter expressions, TensorCircuit conversion, and backend MVP execution; native executors remain independent.
 - [Phase Alpha review, 2026-08-03](phase-alpha-review-2026-08-03.md): archived review findings, remediation scope, deferred items, and the local disposition record.
+- [Pre-release review, 2026-08-03](pre-release-review-2026-08-03.md): archived open-source and PyPI release-readiness audit, verification evidence, blockers, and manual release actions.
 - [Architecture and roadmap](architecture.md): scope, module boundaries, algorithms, differentiation strategy, risks, benchmarks, and go/no-go gates.
 - [Core semantics](semantics.md): Pauli representation, phase, ordering, coefficients, canonicalization, matrix conventions, and owner decisions that must be frozen before autonomous implementation.
 - [P0 reference vectors](reference-vectors.md): the independent NumPy dense oracle, fixed regression vectors, random seed, dtype, and tolerances.

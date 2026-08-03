@@ -5,7 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Pure Rust Pauli algebra core for TenCirPauli"
+publish = false
 
 [lib]
 name = "tencir_pauli_core"
