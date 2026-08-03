@@ -1,6 +1,6 @@
 //! Native finite-basis kernels shared by structured Python operators.
 
-use std::collections::{hash_map::Entry, BTreeMap};
+use std::collections::{hash_map::Entry, BTreeMap, BTreeSet};
 use std::mem::size_of;
 
 use crate::{Complex64, PauliError};
@@ -99,10 +99,10 @@ pub fn multiply_hybrid_terms(
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
     for left_index in 0..left.coefficients.len() {
         for right_index in 0..right.coefficients.len() {
-            let (fermion_products, boson_products) = (
-                hybrid_fermion_products(&left, left_index, &right, right_index),
-                hybrid_boson_products(&left, left_index, &right, right_index),
-            );
+            let fermion_products =
+                hybrid_fermion_products(&left, left_index, &right, right_index, max_bytes)?;
+            let boson_products =
+                hybrid_boson_products(&left, left_index, &right, right_index, max_bytes)?;
             let (qubit_codes, qubit_phase) = multiply_pauli_codes(
                 &left.qubit_codes[left_index],
                 &right.qubit_codes[right_index],
@@ -123,7 +123,9 @@ pub fn multiply_hybrid_terms(
                 * qudit_phase;
             for (fermion, fermion_integer) in &fermion_products {
                 for (boson, boson_integer) in &boson_products {
-                    let value = scalar * (*fermion_integer as f64) * (*boson_integer as f64);
+                    let value = scalar
+                        * checked_integer_to_f64(*fermion_integer, "fermion product expansion")?
+                        * checked_integer_to_f64(*boson_integer, "boson product expansion")?;
                     push_aggregate(
                         &mut aggregate,
                         (
@@ -176,13 +178,18 @@ pub fn canonicalize_hybrid_terms(
         let fermion_products = if batch.fermion_factors[index].is_empty() {
             vec![(None, 1)]
         } else {
+            check_structured_bytes_u128(
+                batch.fermion_factors[index].len() as u128,
+                max_bytes,
+                "hybrid fermion raw expansion",
+            )?;
             let sequence = raw_sequence(
                 &batch.fermion_factors[index],
                 layout.n_modes,
                 index,
                 "fermion mode",
             )?;
-            fermion_rewrite(sequence)
+            fermion_rewrite(sequence, max_bytes)?
                 .into_iter()
                 .map(|(key, value)| (Some(key), value))
                 .collect()
@@ -190,13 +197,18 @@ pub fn canonicalize_hybrid_terms(
         let boson_products = if batch.boson_factors[index].is_empty() {
             vec![(None, 1)]
         } else {
+            check_structured_bytes_u128(
+                batch.boson_factors[index].len() as u128,
+                max_bytes,
+                "hybrid boson raw expansion",
+            )?;
             let sequence = raw_sequence(
                 &batch.boson_factors[index],
                 layout.n_bosons,
                 index,
                 "boson mode",
             )?;
-            boson_rewrite(sequence)
+            boson_rewrite(sequence, max_bytes)?
                 .into_iter()
                 .map(|(key, value)| (Some(key), value))
                 .collect()
@@ -235,7 +247,9 @@ pub fn canonicalize_hybrid_terms(
                             None
                         },
                     ),
-                    batch.coefficients[index] * (*fermion_integer as f64) * (*boson_integer as f64),
+                    batch.coefficients[index]
+                        * checked_integer_to_f64(*fermion_integer, "fermion expansion")?
+                        * checked_integer_to_f64(*boson_integer, "boson expansion")?,
                     max_bytes,
                 )?;
             }
@@ -249,9 +263,10 @@ fn hybrid_fermion_products(
     left_index: usize,
     right: &HybridBatch<'_>,
     right_index: usize,
-) -> Vec<(Option<FermionKey>, i64)> {
+    max_bytes: u128,
+) -> Result<Vec<(Option<FermionKey>, i128)>, PauliError> {
     if !left.fermion_present[left_index] && !right.fermion_present[right_index] {
-        return vec![(None, 1)];
+        return Ok(vec![(None, 1)]);
     }
     let mut sequence = fermion_sequence(
         &left.fermion_creation[left_index],
@@ -261,10 +276,10 @@ fn hybrid_fermion_products(
         &right.fermion_creation[right_index],
         &right.fermion_annihilation[right_index],
     ));
-    fermion_rewrite(sequence)
+    Ok(fermion_rewrite(sequence, max_bytes)?
         .into_iter()
         .map(|(key, value)| (Some(key), value))
-        .collect()
+        .collect())
 }
 
 fn hybrid_boson_products(
@@ -272,16 +287,22 @@ fn hybrid_boson_products(
     left_index: usize,
     right: &HybridBatch<'_>,
     right_index: usize,
-) -> Vec<(Option<BosonKey>, i64)> {
+    max_bytes: u128,
+) -> Result<Vec<(Option<BosonKey>, i128)>, PauliError> {
     if !left.boson_present[left_index] && !right.boson_present[right_index] {
-        return vec![(None, 1)];
+        return Ok(vec![(None, 1)]);
     }
-    let mut sequence = boson_sequence(&left.boson_blocks[left_index]);
-    sequence.extend(boson_sequence(&right.boson_blocks[right_index]));
-    boson_rewrite(sequence)
-        .into_iter()
-        .map(|(key, value)| (Some(key), value))
-        .collect()
+    boson_block_product(
+        &left.boson_blocks[left_index],
+        &right.boson_blocks[right_index],
+        max_bytes,
+    )
+    .map(|values| {
+        values
+            .into_iter()
+            .map(|(key, value)| (Some(key), value))
+            .collect()
+    })
 }
 
 fn hybrid_mapped_product(
@@ -511,6 +532,11 @@ pub fn canonicalize_fermion_terms(
     let mut aggregate: FxHashMap<FermionKey, Vec<Complex64>> = FxHashMap::default();
     for (index, (raw_factors, &coefficient)) in factors.iter().zip(coefficients).enumerate() {
         validate_coefficient(coefficient, index)?;
+        check_structured_bytes_u128(
+            raw_factors.len() as u128,
+            max_bytes,
+            "fermion raw expansion",
+        )?;
         let mut sequence = Vec::with_capacity(raw_factors.len());
         for &(mode, action) in raw_factors {
             if mode >= n_modes {
@@ -526,8 +552,13 @@ pub fn canonicalize_fermion_terms(
             }
             sequence.push((mode, action == 0));
         }
-        for (key, integer) in fermion_rewrite(sequence) {
-            push_aggregate(&mut aggregate, key, coefficient * integer as f64, max_bytes)?;
+        for (key, integer) in fermion_rewrite(sequence, max_bytes)? {
+            push_aggregate(
+                &mut aggregate,
+                key,
+                coefficient * checked_integer_to_f64(integer, "fermion expansion")?,
+                max_bytes,
+            )?;
         }
     }
     finish_fermion_aggregate(aggregate)
@@ -564,13 +595,13 @@ pub fn multiply_fermion_terms(
                 &right.creation[right_index],
                 &right.annihilation[right_index],
             ));
-            for (key, integer) in fermion_rewrite(sequence) {
+            for (key, integer) in fermion_rewrite(sequence, max_bytes)? {
                 push_aggregate(
                     &mut aggregate,
                     key,
                     left.coefficients[left_index]
                         * right.coefficients[right_index]
-                        * integer as f64,
+                        * checked_integer_to_f64(integer, "fermion product expansion")?,
                     max_bytes,
                 )?;
             }
@@ -659,9 +690,15 @@ pub fn jordan_wigner_hybrid_terms(
                 max_bytes,
             )?
         } else {
-            vec![(batch.mapped_codes[index].clone(), Complex64::new(1.0, 0.0))]
+            vec![(vec![0_u8; layout.n_modes], Complex64::new(1.0, 0.0))]
+        };
+        let base_mapped = if batch.mapped_present[index] {
+            batch.mapped_codes[index].clone()
+        } else {
+            vec![0_u8; layout.n_modes]
         };
         for (mapped_codes, mapped_coefficient) in expansions {
+            let (combined_codes, mapped_phase) = multiply_pauli_codes(&base_mapped, &mapped_codes);
             push_aggregate(
                 &mut aggregate,
                 (
@@ -673,7 +710,7 @@ pub fn jordan_wigner_hybrid_terms(
                     },
                     batch.qubit_codes[index].clone(),
                     if batch.fermion_present[index] || batch.mapped_present[index] {
-                        Some(mapped_codes)
+                        Some(combined_codes)
                     } else {
                         None
                     },
@@ -683,7 +720,7 @@ pub fn jordan_wigner_hybrid_terms(
                         None
                     },
                 ),
-                batch.coefficients[index] * mapped_coefficient,
+                batch.coefficients[index] * mapped_coefficient * mapped_phase,
                 max_bytes,
             )?;
         }
@@ -744,6 +781,7 @@ pub fn canonicalize_boson_terms(
     let mut aggregate: FxHashMap<BosonKey, Vec<Complex64>> = FxHashMap::default();
     for (index, (raw_factors, &coefficient)) in factors.iter().zip(coefficients).enumerate() {
         validate_coefficient(coefficient, index)?;
+        check_structured_bytes_u128(raw_factors.len() as u128, max_bytes, "boson raw expansion")?;
         let mut sequence = Vec::with_capacity(raw_factors.len());
         for &(mode, action) in raw_factors {
             if mode >= n_modes {
@@ -759,8 +797,13 @@ pub fn canonicalize_boson_terms(
             }
             sequence.push((mode, action == 0));
         }
-        for (key, integer) in boson_rewrite(sequence) {
-            push_aggregate(&mut aggregate, key, coefficient * integer as f64, max_bytes)?;
+        for (key, integer) in boson_rewrite(sequence, max_bytes)? {
+            push_aggregate(
+                &mut aggregate,
+                key,
+                coefficient * checked_integer_to_f64(integer, "boson expansion")?,
+                max_bytes,
+            )?;
         }
     }
     finish_boson_aggregate(aggregate)
@@ -796,13 +839,15 @@ pub fn multiply_boson_terms(
     let mut aggregate: FxHashMap<BosonKey, Vec<Complex64>> = FxHashMap::default();
     for left in 0..left_blocks.len() {
         for right in 0..right_blocks.len() {
-            let mut sequence = boson_sequence(&left_blocks[left]);
-            sequence.extend(boson_sequence(&right_blocks[right]));
-            for (key, integer) in boson_rewrite(sequence) {
+            for (key, integer) in
+                boson_block_product(&left_blocks[left], &right_blocks[right], max_bytes)?
+            {
                 push_aggregate(
                     &mut aggregate,
                     key,
-                    left_coefficients[left] * right_coefficients[right] * integer as f64,
+                    left_coefficients[left]
+                        * right_coefficients[right]
+                        * checked_integer_to_f64(integer, "boson product expansion")?,
                     max_bytes,
                 )?;
             }
@@ -811,87 +856,227 @@ pub fn multiply_boson_terms(
     finish_boson_aggregate(aggregate)
 }
 
-fn fermion_rewrite(sequence: Vec<(usize, bool)>) -> BTreeMap<FermionKey, i64> {
-    for index in 0..sequence.len().saturating_sub(1) {
-        let (left_mode, left_creation) = sequence[index];
-        let (right_mode, right_creation) = sequence[index + 1];
-        let duplicate = left_creation == right_creation && left_mode == right_mode;
-        if duplicate {
-            return BTreeMap::new();
+fn fermion_rewrite(
+    sequence: Vec<(usize, bool)>,
+    max_bytes: u128,
+) -> Result<BTreeMap<FermionKey, i128>, PauliError> {
+    let branch_count = 1_u128
+        .checked_shl(sequence.len().try_into().unwrap_or(u32::MAX))
+        .unwrap_or(u128::MAX);
+    check_structured_bytes_u128(branch_count, max_bytes, "fermion expansion")?;
+
+    fn recurse(sequence: &[(usize, bool)]) -> Result<BTreeMap<FermionKey, i128>, PauliError> {
+        for index in 0..sequence.len().saturating_sub(1) {
+            let (left_mode, left_creation) = sequence[index];
+            let (right_mode, right_creation) = sequence[index + 1];
+            if left_creation == right_creation && left_mode == right_mode {
+                return Ok(BTreeMap::new());
+            }
+            let inversion = if left_creation && right_creation {
+                left_mode > right_mode
+            } else if !left_creation && !right_creation {
+                left_mode < right_mode
+            } else {
+                !left_creation && right_creation
+            };
+            if !inversion {
+                continue;
+            }
+            let mut swapped = sequence.to_vec();
+            swapped.swap(index, index + 1);
+            let mut result = BTreeMap::new();
+            add_integer_maps(&mut result, recurse(&swapped)?, -1)?;
+            if !left_creation && right_creation && left_mode == right_mode {
+                let mut contracted = sequence.to_vec();
+                contracted.drain(index..=index + 1);
+                add_integer_maps(&mut result, recurse(&contracted)?, 1)?;
+            }
+            result.retain(|_, value| *value != 0);
+            return Ok(result);
         }
-        let inversion = if left_creation && right_creation {
-            left_mode > right_mode
-        } else if !left_creation && !right_creation {
-            left_mode < right_mode
-        } else {
-            !left_creation && right_creation
-        };
-        if !inversion {
-            continue;
-        }
-        let mut swapped = sequence.clone();
-        swapped.swap(index, index + 1);
+        let creation = sequence
+            .iter()
+            .filter_map(|&(mode, is_creation)| is_creation.then_some(mode as u32))
+            .collect();
+        let annihilation = sequence
+            .iter()
+            .filter_map(|&(mode, is_creation)| (!is_creation).then_some(mode as u32))
+            .collect();
         let mut result = BTreeMap::new();
-        merge_integer_maps(&mut result, fermion_rewrite(swapped), -1);
-        if !left_creation && right_creation && left_mode == right_mode {
-            let mut contracted = sequence.clone();
-            contracted.drain(index..=index + 1);
-            merge_integer_maps(&mut result, fermion_rewrite(contracted), 1);
-        }
-        result.retain(|_, value| *value != 0);
-        return result;
+        result.insert((creation, annihilation), 1);
+        Ok(result)
     }
-    let creation = sequence
-        .iter()
-        .filter_map(|&(mode, is_creation)| is_creation.then_some(mode as u32))
-        .collect();
-    let annihilation = sequence
-        .iter()
-        .filter_map(|&(mode, is_creation)| (!is_creation).then_some(mode as u32))
-        .collect();
-    let mut result = BTreeMap::new();
-    result.insert((creation, annihilation), 1);
-    result
+
+    recurse(&sequence)
 }
 
-fn boson_rewrite(sequence: Vec<(usize, bool)>) -> BTreeMap<BosonKey, i64> {
-    for index in 0..sequence.len().saturating_sub(1) {
-        let (left_mode, left_creation) = sequence[index];
-        let (right_mode, right_creation) = sequence[index + 1];
-        let inversion =
-            left_mode > right_mode || (left_mode == right_mode && !left_creation && right_creation);
-        if !inversion {
-            continue;
-        }
-        let mut swapped = sequence.clone();
-        swapped.swap(index, index + 1);
-        let mut result = boson_rewrite(swapped);
-        if left_mode == right_mode && !left_creation && right_creation {
-            let mut contracted = sequence.clone();
-            contracted.drain(index..=index + 1);
-            merge_integer_maps(&mut result, boson_rewrite(contracted), 1);
-        }
-        result.retain(|_, value| *value != 0);
-        return result;
-    }
-    let mut powers: BTreeMap<usize, (u32, u32)> = BTreeMap::new();
+fn boson_rewrite(
+    sequence: Vec<(usize, bool)>,
+    max_bytes: u128,
+) -> Result<BTreeMap<BosonKey, i128>, PauliError> {
+    let mut by_mode: BTreeMap<usize, Vec<bool>> = BTreeMap::new();
     for (mode, is_creation) in sequence {
-        let entry = powers.entry(mode).or_default();
-        if is_creation {
-            entry.0 += 1;
-        } else {
-            entry.1 += 1;
-        }
+        by_mode.entry(mode).or_default().push(is_creation);
     }
-    let blocks = powers
-        .into_iter()
-        .filter_map(|(mode, (creation, annihilation))| {
-            (creation != 0 || annihilation != 0).then_some((mode as u32, creation, annihilation))
-        })
+    let mut aggregate: BTreeMap<BosonKey, i128> = BTreeMap::new();
+    aggregate.insert(Vec::new(), 1);
+    for (mode, factors) in by_mode {
+        let mut local: BTreeMap<(u32, u32), i128> = BTreeMap::new();
+        local.insert((0, 0), 1);
+        for is_creation in factors {
+            let estimated = (local.len() as u128)
+                .checked_mul(2)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating boson expansion",
+                })?;
+            check_structured_bytes_u128(estimated, max_bytes, "boson expansion")?;
+            let mut next = BTreeMap::new();
+            for (&(creation, annihilation), &value) in &local {
+                if is_creation {
+                    let next_creation = creation.checked_add(1).ok_or(PauliError::Overflow {
+                        context: "boson creation power",
+                    })?;
+                    add_integer(&mut next, (next_creation, annihilation), value)?;
+                    if annihilation != 0 {
+                        let contracted = value.checked_mul(annihilation as i128).ok_or(
+                            PauliError::Overflow {
+                                context: "boson contraction coefficient",
+                            },
+                        )?;
+                        add_integer(&mut next, (creation, annihilation - 1), contracted)?;
+                    }
+                } else {
+                    let next_annihilation =
+                        annihilation.checked_add(1).ok_or(PauliError::Overflow {
+                            context: "boson annihilation power",
+                        })?;
+                    add_integer(&mut next, (creation, next_annihilation), value)?;
+                }
+            }
+            local = next;
+        }
+        let product_count = (aggregate.len() as u128)
+            .checked_mul(local.len() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating boson expansion",
+            })?;
+        check_structured_bytes_u128(product_count, max_bytes, "boson expansion")?;
+        let mut next = BTreeMap::new();
+        for (prefix, prefix_value) in aggregate {
+            for (&(creation, annihilation), &local_value) in &local {
+                let mut blocks = prefix.clone();
+                if creation != 0 || annihilation != 0 {
+                    blocks.push((mode as u32, creation, annihilation));
+                }
+                add_integer(
+                    &mut next,
+                    blocks,
+                    prefix_value
+                        .checked_mul(local_value)
+                        .ok_or(PauliError::Overflow {
+                            context: "boson expansion coefficient",
+                        })?,
+                )?;
+            }
+        }
+        aggregate = next;
+    }
+    Ok(aggregate)
+}
+
+fn boson_block_product(
+    left: &[(u32, u32, u32)],
+    right: &[(u32, u32, u32)],
+    max_bytes: u128,
+) -> Result<BTreeMap<BosonKey, i128>, PauliError> {
+    let mut left_by_mode = BTreeMap::new();
+    let mut right_by_mode = BTreeMap::new();
+    for &(mode, creation, annihilation) in left {
+        left_by_mode.insert(mode, (creation, annihilation));
+    }
+    for &(mode, creation, annihilation) in right {
+        right_by_mode.insert(mode, (creation, annihilation));
+    }
+    let mut aggregate: BTreeMap<BosonKey, i128> = BTreeMap::new();
+    aggregate.insert(Vec::new(), 1);
+    let modes: BTreeSet<u32> = left_by_mode
+        .keys()
+        .chain(right_by_mode.keys())
+        .copied()
         .collect();
-    let mut result = BTreeMap::new();
-    result.insert(blocks, 1);
-    result
+    for mode in modes {
+        let (left_creation, left_annihilation) = left_by_mode.get(&mode).copied().unwrap_or((0, 0));
+        let (right_creation, right_annihilation) =
+            right_by_mode.get(&mode).copied().unwrap_or((0, 0));
+        let mut local = BTreeMap::new();
+        let maximum = left_annihilation.min(right_creation);
+        for contractions in 0..=maximum {
+            let coefficient =
+                contraction_coefficient(left_annihilation, right_creation, contractions)?;
+            let creation = left_creation
+                .checked_add(right_creation)
+                .and_then(|value| value.checked_sub(contractions))
+                .ok_or(PauliError::Overflow {
+                    context: "boson product power",
+                })?;
+            let annihilation = left_annihilation
+                .checked_add(right_annihilation)
+                .and_then(|value| value.checked_sub(contractions))
+                .ok_or(PauliError::Overflow {
+                    context: "boson product power",
+                })?;
+            add_integer(&mut local, (creation, annihilation), coefficient)?;
+        }
+        let product_count = (aggregate.len() as u128)
+            .checked_mul(local.len() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating boson product expansion",
+            })?;
+        check_structured_bytes_u128(product_count, max_bytes, "boson product expansion")?;
+        let mut next = BTreeMap::new();
+        for (prefix, prefix_value) in aggregate {
+            for (&(creation, annihilation), &local_value) in &local {
+                let mut blocks = prefix.clone();
+                if creation != 0 || annihilation != 0 {
+                    blocks.push((mode, creation, annihilation));
+                }
+                add_integer(
+                    &mut next,
+                    blocks,
+                    prefix_value
+                        .checked_mul(local_value)
+                        .ok_or(PauliError::Overflow {
+                            context: "boson product coefficient",
+                        })?,
+                )?;
+            }
+        }
+        aggregate = next;
+    }
+    Ok(aggregate)
+}
+
+fn contraction_coefficient(q: u32, r: u32, k: u32) -> Result<i128, PauliError> {
+    let mut binomial = 1_i128;
+    for index in 0..k {
+        binomial = binomial
+            .checked_mul((q - index) as i128)
+            .and_then(|value| value.checked_div((index + 1) as i128))
+            .ok_or(PauliError::Overflow {
+                context: "boson binomial coefficient",
+            })?;
+    }
+    let mut falling = 1_i128;
+    for index in 0..k {
+        falling = falling
+            .checked_mul((r - index) as i128)
+            .ok_or(PauliError::Overflow {
+                context: "boson falling factorial",
+            })?;
+    }
+    binomial.checked_mul(falling).ok_or(PauliError::Overflow {
+        context: "boson contraction coefficient",
+    })
 }
 
 fn fermion_sequence(creation: &[u32], annihilation: &[u32]) -> Vec<(usize, bool)> {
@@ -924,24 +1109,41 @@ fn raw_sequence(
     Ok(sequence)
 }
 
-fn boson_sequence(blocks: &[(u32, u32, u32)]) -> Vec<(usize, bool)> {
-    blocks
-        .iter()
-        .flat_map(|&(mode, creation, annihilation)| {
-            std::iter::repeat_n((mode as usize, true), creation as usize).chain(
-                std::iter::repeat_n((mode as usize, false), annihilation as usize),
-            )
-        })
-        .collect()
+fn add_integer<K: Ord>(
+    target: &mut BTreeMap<K, i128>,
+    key: K,
+    value: i128,
+) -> Result<(), PauliError> {
+    let entry = target.entry(key).or_default();
+    *entry = entry.checked_add(value).ok_or(PauliError::Overflow {
+        context: "structured integer coefficient",
+    })?;
+    Ok(())
 }
 
-fn merge_integer_maps<K: Ord>(
-    target: &mut BTreeMap<K, i64>,
-    source: BTreeMap<K, i64>,
-    factor: i64,
-) {
+fn add_integer_maps<K: Ord>(
+    target: &mut BTreeMap<K, i128>,
+    source: BTreeMap<K, i128>,
+    factor: i128,
+) -> Result<(), PauliError> {
     for (key, value) in source {
-        *target.entry(key).or_default() += value * factor;
+        add_integer(
+            target,
+            key,
+            value.checked_mul(factor).ok_or(PauliError::Overflow {
+                context: "structured integer coefficient",
+            })?,
+        )?;
+    }
+    Ok(())
+}
+
+fn checked_integer_to_f64(value: i128, context: &'static str) -> Result<f64, PauliError> {
+    let result = value as f64;
+    if result.is_finite() {
+        Ok(result)
+    } else {
+        Err(PauliError::Overflow { context })
     }
 }
 
@@ -996,7 +1198,15 @@ fn check_structured_bytes(
     max_bytes: u128,
     context: &'static str,
 ) -> Result<(), PauliError> {
-    let requested = (count as u128)
+    check_structured_bytes_u128(count as u128, max_bytes, context)
+}
+
+fn check_structured_bytes_u128(
+    count: u128,
+    max_bytes: u128,
+    context: &'static str,
+) -> Result<(), PauliError> {
+    let requested = count
         .checked_mul(192)
         .ok_or(PauliError::Overflow { context })?;
     if requested > max_bytes {
@@ -1021,8 +1231,14 @@ fn push_aggregate<K: Eq + std::hash::Hash>(
         values.push(value);
         values.len()
     };
+    let total_values = aggregate
+        .values()
+        .try_fold(0usize, |count, values| count.checked_add(values.len()))
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured aggregation",
+        })?;
     check_structured_bytes(
-        aggregate.len().saturating_add(value_count),
+        total_values.max(value_count),
         max_bytes,
         "structured aggregation",
     )
@@ -1119,6 +1335,150 @@ pub struct StructuredOperation {
     pub q: u32,
 }
 
+/// Compact reusable matrix-free plan for finite structured operators.
+///
+/// The plan retains one canonical local-operation list and coefficient per
+/// symbolic term. It deliberately does not retain the expanded transition
+/// table or a sparse matrix.
+pub struct StructuredMvpPlan {
+    dimension: usize,
+    local_dimensions: Vec<usize>,
+    terms: Vec<Vec<StructuredOperation>>,
+    coefficients: Vec<Complex64>,
+    estimated_bytes: u128,
+}
+
+impl StructuredMvpPlan {
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    pub fn estimated_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+
+    pub fn apply(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        let output_bytes = (self.dimension as u128)
+            .checked_mul(size_of::<Complex64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured MVP output",
+            })?;
+        let scratch_bytes = (self.local_dimensions.len() as u128)
+            .checked_mul(size_of::<usize>() as u128)
+            .and_then(|value| value.checked_mul(2))
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured MVP scratch",
+            })?;
+        let requested = output_bytes
+            .checked_add(scratch_bytes)
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured MVP workspace",
+            })?;
+        if requested > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested,
+                limit: max_bytes,
+            });
+        }
+        let mut output = vec![Complex64::default(); self.dimension];
+        let mut digits = vec![0usize; self.local_dimensions.len()];
+        let mut output_digits = vec![0usize; self.local_dimensions.len()];
+        for (column, state_value) in state.iter().enumerate() {
+            decode_index(column, &self.local_dimensions, &mut digits);
+            for (term_index, (term, &coefficient)) in
+                self.terms.iter().zip(&self.coefficients).enumerate()
+            {
+                output_digits.copy_from_slice(&digits);
+                let mut amplitude = coefficient;
+                let mut valid = true;
+                for operation in term {
+                    if !apply_structured_operation(
+                        operation,
+                        &self.local_dimensions,
+                        &mut output_digits,
+                        &mut amplitude,
+                    )? {
+                        valid = false;
+                        break;
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+                if !amplitude.re.is_finite() || !amplitude.im.is_finite() {
+                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
+                }
+                let row = encode_index(&output_digits, &self.local_dimensions);
+                output[row] += amplitude * *state_value;
+                if !output[row].re.is_finite() || !output[row].im.is_finite() {
+                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+/// Build a compact reusable matrix-free plan without enumerating transitions.
+pub fn structured_mvp_plan(
+    local_dimensions: Vec<usize>,
+    terms: Vec<Vec<StructuredOperation>>,
+    coefficients: Vec<Complex64>,
+    max_bytes: u128,
+) -> Result<StructuredMvpPlan, PauliError> {
+    validate_structured_inputs(&local_dimensions, &terms, &coefficients)?;
+    let dimension = mixed_radix_dimension(&local_dimensions)?;
+    let operation_count: usize = terms.iter().try_fold(0usize, |count, term| {
+        count.checked_add(term.len()).ok_or(PauliError::Overflow {
+            context: "estimating structured MVP plan",
+        })
+    })?;
+    let estimated_bytes = (local_dimensions.len() as u128)
+        .checked_mul(size_of::<usize>() as u128)
+        .and_then(|value| {
+            value.checked_add(
+                (terms.len() as u128).checked_mul(size_of::<Vec<StructuredOperation>>() as u128)?,
+            )
+        })
+        .and_then(|value| {
+            value.checked_add(
+                (operation_count as u128).checked_mul(size_of::<StructuredOperation>() as u128)?,
+            )
+        })
+        .and_then(|value| {
+            value.checked_add(
+                (coefficients.len() as u128).checked_mul(size_of::<Complex64>() as u128)?,
+            )
+        })
+        .and_then(|value| value.checked_add(64))
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured MVP plan",
+        })?;
+    if estimated_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: estimated_bytes,
+            limit: max_bytes,
+        });
+    }
+    Ok(StructuredMvpPlan {
+        dimension,
+        local_dimensions,
+        terms,
+        coefficients,
+        estimated_bytes,
+    })
+}
+
 pub struct StructuredSparseResult {
     pub dimension: usize,
     pub rows: Vec<u64>,
@@ -1168,7 +1528,12 @@ pub fn structured_sparse_matrix(
             let key = (row, column);
             let next_entry_count = entries.len().saturating_add(1);
             match entries.entry(key) {
-                Entry::Occupied(mut entry) => *entry.get_mut() += amplitude,
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() += amplitude;
+                    if !entry.get().re.is_finite() || !entry.get().im.is_finite() {
+                        return Err(PauliError::NonFiniteCoefficient { index: term_index });
+                    }
+                }
                 Entry::Vacant(entry) => {
                     check_sparse_entry_bytes(next_entry_count, max_bytes)?;
                     entry.insert(amplitude);
@@ -1254,7 +1619,11 @@ pub fn structured_dense_matrix(
             }
             if valid {
                 let row = encode_index(&output_digits, local_dimensions);
-                matrix[row * dimension + column] += amplitude;
+                let entry = &mut matrix[row * dimension + column];
+                *entry += amplitude;
+                if !entry.re.is_finite() || !entry.im.is_finite() {
+                    return Err(PauliError::NonFiniteCoefficient { index: 0 });
+                }
             }
         }
     }
@@ -1401,13 +1770,13 @@ fn apply_structured_operation(
             }
             let mut ladder_amplitude = 1.0;
             for offset in 0..annihilation {
-                ladder_amplitude *= (digit - offset) as f64;
+                ladder_amplitude *= ((digit - offset) as f64).sqrt();
             }
             let remaining = digit - annihilation;
             for offset in 0..creation {
-                ladder_amplitude *= (remaining + offset + 1) as f64;
+                ladder_amplitude *= ((remaining + offset + 1) as f64).sqrt();
             }
-            *amplitude *= ladder_amplitude.sqrt();
+            *amplitude *= ladder_amplitude;
             output_digits[operation.axis] = destination;
         }
         2 => {

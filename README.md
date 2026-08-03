@@ -90,6 +90,12 @@ External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use q
 | Deterministic Pauli propagation | `PropagationCircuit` (low-level `GateTape`/`PropagationEngine` remains available) |
 | Stochastic Pauli-path estimation | `SPPSCircuit` (low-level `SPPSEngine` remains available) |
 
+## Structured operator algebra
+
+Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `OperatorSpace`, and `OperatorBuilder` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention.
+
+Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See [`examples/structured_algebra.py`](examples/structured_algebra.py) for an executable example.
+
 ## Common circuit facade
 
 Phase Alpha defines the target Python contract for the three circuit classes. The circuit structure is built once; runtime values are supplied as a parameter vector.

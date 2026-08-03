@@ -3,6 +3,10 @@ from typing import Sequence
 __version__: str
 
 class StructuredMvpPlan:
+    @property
+    def dimension(self) -> int: ...
+    @property
+    def estimated_bytes(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
 
 def structured_dense(

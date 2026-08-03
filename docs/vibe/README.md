@@ -20,6 +20,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 - [Phase 6 implementation review, 2026-08-02](phase-6-review-2026-08-02.md): archived remediation findings and the performance/correctness handoff that drives the current checkpoint.
 - [Deferred Phase 6.5 generic matrix-free time-evolution proposal](phase-6.5-spec.md): inactive research proposal for possible all-Rust Taylor, Hermitian Krylov/Lanczos, Chebyshev evolution and native observable reducers; it requires a new owner decision and dependency/accuracy spike before implementation.
 - [Phase 7 structured Hamiltonian algebra and compilation specification](phase-7-spec.md): frozen implementation contract for fermion, symbolic boson, native mixed-dimension hybrid, direct-Weyl, and Pauli-compatible construction and finite target compilation; the first vertical implementation slice is under acceptance review.
+- [Phase 7 implementation review, 2026-08-03](phase-7-review-2026-08-03.md): archived correctness, target-availability, finite-numeric, matrix-free-plan, performance, and P0–P5 delivery findings.
 - [Implementation status](implementation-status.md): durable progress, verification evidence, decisions, blockers, and the next milestone for long-running agents.
 - [Local benchmarking](benchmarking.md): microbenchmarks, integration benchmarks, local result history, and manual regression comparison.
 - [Phase 1 review notes](phase-1-review-notes.md): implementation gaps, performance findings, and owner decisions awaiting review.

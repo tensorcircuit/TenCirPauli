@@ -493,9 +493,10 @@ class OperatorSpace:
             _nonnegative_int(value, "qudit dimension") for value in qudits
         )
         if dimensions and (
-            any(value < 3 for value in dimensions) or len(set(dimensions)) != 1
+            any(value < 3 or value > _U32_MAX for value in dimensions)
+            or len(set(dimensions)) != 1
         ):
-            raise ValueError("qudits must have one uniform dimension d >= 3")
+            raise ValueError("qudits must have one uniform dimension 3 <= d <= 2**32-1")
         axes = tuple(
             [_Axis("fermion", index, 2) for index in range(fermions)]
             + [_Axis("boson", index, 0) for index in range(bosons)]
@@ -586,8 +587,10 @@ class OperatorSpace:
     ) -> "_StructuredOperator":
         if not isinstance(operator, _StructuredOperator):
             raise TypeError("embed expects a Phase 7 structured operator")
-        if operator.space == self:
-            return operator
+        valid_domains = {"fermions", "bosons", "qubits", "qudits"}
+        unknown = set(maps) - valid_domains
+        if unknown:
+            raise TypeError("unexpected embedding maps: " + ", ".join(sorted(unknown)))
         mappings: Dict[str, Dict[int, int]] = {}
         for domain, source_count in (
             ("fermions", operator.space.fermions),
@@ -595,30 +598,56 @@ class OperatorSpace:
             ("qubits", operator.space.qubits),
             ("qudits", len(operator.space.qudits)),
         ):
+            has_supplied = domain in maps
             supplied = maps.get(domain)
             if source_count == 0:
+                if has_supplied:
+                    raise ValueError(f"{domain} embedding must be empty")
                 mappings[domain] = {}
                 continue
-            if supplied is None:
-                if getattr(self, domain if domain != "qudits" else "qudits") == getattr(
-                    operator.space, domain if domain != "qudits" else "qudits"
-                ):
+            if domain == "qudits":
+                source_dimension = operator.space.qudits[0]
+                if not self.qudits or self.qudits[0] != source_dimension:
+                    raise ValueError(
+                        "qudit embedding requires equal source and target dimensions"
+                    )
+            if not has_supplied:
+                source_value = (
+                    len(operator.space.qudits)
+                    if domain == "qudits"
+                    else getattr(operator.space, domain)
+                )
+                target_value = (
+                    len(self.qudits) if domain == "qudits" else getattr(self, domain)
+                )
+                if source_value == target_value:
                     mappings[domain] = {index: index for index in range(source_count)}
                 else:
                     raise ValueError(f"an explicit {domain} embedding map is required")
+            elif supplied is None:
+                raise ValueError(f"{domain} embedding must be a mapping or sequence")
             elif isinstance(supplied, Mapping):
-                mappings[domain] = {
-                    int(key): int(value) for key, value in supplied.items()
-                }
+                if any(
+                    not isinstance(key, int)
+                    or isinstance(key, bool)
+                    or not isinstance(value, int)
+                    or isinstance(value, bool)
+                    for key, value in supplied.items()
+                ):
+                    raise ValueError(f"{domain} embedding indices must be integers")
+                mappings[domain] = dict(supplied)
             else:
                 if not isinstance(supplied, (tuple, list)):
                     raise ValueError(
                         f"{domain} embedding must be a mapping or sequence"
                     )
                 values = tuple(supplied)
-                mappings[domain] = {
-                    index: int(value) for index, value in enumerate(values)
-                }
+                if any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in values
+                ):
+                    raise ValueError(f"{domain} embedding indices must be integers")
+                mappings[domain] = {index: value for index, value in enumerate(values)}
             if set(mappings[domain]) != set(range(source_count)):
                 raise ValueError(
                     f"{domain} embedding must map every source index exactly once"
@@ -630,24 +659,56 @@ class OperatorSpace:
                 value < 0 or value >= target_count
                 for value in mappings[domain].values()
             ):
-                raise ValueError(f"{domain} embedding indices must be non-negative")
+                raise ValueError(f"{domain} embedding indices are outside the target")
+            if len(set(mappings[domain].values())) != source_count:
+                raise ValueError(f"{domain} embedding targets must be injective")
+        if operator.space == self and not any(maps.values()):
+            return operator
         terms: List[_Term] = []
         for term in operator._terms:
+            coefficient = term.coefficient
             fermion = (
                 None
                 if term.fermion is None
                 else FermionWord(
                     self.fermions,
                     tuple(
-                        mappings["fermions"][mode]
-                        for mode in term.fermion.creation_modes
+                        sorted(
+                            mappings["fermions"][mode]
+                            for mode in term.fermion.creation_modes
+                        )
                     ),
                     tuple(
-                        mappings["fermions"][mode]
-                        for mode in term.fermion.annihilation_modes
+                        sorted(
+                            (
+                                mappings["fermions"][mode]
+                                for mode in term.fermion.annihilation_modes
+                            ),
+                            reverse=True,
+                        )
                     ),
                 )
             )
+            if term.fermion is not None:
+                creation_image = [
+                    mappings["fermions"][mode] for mode in term.fermion.creation_modes
+                ]
+                annihilation_image = [
+                    mappings["fermions"][mode]
+                    for mode in term.fermion.annihilation_modes
+                ]
+                inversions = sum(
+                    left > right
+                    for values, descending in (
+                        (creation_image, False),
+                        (annihilation_image, True),
+                    )
+                    for index, left in enumerate(values)
+                    for right in values[index + 1 :]
+                    if (left > right if not descending else left < right)
+                )
+                if inversions & 1:
+                    coefficient = -coefficient
             boson = (
                 None
                 if term.boson is None
@@ -659,6 +720,8 @@ class OperatorSpace:
                     ),
                 )
             )
+            if boson is not None:
+                boson = BosonWord(self.bosons, tuple(sorted(boson.blocks)))
             qubit = [0] * self.qubits
             for index, code in enumerate(term.qubit):
                 if code:
@@ -674,6 +737,8 @@ class OperatorSpace:
                     ),
                 )
             )
+            if qudit is not None:
+                qudit = QuditWeylWord(qudit.dimension, tuple(sorted(qudit.triples)))
             mapped = None
             if term.mapped_fermion is not None:
                 expanded = [0] * self.fermions
@@ -681,7 +746,7 @@ class OperatorSpace:
                     expanded[mappings["fermions"][index]] = code
                 mapped = tuple(expanded)
             terms.append(
-                _Term(fermion, boson, tuple(qubit), qudit, mapped, term.coefficient)
+                _Term(fermion, boson, tuple(qubit), qudit, mapped, coefficient)
             )
         return _make_operator(self, terms, DEFAULT_MAX_BYTES)
 
@@ -941,54 +1006,45 @@ class _StructuredOperator:
     ) -> "_StructuredOperator":
         output: List[_Term] = []
         for term in self._terms:
-            fermion_terms: Tuple[Tuple[Optional[FermionWord], complex], ...] = (
-                ((None, 1.0 + 0j),)
+            fword = (
+                None
                 if term.fermion is None
-                else tuple(
-                    (item.word, item.coefficient)
-                    for item in term.fermion.adjoint().terms
+                else FermionWord(
+                    self.space.fermions,
+                    tuple(reversed(term.fermion.annihilation_modes)),
+                    tuple(reversed(term.fermion.creation_modes)),
                 )
             )
-            boson_terms: Tuple[Tuple[Optional[BosonWord], complex], ...] = (
-                ((None, 1.0 + 0j),)
+            bword = (
+                None
                 if term.boson is None
-                else tuple(
-                    (item.word, item.coefficient) for item in term.boson.adjoint().terms
-                )
-            )
-            if term.qudit is None:
-                qudit_terms: Tuple[Tuple[Optional[QuditWeylWord], complex], ...] = (
-                    (None, 1.0 + 0j),
-                )
-            else:
-                qudit_adjoint = term.qudit.adjoint()
-                qudit_terms = (
-                    (
-                        qudit_adjoint.word,
-                        cmath.exp(
-                            2j
-                            * math.pi
-                            * qudit_adjoint.phase_exponent
-                            / term.qudit.dimension
-                        ),
+                else BosonWord(
+                    self.space.bosons,
+                    tuple(
+                        (mode, annihilation, creation)
+                        for mode, creation, annihilation in term.boson.blocks
                     ),
                 )
-            for fword, fcoefficient in fermion_terms:
-                for bword, bcoefficient in boson_terms:
-                    for qword, qcoefficient in qudit_terms:
-                        output.append(
-                            _Term(
-                                fword,
-                                bword,
-                                _adjoint_qubit_codes(term.qubit),
-                                qword,
-                                term.mapped_fermion,
-                                term.coefficient.conjugate()
-                                * fcoefficient
-                                * bcoefficient
-                                * qcoefficient,
-                            )
-                        )
+            )
+            qword = None
+            qcoefficient = 1.0 + 0j
+            if term.qudit is not None:
+                qudit_adjoint = term.qudit.adjoint()
+                qword = qudit_adjoint.word
+                qcoefficient = cmath.exp(
+                    2j * math.pi * qudit_adjoint.phase_exponent / term.qudit.dimension
+                )
+            output.append(
+                _Term(
+                    fword,
+                    bword,
+                    _adjoint_qubit_codes(term.qubit),
+                    qword,
+                    term.mapped_fermion,
+                    term.coefficient.conjugate() * qcoefficient,
+                )
+            )
+            _guard_terms(len(output), max_bytes, "operator adjoint")
         return _make_operator(self.space, output, max_bytes)
 
     def is_hermitian(self, tolerance: float = 0.0) -> bool:
@@ -1108,25 +1164,18 @@ class _StructuredOperator:
         self,
         target: str,
         *,
+        fermion_mapping: str = "jordan_wigner",
+        boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-        **kwargs: Any,
     ) -> Any:
         if target not in {"dense", "coo", "csr", "native_mvp", "backend_mvp"}:
             raise ValueError(
                 "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
             )
-        mapped = self.map_fermions(
-            kwargs.pop("fermion_mapping", "jordan_wigner"), max_bytes=max_bytes
-        )
+        mapped = self.map_fermions(fermion_mapping, max_bytes=max_bytes)
         if isinstance(mapped, PauliOperator):
             return mapped.compile(target, max_bytes=max_bytes)
-        if kwargs.get("mapping") is not None:
-            raise ValueError("use fermion_mapping for structured hybrid compilation")
-        cutoffs = kwargs.pop("boson_cutoffs", None)
-        if kwargs:
-            raise TypeError(
-                f"unexpected compile arguments: {', '.join(sorted(kwargs))}"
-            )
+        cutoffs = boson_cutoffs
         if mapped.space.bosons:
             if not isinstance(cutoffs, Mapping):
                 raise ValueError(
@@ -1143,6 +1192,12 @@ class _StructuredOperator:
             raise NotImplementedError(
                 "backend_mvp is deferred for finite boson and mixed hybrid layouts"
             )
+        if target == "backend_mvp" and mapped.space.qudits:
+            if not all(axis.domain == "qudit" for axis in mapped.space._axes):
+                raise NotImplementedError(
+                    "backend_mvp is deferred for mixed local-dimension layouts"
+                )
+            return _direct_weyl_backend_plan(mapped, max_bytes)
         return _compile_finite(mapped, target, normalized_cutoffs, max_bytes)
 
     def __add__(self, other: object) -> Any:
@@ -1216,28 +1271,18 @@ def _combine_nonexpanding_terms(
     if left.fermion is not None or right.fermion is not None:
         lf = left.fermion or FermionWord(space.fermions)
         rf = right.fermion or FermionWord(space.fermions)
-        fermion_products = _normal_order_fermions(
-            lf.factors + rf.factors, space.fermions
+        fword = FermionWord(
+            space.fermions,
+            lf.creation_modes + rf.creation_modes,
+            rf.annihilation_modes + lf.annihilation_modes,
         )
-        if len(fermion_products) != 1:
-            raise ValueError(
-                "tensor_product unexpectedly generated a fermion contraction"
-            )
-        fword, sign = next(iter(fermion_products.items()))
-        coefficient *= sign
+        if (len(lf.annihilation_modes) * rf.parity) & 1:
+            coefficient = -coefficient
     bword: Optional[BosonWord] = None
     if left.boson is not None or right.boson is not None:
         lb = left.boson or BosonWord(space.bosons)
         rb = right.boson or BosonWord(space.bosons)
-        boson_products: Dict[BosonWord, int] = _normal_order_bosons(
-            lb.factors + rb.factors, space.bosons
-        )
-        if len(boson_products) != 1:
-            raise ValueError(
-                "tensor_product unexpectedly generated a boson contraction"
-            )
-        bword, factor = next(iter(boson_products.items()))
-        coefficient *= factor
+        bword = BosonWord(space.bosons, lb.blocks + rb.blocks)
     qudit = left.qudit or right.qudit
     if left.qudit is not None and right.qudit is not None:
         assert left.qudit is not None and right.qudit is not None
@@ -1921,6 +1966,16 @@ class BosonOperator(_StructuredOperator):
         )
         return instance
 
+    def compile(  # type: ignore[override]
+        self,
+        target: str,
+        *,
+        boson_cutoffs: Mapping[object, object],
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> Any:
+        """Compile a boson operator with its required finite cutoffs."""
+        return super().compile(target, boson_cutoffs=boson_cutoffs, max_bytes=max_bytes)
+
 
 class QuditWeylOperator(_StructuredOperator):
     _domain = "qudit"
@@ -1992,6 +2047,12 @@ class QuditWeylOperator(_StructuredOperator):
         )
         return instance
 
+    def compile(  # type: ignore[override]
+        self, target: str, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any:
+        """Compile a uniform-dimension Weyl operator."""
+        return super().compile(target, max_bytes=max_bytes)
+
 
 class HybridOperator(_StructuredOperator):
     _domain = "hybrid"
@@ -2008,6 +2069,22 @@ class HybridOperator(_StructuredOperator):
             instance, space, _canonical_terms(space, terms, max_bytes)
         )
         return instance
+
+    def compile(
+        self,
+        target: str,
+        *,
+        fermion_mapping: str = "jordan_wigner",
+        boson_cutoffs: Optional[Mapping[object, object]] = None,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> Any:
+        """Compile a hybrid operator after optional Jordan-Wigner mapping."""
+        return super().compile(
+            target,
+            fermion_mapping=fermion_mapping,
+            boson_cutoffs=boson_cutoffs,
+            max_bytes=max_bytes,
+        )
 
 
 def _canonical_terms(
@@ -2084,7 +2161,12 @@ class OperatorBuilder:
                     code_value = _nonnegative_int(code, "Pauli code")
                 if code_value not in range(4):
                     raise ValueError("Pauli code must be an integer in 0..3")
-                qcodes[_positive_mode(index, self.space.qubits, "qubit")] = code_value
+                qubit_index = _positive_mode(index, self.space.qubits, "qubit")
+                current_code = qcodes[qubit_index]
+                qcodes[qubit_index], local_phase = _PAULI_PRODUCT[current_code][
+                    code_value
+                ]
+                qphase *= local_phase
             if self.space.qudits:
                 qword = QuditWeylWord(self.space.qudits[0])
                 for site, a, b in product_spec["qudits"]:
@@ -2156,96 +2238,42 @@ def _compile_finite(
         raise OverflowError(
             "finite basis dimension cannot be represented by platform indices"
         )
+    if target == "native_mvp":
+        native_plan = _native_structured_mvp_plan(
+            operator, dimensions, cutoffs, max_bytes
+        )
+        return NativeMVPPlan(
+            0,
+            len(operator._terms),
+            "structured_mvp_native",
+            native_plan,
+            local_dimensions=dimensions,
+            estimated_bytes=int(native_plan.estimated_bytes),
+        )
     if target == "dense":
         _check_allocation(
             dimension * dimension * 16, max_bytes, "dense structured matrix"
         )
-        if hasattr(_native, "structured_dense"):
-            operations, coefficients_re, coefficients_im = _native_term_arrays(
-                operator, dimensions, cutoffs
-            )
-            native_dimension, values = _native.structured_dense(
-                list(dimensions),
-                operations,
-                coefficients_re,
-                coefficients_im,
-                _effective_max_bytes(max_bytes),
-            )
-            return np.asarray(values, dtype=np.complex128).reshape(
-                (native_dimension, native_dimension)
-            )
-    if _prefer_native_structured_sparse(dimension, len(operator._terms)) and hasattr(
-        _native, "structured_sparse"
-    ):
-        if target == "native_mvp" and hasattr(_native, "structured_sparse_plan"):
-            native_plan = _native_structured_mvp_plan(
-                operator, dimensions, cutoffs, max_bytes
-            )
-            return NativeMVPPlan(
-                0,
-                len(operator._terms),
-                "structured_sparse_native",
-                native_plan,
-                local_dimensions=dimensions,
-                estimated_bytes=dimension * 16,
-            )
-        native_dimension, rows, columns, values = _native_structured_sparse(
-            operator, dimensions, cutoffs, max_bytes
+        operations, coefficients_re, coefficients_im = _native_term_arrays(
+            operator, dimensions, cutoffs
         )
-        if target == "coo":
-            _check_allocation(
-                int(rows.nbytes + columns.nbytes + values.nbytes),
-                max_bytes,
-                "COO structured matrix",
-            )
-            return COOMatrix(
-                rows, columns, values, (native_dimension, native_dimension)
-            )
-        if target == "csr":
-            indptr = np.zeros(native_dimension + 1, dtype=np.uint64)
-            for row in rows:
-                indptr[int(row) + 1] += 1
-            np.cumsum(indptr, out=indptr)
-            _check_allocation(
-                int(indptr.nbytes + columns.nbytes + values.nbytes),
-                max_bytes,
-                "CSR structured matrix",
-            )
-            return CSRMatrix(
-                indptr, columns, values, (native_dimension, native_dimension)
-            )
-        generic = (dimensions, rows, columns, values)
-        if target == "native_mvp":
-            return NativeMVPPlan(
-                0,
-                len(operator._terms),
-                "structured_sparse",
-                None,
-                local_dimensions=dimensions,
-                generic_entries=generic,
-            )
-        if target == "backend_mvp":
-            return BackendMVPPlan(
-                1,
-                0,
-                len(operator._terms),
-                np.empty((0, 0), dtype=np.uint64),
-                np.empty((0, 0), dtype=np.uint64),
-                np.empty(0, dtype=np.complex128),
-                local_dimensions=dimensions,
-                _generic_entries=generic,
-            )
-    entries = _finite_entries(operator, dimensions, cutoffs, max_bytes)
-    if target == "dense":
-        matrix: np.ndarray[Any, Any] = np.zeros(
-            (dimension, dimension), dtype=np.complex128
+        native_dimension, values = _native.structured_dense(
+            list(dimensions),
+            operations,
+            coefficients_re,
+            coefficients_im,
+            _effective_max_bytes(max_bytes),
         )
-        for (row, column), value in entries.items():
-            matrix[row, column] = value
-        return matrix
-    rows = np.fromiter((key[0] for key in sorted(entries)), dtype=np.uint64)
-    columns = np.fromiter((key[1] for key in sorted(entries)), dtype=np.uint64)
-    values = np.asarray([entries[key] for key in sorted(entries)], dtype=np.complex128)
+        return np.asarray(values, dtype=np.complex128).reshape(
+            (native_dimension, native_dimension)
+        )
+    if target == "backend_mvp":
+        raise NotImplementedError(
+            "backend_mvp is available only for Pauli and uniform-dimension Weyl plans"
+        )
+    native_dimension, rows, columns, values = _native_structured_sparse(
+        operator, dimensions, cutoffs, max_bytes
+    )
     if target == "coo":
         _check_allocation(
             int(rows.nbytes + columns.nbytes + values.nbytes),
@@ -2264,28 +2292,57 @@ def _compile_finite(
             "CSR structured matrix",
         )
         return CSRMatrix(indptr, columns, values, (dimension, dimension))
-    generic = (dimensions, rows, columns, values)
-    if target == "native_mvp":
-        return NativeMVPPlan(
-            0,
-            len(operator._terms),
-            "structured_sparse",
-            None,
-            local_dimensions=dimensions,
-            generic_entries=generic,
-        )
-    if target == "backend_mvp":
-        return BackendMVPPlan(
-            1,
-            0,
-            len(operator._terms),
-            np.empty((0, 0), dtype=np.uint64),
-            np.empty((0, 0), dtype=np.uint64),
-            np.empty(0, dtype=np.complex128),
-            local_dimensions=dimensions,
-            _generic_entries=generic,
-        )
     raise AssertionError(target)
+
+
+def _direct_weyl_backend_plan(
+    operator: _StructuredOperator, max_bytes: Optional[int]
+) -> BackendMVPPlan:
+    """Build the compact, versioned plan for a uniform Weyl layout."""
+    dimensions = operator.space.local_dimensions
+    if (
+        not dimensions
+        or len(set(dimensions)) != 1
+        or any(axis.domain != "qudit" for axis in operator.space._axes)
+    ):
+        raise NotImplementedError(
+            "direct Weyl backend MVP requires a uniform pure-qudit layout"
+        )
+    dimension = dimensions[0]
+    term_count = len(operator._terms)
+    a_exponents = np.zeros((term_count, len(dimensions)), dtype=np.uint32)
+    b_exponents = np.zeros_like(a_exponents)
+    coefficients: np.ndarray[Any, Any] = np.empty(term_count, dtype=np.complex128)
+    for term_index, term in enumerate(operator._terms):
+        coefficients[term_index] = term.coefficient
+        if term.qudit is not None:
+            for site, a, b in term.qudit.triples:
+                a_exponents[term_index, site] = a
+                b_exponents[term_index, site] = b
+    estimated_bytes = int(
+        a_exponents.nbytes
+        + b_exponents.nbytes
+        + coefficients.nbytes
+        + len(dimensions) * 8
+        + term_count * 64
+    )
+    _check_allocation(estimated_bytes, max_bytes, "direct Weyl backend MVP plan")
+    return BackendMVPPlan(
+        2,
+        0,
+        len(dimensions),
+        np.empty((0, 0), dtype=np.uint64),
+        np.empty((0, 0), dtype=np.uint64),
+        coefficients,
+        local_dimensions=dimensions,
+        basis_ordering="qudit0_msb_matrix",
+        ordering="qudit0_msb_matrix",
+        estimated_bytes=estimated_bytes,
+        plan_kind="direct_weyl",
+        qudit_dimension=dimension,
+        a_exponents=a_exponents,
+        b_exponents=b_exponents,
+    )
 
 
 def _native_term_arrays(
@@ -2480,6 +2537,8 @@ def _term_transition(
                     amplitude *= math.sqrt(remaining + offset + 1)
                 updated = list(state)
                 updated[position] = remaining + creation
+                if not math.isfinite(amplitude):
+                    raise OverflowError("finite boson transition is not representable")
                 next_values.append((updated, value * amplitude))
             current = next_values
     if term.qudit is not None:

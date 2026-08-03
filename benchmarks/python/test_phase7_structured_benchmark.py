@@ -94,6 +94,15 @@ def structured_sparse_operator(term_count: int) -> tcp.BosonOperator:
     return tcp.BosonOperator.from_terms(2, terms)
 
 
+def direct_weyl_workload(dimension: int = 5, n_sites: int = 3) -> tcp.QuditWeylOperator:
+    """Build a uniform-Weyl chain for direct backend MVP measurements."""
+    terms = []
+    for site in range(n_sites):
+        terms.append((((site, 1, 2),), 0.5 + 0.01j * site))
+        terms.append((((site, 2, 1),), -0.25 + 0.02j * site))
+    return tcp.QuditWeylOperator.from_terms(dimension, terms, n_sites=n_sites)
+
+
 STRUCTURED_SPARSE_CASES = (
     (
         "small_python",
@@ -203,7 +212,15 @@ def test_phase7_structured_mvp_construction(
     expected = operator.compile("native_mvp", boson_cutoffs=cutoffs)
     result = benchmark(operator.compile, "native_mvp", boson_cutoffs=cutoffs)
     assert result.strategy == expected.strategy
-    benchmark.extra_info.update({"case": case, "strategy": result.strategy})
+    benchmark.extra_info.update(
+        {
+            "case": case,
+            "strategy": result.strategy,
+            "dimension": result.dimension,
+            "term_count": result.term_count,
+            "plan_bytes": result.estimated_bytes,
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -286,3 +303,36 @@ def test_phase7_hybrid_native_builder(benchmark: BenchmarkFixture) -> None:
     expected = builder.finish()
     result = benchmark(builder.finish)
     assert result.term_count == expected.term_count
+
+
+def test_phase7_uniform_weyl_backend_mvp(benchmark: BenchmarkFixture) -> None:
+    """Measure factorized uniform-qudit backend execution end to end."""
+    operator = direct_weyl_workload()
+    plan = operator.compile("backend_mvp")
+    state = (
+        np.random.default_rng(20260803)
+        .normal(size=plan.dimension)
+        .astype(np.complex128)
+    )
+    expected = operator.compile("dense") @ state
+    result = benchmark(tcp.backend_mvp(plan), state)
+    np.testing.assert_allclose(result, expected, atol=1e-6)
+    benchmark.extra_info.update(
+        {
+            "dimension": plan.dimension,
+            "term_count": plan.term_count,
+            "plan_bytes": plan.estimated_bytes,
+            "local_dimension": plan.qudit_dimension,
+        }
+    )
+
+
+def test_phase7_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
+    """Keep the recursive-expansion memory guard executable and bounded."""
+    factors = (((0, "annihilate"),) * 5) + (((0, "create"),) * 5)
+
+    def guarded() -> None:
+        with pytest.raises(MemoryError):
+            tcp.BosonOperator.from_terms(1, [(factors, 1.0)], max_bytes=1)
+
+    benchmark(guarded)

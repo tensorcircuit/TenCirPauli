@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence, Tuple, cast
 
 import numpy as np
@@ -151,6 +151,14 @@ class BackendMVPPlan:
     basis_ordering: str = "qubit0_msb_matrix"
     estimated_bytes: int = 0
     _generic_entries: Any = None
+    plan_kind: str = "pauli"
+    qudit_dimension: int = 0
+    a_exponents: np.ndarray[Any, Any] = field(
+        default_factory=lambda: np.empty((0, 0), dtype=np.uint32)
+    )
+    b_exponents: np.ndarray[Any, Any] = field(
+        default_factory=lambda: np.empty((0, 0), dtype=np.uint32)
+    )
 
     def __post_init__(self) -> None:
         """Normalize plan buffers and freeze them after construction."""
@@ -158,10 +166,23 @@ class BackendMVPPlan:
             ("x_words", np.uint64),
             ("z_words", np.uint64),
             ("coefficients", np.complex128),
+            ("a_exponents", np.uint32),
+            ("b_exponents", np.uint32),
         ):
             values = np.ascontiguousarray(getattr(self, name), dtype=dtype)
             values.setflags(write=False)
             object.__setattr__(self, name, values)
+        if self.plan_kind not in {"pauli", "direct_weyl"}:
+            raise ValueError("unknown backend MVP plan kind")
+        if self.plan_kind == "direct_weyl":
+            if self.qudit_dimension < 3:
+                raise ValueError("direct Weyl plans require dimension at least 3")
+            if self.a_exponents.shape != self.b_exponents.shape:
+                raise ValueError("direct Weyl exponent arrays must have equal shapes")
+            if self.a_exponents.ndim != 2 or self.a_exponents.shape[0] != len(
+                self.coefficients
+            ):
+                raise ValueError("direct Weyl exponent arrays must match term count")
 
     def apply(
         self,
@@ -171,6 +192,8 @@ class BackendMVPPlan:
         """Apply the plan using only NumPy arrays and deterministic indexing."""
         if self._generic_entries is not None:
             return _apply_generic_entries(self._generic_entries, state, max_bytes)
+        if self.plan_kind == "direct_weyl":
+            return self._apply_direct_weyl(state, max_bytes)
         dimension = _dimension(self.nqubits)
         _check_allocation(dimension * 80, max_bytes, "backend MVP working memory")
         values = np.asarray(state, dtype=np.complex128)
@@ -197,6 +220,74 @@ class BackendMVPPlan:
                     phase *= np.where(bit == 1, -1.0, 1.0)
             output[rows] += coefficient * phase * values
         return output
+
+    @property
+    def dimension(self) -> int:
+        """Finite basis dimension represented by this plan."""
+        if self.local_dimensions:
+            return int(np.prod(self.local_dimensions, dtype=np.intp))
+        return _dimension(self.nqubits)
+
+    @property
+    def term_count(self) -> int:
+        """Number of canonical plan terms."""
+        return len(self.coefficients)
+
+    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
+        """Apply the plan using its default memory limit."""
+        return self.apply(state)
+
+    def _apply_direct_weyl(
+        self, state: Sequence[complex], max_bytes: Optional[int]
+    ) -> np.ndarray[Any, Any]:
+        dimension = self.dimension
+        values = np.asarray(state, dtype=np.complex128)
+        rank_shape = tuple(self.local_dimensions)
+        if values.ndim == 1 and values.shape == (dimension,):
+            tensor = values.reshape(rank_shape)
+            flat = True
+        elif values.shape == rank_shape:
+            tensor = values
+            flat = False
+        else:
+            raise ValueError(
+                f"state must have shape ({dimension},) or {rank_shape}, got {values.shape}"
+            )
+        _check_allocation(dimension * 16 * 2, max_bytes, "backend MVP working memory")
+        omega = np.exp(2j * np.pi / self.qudit_dimension)
+        output = np.zeros_like(tensor, dtype=np.complex128)
+        for term_index, coefficient in enumerate(self.coefficients):
+            term = tensor
+            for axis, (a, b) in enumerate(
+                zip(self.a_exponents[term_index], self.b_exponents[term_index])
+            ):
+                if b:
+                    phase = omega ** (int(b) * np.arange(self.qudit_dimension))
+                    shape = [1] * len(rank_shape)
+                    shape[axis] = self.qudit_dimension
+                    term = term * phase.reshape(shape)
+                shift = int(a) % self.qudit_dimension
+                if shift:
+                    term = np.concatenate(
+                        (
+                            np.take(
+                                term,
+                                np.arange(
+                                    self.qudit_dimension - shift, self.qudit_dimension
+                                ),
+                                axis=axis,
+                            ),
+                            np.take(
+                                term,
+                                np.arange(0, self.qudit_dimension - shift),
+                                axis=axis,
+                            ),
+                        ),
+                        axis=axis,
+                    )
+            output += coefficient * term
+        result = output.reshape(-1) if flat else output
+        return cast(np.ndarray[Any, Any], np.asarray(result, dtype=np.complex128))
 
 
 def _dimension(nqubits: int) -> int:

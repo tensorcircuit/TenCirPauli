@@ -222,7 +222,7 @@ def test_adaptive_rust_sparse_targets_and_native_mvp() -> None:
     coo = operator.compile("coo", boson_cutoffs=cutoffs)
     csr = operator.compile("csr", boson_cutoffs=cutoffs)
     plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
-    assert plan.strategy == "structured_sparse_native"
+    assert plan.strategy == "structured_mvp_native"
     reconstructed_coo = np.zeros_like(dense)
     reconstructed_coo[coo.row, coo.column] = coo.data
     np.testing.assert_array_equal(reconstructed_coo, dense)
@@ -237,7 +237,7 @@ def test_adaptive_rust_sparse_targets_and_native_mvp() -> None:
     small = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
     assert (
         small.compile("native_mvp", boson_cutoffs={0: 1}).strategy
-        == "structured_sparse"
+        == "structured_mvp_native"
     )
 
 
@@ -254,7 +254,7 @@ def test_adaptive_rust_sparse_weyl_targets_match_dense() -> None:
     np.testing.assert_allclose(dense, expected)
     coo = operator.compile("coo")
     plan = operator.compile("native_mvp")
-    assert plan.strategy == "structured_sparse_native"
+    assert plan.strategy == "structured_mvp_native"
     reconstructed = np.zeros_like(dense)
     reconstructed[coo.row, coo.column] = coo.data
     np.testing.assert_array_equal(reconstructed, dense)
@@ -285,3 +285,69 @@ def test_phase7_memory_and_target_errors() -> None:
     fermion = tcp.FermionOperator.from_terms(1, [(((0, "annihilate"),), 1.0)])
     with pytest.raises(NotImplementedError):
         fermion.compile("dense", mapping="bravyi_kitaev")
+
+
+def test_partial_mapping_preserves_existing_pauli_factors() -> None:
+    space = tcp.OperatorSpace(fermions=1, bosons=1)
+    create = space.fermion.create(0)
+    annihilate = space.fermion.annihilate(0)
+    create_boson = create * space.boson.create(0)
+    partially_mapped = (create_boson.map_fermions() * annihilate).map_fermions()
+    mapped_after_product = create_boson.multiply(annihilate).map_fermions()
+    np.testing.assert_allclose(
+        partially_mapped.compile("dense", boson_cutoffs={0: 2}),
+        mapped_after_product.compile("dense", boson_cutoffs={0: 2}),
+    )
+
+
+def test_embedding_validates_permutations_dimensions_and_fermion_signs() -> None:
+    source = tcp.OperatorSpace(fermions=2)
+    target = tcp.OperatorSpace(fermions=2)
+    operator = source.fermion.create(0) * source.fermion.annihilate(1)
+    embedded = target.embed(operator, fermions={0: 1, 1: 0})
+    expected = target.fermion.create(1) * target.fermion.annihilate(0)
+    np.testing.assert_allclose(embedded.compile("dense"), expected.compile("dense"))
+    with pytest.raises(ValueError, match="injective"):
+        target.embed(operator, fermions={0: 0, 1: 0})
+    with pytest.raises(ValueError, match="integers"):
+        target.embed(operator, fermions={0: "1", 1: 0})
+    qudit4 = tcp.QuditWeylOperator.from_terms(4, [(((0, 0, 3),), 1.0)], n_sites=1)
+    with pytest.raises(ValueError, match="equal source and target dimensions"):
+        tcp.OperatorSpace(qudits=(3,)).embed(qudit4, qudits={0: 0})
+
+
+def test_builder_multiplies_repeated_qubit_factors() -> None:
+    space = tcp.OperatorSpace(qubits=1)
+    actual = space.builder().add_product(qubits=((0, "X"), (0, "Y"))).finish()
+    expected = 1j * space.qubit.z(0)
+    np.testing.assert_allclose(actual.compile("dense"), expected.compile("dense"))
+
+
+def test_finite_boson_large_ladder_factor_is_target_consistent() -> None:
+    operator = tcp.BosonOperator.from_terms(1, [(((0, "create"),) * 171, 1.0)])
+    dense = operator.compile("dense", boson_cutoffs={0: 171})
+    coo = operator.compile("coo", boson_cutoffs={0: 171})
+    assert np.isfinite(dense).all()
+    assert dense[171, 0] == pytest.approx(3.522808638313566e154)
+    assert coo.data[-1] == pytest.approx(dense[171, 0])
+
+
+def test_uniform_qudit_backend_mvp_uses_direct_weyl_plan() -> None:
+    import tensorcircuit as tc
+
+    tc.set_backend("numpy")
+    operator = tcp.QuditWeylOperator.from_terms(
+        3,
+        [(((0, 1, 2),), 0.7 - 0.2j), (((1, 2, 1),), 0.3 + 0.1j)],
+        n_sites=2,
+    )
+    plan = operator.compile("backend_mvp")
+    assert plan.plan_kind == "direct_weyl"
+    state = np.arange(9, dtype=np.complex128)
+    expected = operator.compile("dense") @ state
+    np.testing.assert_allclose(tcp.backend_mvp(plan)(state), expected)
+    np.testing.assert_allclose(
+        tcp.backend_mvp(plan)(state.reshape(3, 3)), expected.reshape(3, 3)
+    )
+    with pytest.raises(NotImplementedError):
+        tcp.OperatorSpace(qubits=1, qudits=(3,)).qubit.z(0).compile("backend_mvp")

@@ -417,9 +417,9 @@ Requesting `backend_mvp` for a finite boson or mixed-dimension hybrid plan raise
 TensorCircuit integration remains in `python/tencirpauli/integrations/tensorcircuit.py`.
 
 - Pauli and Jordan-Wigner-mapped pure fermion operators continue to use the existing TensorCircuit backend MVP path.
-- Uniform-dimension `QuditWeylOperator` plans provide a pure-array backend executor and differential tests against TensorCircuit `QuditCircuit` for supported dimensions and basis ordering.
+- Uniform-dimension `QuditWeylOperator` plans provide a pure-array backend executor and differential tests against the independent dense target for supported dimensions and basis ordering. The executor uses TensorCircuit NumPy/JAX backend operations directly; conversion to `QuditCircuit` is outside the Phase 7 acceptance contract.
 - Boson and mixed-dimension hybrid plans are native-only in Phase 7. A state with local dimensions such as `(2, 8, 3)` is handled as a flat mixed-radix vector by the native plan; Phase 7 does not promise a TensorCircuit circuit or backend executor for that layout.
-- TensorCircuit `QuditCircuit` conversion is limited to compatible finite qudit semantics and does not accept arbitrary circuit unitaries as sparse Weyl Hamiltonians.
+- Phase 7 does not provide a `QuditCircuit` conversion for sparse Weyl Hamiltonians and does not accept arbitrary circuit unitaries as sparse Weyl Hamiltonians.
 
 Phase 7 does not add a generic TensorCircuit `Hamiltonian` class, modify TensorCircuit source, introduce a JAX custom call, or promise backend AD for native plans.
 

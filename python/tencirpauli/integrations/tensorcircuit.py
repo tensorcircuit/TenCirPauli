@@ -236,12 +236,16 @@ def backend_mvp(
 ) -> Any:
     """Return a TensorCircuit-backend MVP callable for a pure-array plan.
 
-    The returned callable accepts a flat ``2**n`` state or a rank-``n`` tensor.
+    The returned callable accepts a flat or local-rank state. Binary Pauli plans
+    use packed masks; uniform Weyl plans use factorized phase-and-cyclic-shift
+    operations directly on the backend tensor.
     Plan structure is fixed before tracing; coefficients may be replaced by a
     backend tensor for a differentiable parameter buffer.
     """
     tensorcircuit = require_tensorcircuit()
     runtime_backend = backend if backend is not None else tensorcircuit.backend
+    if plan.plan_kind == "direct_weyl":
+        return _direct_weyl_backend_mvp(plan, coefficients, runtime_backend, max_bytes)
     dimension = _dimension(plan.nqubits)
     estimated_bytes = dimension * ((len(plan.coefficients) + 1) * 8 + 48)
     _check_allocation(estimated_bytes, max_bytes, "TensorCircuit MVP adapter")
@@ -306,6 +310,83 @@ def backend_mvp(
                 term_state = term_state[slices]
             weight = coefficient_values[term_index] * (1j ** y_counts[term_index])
             total = total + term_state * weight
+        return runtime_backend.reshape(total, (-1,)) if flat else total
+
+    return mvp
+
+
+def _direct_weyl_backend_mvp(
+    plan: BackendMVPPlan,
+    coefficients: Optional[Sequence[complex]],
+    runtime_backend: Any,
+    max_bytes: Optional[int],
+) -> Any:
+    """Create a pure-array executor for a uniform Weyl plan.
+
+    For the direct convention ``W(a,b)=X**a Z**b``, a source basis value is
+    multiplied by ``omega**(b*k)`` and then moved to ``k+a mod d``. All slices
+    and phase masks are static, which keeps the executor compatible with JAX
+    tracing without building a circuit or a sparse matrix.
+    """
+    dimensions = tuple(plan.local_dimensions)
+    dimension = plan.dimension
+    n_sites = len(dimensions)
+    d = plan.qudit_dimension
+    estimated_bytes = dimension * 32 + int(plan.estimated_bytes)
+    _check_allocation(estimated_bytes, max_bytes, "TensorCircuit Weyl MVP adapter")
+    if coefficients is None:
+        coefficient_values = runtime_backend.convert_to_tensor(plan.coefficients)
+    elif hasattr(coefficients, "shape"):
+        coefficient_values = coefficients
+    else:
+        coefficient_values = runtime_backend.convert_to_tensor(coefficients)
+    coefficient_shape = runtime_backend.shape_tuple(coefficient_values)
+    if tuple(coefficient_shape) != (len(plan.coefficients),):
+        raise ValueError("coefficient buffer length does not match backend MVP plan")
+    phase_masks: list[list[Optional[Any]]] = []
+    omega = np.exp(2j * np.pi / d)
+    for term_index in range(len(plan.coefficients)):
+        masks: list[Optional[Any]] = []
+        for axis in range(n_sites):
+            b = int(plan.b_exponents[term_index, axis])
+            if b == 0:
+                masks.append(None)
+                continue
+            local = omega ** (b * np.arange(d))
+            shape = [1] * n_sites
+            shape[axis] = d
+            masks.append(runtime_backend.convert_to_tensor(local.reshape(shape)))
+        phase_masks.append(masks)
+
+    def mvp(state: Any) -> Any:
+        state_shape = runtime_backend.shape_tuple(state)
+        if len(state_shape) == 1 and state_shape[0] == dimension:
+            tensor_state = runtime_backend.reshape(state, dimensions)
+            flat = True
+        elif tuple(state_shape) == dimensions:
+            tensor_state = state
+            flat = False
+        else:
+            raise ValueError(
+                f"state must be flat with length {dimension} or have shape {dimensions}"
+            )
+        dtype = runtime_backend.dtype(tensor_state)
+        total = runtime_backend.zeros_like(tensor_state)
+        for term_index in range(len(plan.coefficients)):
+            term_state = tensor_state
+            for axis, mask in enumerate(phase_masks[term_index]):
+                if mask is not None:
+                    term_state = term_state * runtime_backend.cast(mask, dtype)
+                shift = int(plan.a_exponents[term_index, axis]) % d
+                if shift:
+                    tail = [slice(None)] * n_sites
+                    head = [slice(None)] * n_sites
+                    tail[axis] = slice(-shift, None)
+                    head[axis] = slice(None, -shift)
+                    term_state = runtime_backend.concat(
+                        (term_state[tuple(tail)], term_state[tuple(head)]), axis=axis
+                    )
+            total = total + term_state * coefficient_values[term_index]
         return runtime_backend.reshape(total, (-1,)) if flat else total
 
     return mvp
