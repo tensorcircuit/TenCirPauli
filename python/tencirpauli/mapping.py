@@ -13,9 +13,11 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 
+from . import _native
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     _check_allocation,
+    _effective_max_bytes,
     _validate_max_bytes,
 )
 from .pauli import PauliOperator
@@ -143,6 +145,7 @@ class FermionQubitMapping:
         "_encoding",
         "_inverse_encoding",
         "_locked",
+        "_native_plan",
         "basis_ordering",
         "convention",
         "estimated_bytes",
@@ -164,6 +167,7 @@ class FermionQubitMapping:
     _cnot_operations: Tuple[Tuple[int, int], ...]
     _clifford_operations: np.ndarray[Any, Any]
     estimated_bytes: int
+    _native_plan: Optional[Any]
     _locked: bool
 
     def __init__(
@@ -172,6 +176,8 @@ class FermionQubitMapping:
         n_modes: int,
         encoding: Tuple[Tuple[int, ...], ...],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+        *,
+        _native_plan: Optional[Any] = None,
     ) -> None:
         n_modes = _exact_nonnegative(n_modes, "n_modes")
         if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
@@ -183,8 +189,17 @@ class FermionQubitMapping:
             "fermion mapping plan",
         )
         matrix = _validate_matrix(encoding, n_modes)
-        inverse = _gf2_inverse(matrix)
-        cnot_operations = _canonical_cnot_operations(matrix)
+        if _native_plan is None:
+            inverse = _gf2_inverse(matrix)
+            cnot_operations = _canonical_cnot_operations(matrix)
+            estimated_bytes = n_modes * n_modes * 2 + len(cnot_operations) * 16 + 256
+        else:
+            inverse = _validate_matrix(_native_plan.inverse_encoding, n_modes)
+            cnot_operations = tuple(
+                (int(control), int(target))
+                for control, target in _native_plan.cnot_operations
+            )
+            estimated_bytes = int(_native_plan.estimated_bytes)
         clifford = np.asarray(cnot_operations, dtype=np.int64).reshape((-1, 2))
         clifford = np.ascontiguousarray(clifford)
         clifford.setflags(write=False)
@@ -199,11 +214,8 @@ class FermionQubitMapping:
         object.__setattr__(self, "_inverse_encoding", _matrix_to_array(inverse))
         object.__setattr__(self, "_cnot_operations", cnot_operations)
         object.__setattr__(self, "_clifford_operations", clifford)
-        object.__setattr__(
-            self,
-            "estimated_bytes",
-            n_modes * n_modes * 2 + len(cnot_operations) * 16 + 256,
-        )
+        object.__setattr__(self, "estimated_bytes", estimated_bytes)
+        object.__setattr__(self, "_native_plan", _native_plan)
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -222,16 +234,20 @@ class FermionQubitMapping:
         if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError("unsupported fermion-to-qubit mapping")
         _validate_max_bytes(max_bytes)
-        _check_allocation(
-            _mapping_plan_upper_bound(normalized_modes),
-            max_bytes,
-            "fermion mapping plan",
+        native_plan = _native.mapping_plan(
+            mapping_name,
+            normalized_modes,
+            _effective_max_bytes(max_bytes),
+        )
+        encoding = tuple(
+            tuple(int(value) for value in row) for row in native_plan.encoding
         )
         return cls(
             mapping_name,
             normalized_modes,
-            _mapping_matrix(mapping_name, normalized_modes),
+            encoding,
             max_bytes=max_bytes,
+            _native_plan=native_plan,
         )
 
     @classmethod
@@ -373,6 +389,14 @@ class FermionQubitMapping:
             max_bytes,
             "mapped Pauli operator",
         )
+        if self._native_plan is not None:
+            result = self._native_plan.transform(
+                [list(term.word.to_codes()) for term in operator.terms],
+                [term.coefficient.real for term in operator.terms],
+                [term.coefficient.imag for term in operator.terms],
+                _effective_max_bytes(max_bytes),
+            )
+            return PauliOperator._from_native(self.n_modes, result)
         return PauliOperator.from_terms(
             self.n_modes,
             (

@@ -8,6 +8,7 @@ from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
 from tencirpauli.majorana import _guard_expansion
+from tencirpauli.mapping import _mapping_matrix
 
 
 def _majorana_to_fermion_python_reference(
@@ -36,6 +37,38 @@ def _majorana_to_fermion_python_reference(
             ]
         raw_terms.extend(current)
     return tcp.FermionOperator.from_terms(operator.n_modes, raw_terms)
+
+
+def _mapping_plan_python_reference(
+    mapping: str, n_modes: int
+) -> tcp.FermionQubitMapping:
+    return tcp.FermionQubitMapping(mapping, n_modes, _mapping_matrix(mapping, n_modes))
+
+
+def _mapping_ab_workload(n_modes: int, term_count: int) -> tcp.PauliOperator:
+    terms = []
+    for term_index in range(term_count):
+        codes = tuple(
+            (term_index * 7 + qubit * 3 + term_index // 5) % 4
+            for qubit in range(n_modes)
+        )
+        terms.append((codes, complex(1.0 + 0.001 * term_index, -0.01)))
+    return tcp.PauliOperator.from_terms(n_modes, terms)
+
+
+def _map_pauli_python_reference(
+    plan: tcp.FermionQubitMapping, operator: tcp.PauliOperator
+) -> tcp.PauliOperator:
+    return tcp.PauliOperator.from_terms(
+        plan.n_modes,
+        (
+            (transformed, term.coefficient * phase)
+            for term in operator.terms
+            for transformed, phase in (
+                plan._transform_codes_with_phase(term.word.to_codes()),
+            )
+        ),
+    )
 
 
 def _majorana_workload() -> tcp.MajoranaOperator:
@@ -122,7 +155,7 @@ def test_phase75_majorana_conversion_ab_python(
         input_terms=term_count,
         degree=degree,
         branches=term_count * (1 << degree),
-        output_terms=expected.term_count,
+        output_terms=len(expected.terms),
     )
     benchmark(_majorana_to_fermion_python_reference, operator)
 
@@ -154,7 +187,7 @@ def test_phase75_majorana_conversion_ab_native(
         input_terms=term_count,
         degree=degree,
         branches=term_count * (1 << degree),
-        output_terms=actual.term_count,
+        output_terms=len(actual.terms),
     )
     benchmark(operator.to_fermion)
 
@@ -174,6 +207,66 @@ def test_phase75_mapping_plan_construction(
     benchmark(tcp.FermionQubitMapping.from_name, name, 8)
 
 
+@pytest.mark.parametrize(
+    ("mapping", "scale", "n_modes"),
+    [
+        ("parity", "small", 8),
+        ("parity", "medium", 32),
+        ("parity", "large", 128),
+        ("bravyi_kitaev", "small", 8),
+        ("bravyi_kitaev", "medium", 32),
+        ("bravyi_kitaev", "large", 128),
+    ],
+)
+def test_phase75_mapping_plan_ab_python(
+    benchmark: BenchmarkFixture, mapping: str, scale: str, n_modes: int
+) -> None:
+    plan = _mapping_plan_python_reference(mapping, n_modes)
+    _record(
+        benchmark,
+        path="python_reference",
+        mapping=mapping,
+        scale=scale,
+        n_modes=n_modes,
+        cnot_count=len(plan.cnot_operations),
+        plan_bytes=plan.estimated_bytes,
+    )
+    benchmark(_mapping_plan_python_reference, mapping, n_modes)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "scale", "n_modes"),
+    [
+        ("parity", "small", 8),
+        ("parity", "medium", 32),
+        ("parity", "large", 128),
+        ("bravyi_kitaev", "small", 8),
+        ("bravyi_kitaev", "medium", 32),
+        ("bravyi_kitaev", "large", 128),
+    ],
+)
+def test_phase75_mapping_plan_ab_native(
+    benchmark: BenchmarkFixture, mapping: str, scale: str, n_modes: int
+) -> None:
+    expected = _mapping_plan_python_reference(mapping, n_modes)
+    actual = tcp.FermionQubitMapping.from_name(mapping, n_modes)
+    np.testing.assert_array_equal(actual.encoding_matrix, expected.encoding_matrix)
+    np.testing.assert_array_equal(
+        actual.inverse_encoding_matrix, expected.inverse_encoding_matrix
+    )
+    assert actual.cnot_operations == expected.cnot_operations
+    _record(
+        benchmark,
+        path="rust_native",
+        mapping=mapping,
+        scale=scale,
+        n_modes=n_modes,
+        cnot_count=len(actual.cnot_operations),
+        plan_bytes=actual.estimated_bytes,
+    )
+    benchmark(tcp.FermionQubitMapping.from_name, mapping, n_modes)
+
+
 @pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
 def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
     operator = _fermion_workload()
@@ -187,6 +280,76 @@ def test_phase75_mapping(benchmark: BenchmarkFixture, name: str) -> None:
         plan_bytes=mapping.estimated_bytes,
     )
     benchmark(operator.map_fermions, mapping)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "scale", "n_modes", "term_count"),
+    [
+        ("parity", "small", 8, 16),
+        ("parity", "medium", 32, 64),
+        ("parity", "large", 64, 128),
+        ("bravyi_kitaev", "small", 8, 16),
+        ("bravyi_kitaev", "medium", 32, 64),
+        ("bravyi_kitaev", "large", 64, 128),
+    ],
+)
+def test_phase75_mapping_ab_python(
+    benchmark: BenchmarkFixture,
+    mapping: str,
+    scale: str,
+    n_modes: int,
+    term_count: int,
+) -> None:
+    plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
+    operator = _mapping_ab_workload(n_modes, term_count)
+    expected = _map_pauli_python_reference(plan, operator)
+    _record(
+        benchmark,
+        path="python_reference",
+        mapping=mapping,
+        scale=scale,
+        n_modes=n_modes,
+        input_terms=term_count,
+        output_terms=len(expected.terms),
+        cnot_count=len(plan.cnot_operations),
+    )
+    benchmark(_map_pauli_python_reference, plan, operator)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "scale", "n_modes", "term_count"),
+    [
+        ("parity", "small", 8, 16),
+        ("parity", "medium", 32, 64),
+        ("parity", "large", 64, 128),
+        ("bravyi_kitaev", "small", 8, 16),
+        ("bravyi_kitaev", "medium", 32, 64),
+        ("bravyi_kitaev", "large", 64, 128),
+    ],
+)
+def test_phase75_mapping_ab_native(
+    benchmark: BenchmarkFixture,
+    mapping: str,
+    scale: str,
+    n_modes: int,
+    term_count: int,
+) -> None:
+    plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
+    operator = _mapping_ab_workload(n_modes, term_count)
+    expected = _map_pauli_python_reference(plan, operator)
+    actual = plan.map_pauli(operator)
+    assert actual.terms == expected.terms
+    _record(
+        benchmark,
+        path="rust_native",
+        mapping=mapping,
+        scale=scale,
+        n_modes=n_modes,
+        input_terms=term_count,
+        output_terms=len(actual.terms),
+        cnot_count=len(plan.cnot_operations),
+    )
+    benchmark(plan.map_pauli, operator)
 
 
 def test_phase75_sector_setup(benchmark: BenchmarkFixture) -> None:

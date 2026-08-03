@@ -188,6 +188,31 @@ def test_frozen_mapping_matrices_cnot_provenance_and_dense_differential(
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
 
 
+@pytest.mark.parametrize("name", ["parity", "bravyi_kitaev"])
+def test_native_mapping_batch_matches_python_clifford_reference(name: str) -> None:
+    plan = tcp.FermionQubitMapping.from_name(name, 8)
+    operator = tcp.PauliOperator.from_terms(
+        8,
+        [
+            ((1, 0, 2, 3, 0, 1, 0, 2), 0.4 - 0.1j),
+            ((3, 1, 0, 2, 1, 0, 3, 0), -0.2j),
+            ((0, 0, 0, 0, 0, 0, 0, 0), 0.7),
+        ],
+    )
+    expected = tcp.PauliOperator.from_terms(
+        8,
+        (
+            (transformed, term.coefficient * phase)
+            for term in operator.terms
+            for transformed, phase in (
+                plan._transform_codes_with_phase(term.word.to_codes()),
+            )
+        ),
+    )
+    actual = plan.map_pauli(operator)
+    assert actual.terms == expected.terms
+
+
 def test_majorana_mapping_and_reusable_plan_metadata() -> None:
     majorana = tcp.MajoranaOperator.from_terms(2, [((0, 3), 0.5), ((1,), -0.2j)])
     plan = tcp.FermionQubitMapping.bravyi_kitaev(2)

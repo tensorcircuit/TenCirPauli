@@ -7,6 +7,7 @@ mod gate;
 mod grouping;
 mod hamiltonian;
 mod majorana;
+mod mapping;
 mod operator;
 mod propagation;
 mod scalar;
@@ -33,6 +34,7 @@ pub use majorana::{
     canonicalize_majorana_terms, majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch,
     MajoranaCanonicalResult,
 };
+pub use mapping::{build_mapping_plan, MappingPlan};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
 pub use propagation::{
     ProductState, PropagationBatch, PropagationBatchValueAndGradient, PropagationEngine,

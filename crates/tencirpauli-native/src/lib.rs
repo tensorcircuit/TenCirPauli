@@ -5,6 +5,7 @@ mod convert;
 mod grouping;
 mod hamiltonian;
 mod majorana;
+mod mapping;
 mod operator;
 mod propagation;
 mod spps;
@@ -22,6 +23,7 @@ use hamiltonian::{
     pauli_dense_array, pauli_mvp_array, pauli_mvp_plan, NativeMvpPlan,
 };
 use majorana::{majorana_canonicalize, majorana_multiply, majorana_to_fermion};
+use mapping::{mapping_plan, NativeMappingPlan};
 use operator::{
     pauli_canonicalize, pauli_canonicalize_array, pauli_canonicalize_batch,
     pauli_canonicalize_batch_array, pauli_canonicalize_batch_numpy, pauli_operator_adjoint,
@@ -61,6 +63,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativePropagationEngine>()?;
     module.add_class::<NativePropagationBatch>()?;
     module.add_class::<NativeSPPSEngine>()?;
+    module.add_class::<NativeMappingPlan>()?;
     module.add_function(wrap_pyfunction!(pauli_weight, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_support, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_codes, module)?)?;
@@ -91,6 +94,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(majorana_canonicalize, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_to_fermion, module)?)?;
+    module.add_function(wrap_pyfunction!(mapping_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_backend_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_group, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_compatibility_matrix, module)?)?;
