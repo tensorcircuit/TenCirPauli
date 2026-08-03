@@ -33,7 +33,13 @@ pub use sector::{
     PackedU1Basis, U1CooMatrix, U1CsrMatrix, U1MvpPlan, U1RestrictedOperator, U1Sector,
 };
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
-pub use structured::{structured_dense_matrix, StructuredOperation};
+pub use structured::{
+    canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
+    jordan_wigner_hybrid_terms, jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms,
+    multiply_hybrid_terms, structured_dense_matrix, BosonCanonicalResult, FermionBatch,
+    FermionCanonicalResult, HybridBatch, HybridCanonicalResult, HybridLayout, HybridRawBatch,
+    StructuredOperation,
+};
 pub use symmetry::{find_z2_symmetries, CliffordOperation, Z2SymmetryAnalysis, Z2TaperingPlan};
 pub use u1_circuit::U1CircuitPlan;
 pub use word::{packed_word_count, PauliPhase, PauliWord};

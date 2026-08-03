@@ -13,7 +13,7 @@ Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoin
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
-| Phase 7 structured Hamiltonian algebra | implemented vertical slice; under acceptance review | Fermion CAR/Jordan–Wigner, symbolic boson CCR with projected finite targets, `OperatorSpace`/hybrid algebra, direct Weyl, shared finite targets, native structured dense kernel, tests, and benchmark sources are present; TensorCircuit qudit adapter and full P0–P5 handoff remain acceptance work. |
+| Phase 7 structured Hamiltonian algebra | implemented vertical slice; under acceptance review | Fermion CAR/Jordan–Wigner, symbolic boson CCR with projected finite targets, Rust-native pure and batched hybrid canonicalization/multiplication/mapping, `OperatorSpace`/hybrid algebra, direct Weyl, shared finite targets, native structured dense kernel, tests, and release benchmark sources are present; TensorCircuit qudit adapter and full P0–P5 handoff remain acceptance work. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 

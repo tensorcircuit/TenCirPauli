@@ -9,6 +9,111 @@ def structured_dense(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, object]: ...
+def structured_fermion_canonicalize(
+    n_modes: int,
+    factors: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[
+    Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[float], Sequence[float]
+]: ...
+def structured_fermion_multiply(
+    n_modes: int,
+    left: tuple[object, object, Sequence[float], Sequence[float]],
+    right: tuple[object, object, Sequence[float], Sequence[float]],
+    max_bytes: int,
+) -> tuple[
+    Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[float], Sequence[float]
+]: ...
+def structured_fermion_jordan_wigner(
+    n_modes: int,
+    creation: object,
+    annihilation: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+def structured_boson_canonicalize(
+    n_modes: int,
+    factors: object,
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[object, Sequence[float], Sequence[float]]: ...
+def structured_boson_multiply(
+    n_modes: int,
+    left: tuple[object, Sequence[float], Sequence[float]],
+    right: tuple[object, Sequence[float], Sequence[float]],
+    max_bytes: int,
+) -> tuple[object, Sequence[float], Sequence[float]]: ...
+def structured_hybrid_multiply(
+    n_modes: int,
+    n_bosons: int,
+    n_qubits: int,
+    n_qudit_sites: int,
+    qudit_dimension: int,
+    left: object,
+    right: object,
+    max_bytes: int,
+) -> tuple[
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    Sequence[float],
+    Sequence[float],
+]: ...
+def structured_hybrid_canonicalize(
+    n_modes: int,
+    n_bosons: int,
+    n_qubits: int,
+    n_qudit_sites: int,
+    qudit_dimension: int,
+    input: object,
+    max_bytes: int,
+) -> tuple[
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    Sequence[float],
+    Sequence[float],
+]: ...
+def structured_hybrid_jordan_wigner(
+    n_modes: int,
+    n_bosons: int,
+    n_qubits: int,
+    n_qudit_sites: int,
+    qudit_dimension: int,
+    input: object,
+    max_bytes: int,
+) -> tuple[
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    Sequence[float],
+    Sequence[float],
+]: ...
 
 class NativeMvpPlan:
     @property

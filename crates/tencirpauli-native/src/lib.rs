@@ -28,7 +28,11 @@ use propagation::{
     NativePropagationEngine,
 };
 use spps::{pauli_spps_engine, NativeSPPSEngine};
-use structured::structured_dense;
+use structured::{
+    structured_boson_canonicalize, structured_boson_multiply, structured_dense,
+    structured_fermion_canonicalize, structured_fermion_jordan_wigner, structured_fermion_multiply,
+    structured_hybrid_canonicalize, structured_hybrid_jordan_wigner, structured_hybrid_multiply,
+};
 use symmetry::{
     pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
     NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
@@ -89,5 +93,13 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_propagation_batch, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine, module)?)?;
     module.add_function(wrap_pyfunction!(structured_dense, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_fermion_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_fermion_multiply, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_fermion_jordan_wigner, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_boson_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_boson_multiply, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_hybrid_multiply, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_hybrid_canonicalize, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_hybrid_jordan_wigner, module)?)?;
     Ok(())
 }

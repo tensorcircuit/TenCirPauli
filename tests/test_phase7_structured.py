@@ -156,6 +156,54 @@ def test_hybrid_targets_and_mixed_radix_ordering() -> None:
     assert plan.local_dimensions == (2, 2, 2, 3)
 
 
+def test_hybrid_symbolic_multiply_and_jordan_wigner_use_batch_semantics() -> None:
+    space = tcp.OperatorSpace(fermions=1, bosons=1, qubits=1)
+    left = space.fermion.annihilate(0) * space.boson.create(0) * space.qubit.x(0)
+    right = space.fermion.create(0) * space.boson.annihilate(0) * space.qubit.y(0)
+    product = left * right
+    expected = np.kron(
+        np.kron(
+            _fermion_matrix(1, ((0, "annihilate"), (0, "create"))),
+            _boson_matrix(1, ((0, "create"), (0, "annihilate"))),
+        ),
+        np.asarray([[1j, 0], [0, -1j]], dtype=np.complex128),
+    )
+    np.testing.assert_allclose(product.compile("dense", boson_cutoffs={0: 1}), expected)
+
+    fermion_qubit = tcp.OperatorSpace(fermions=1, qubits=1)
+    mapped = (fermion_qubit.fermion.create(0) * fermion_qubit.qubit.z(0)).map_fermions()
+    assert isinstance(mapped, tcp.PauliOperator)
+    assert mapped.compile("dense").shape == (4, 4)
+
+
+def test_operator_builder_batch_canonicalization() -> None:
+    space = tcp.OperatorSpace(fermions=2, bosons=1, qubits=1, qudits=(3,))
+    builder = space.builder()
+    builder.add_product(
+        fermions=((0, "annihilate"), (0, "create")),
+        bosons=((0, "annihilate"), (0, "create")),
+        qubits=((0, "X"),),
+        qudits=((0, 1, 0),),
+    )
+    builder.add_product(2, fermions=((1, "create"),), bosons=((0, "create"),))
+    actual = builder.finish()
+    expected = space.fermion.annihilate(0) * space.fermion.create(
+        0
+    ) * space.boson.annihilate(0) * space.boson.create(0) * space.qubit.x(
+        0
+    ) * space.qudit.weyl(
+        0, 1, 0
+    ) + 2 * space.fermion.create(
+        1
+    ) * space.boson.create(
+        0
+    )
+    np.testing.assert_allclose(
+        actual.compile("dense", boson_cutoffs={0: 2}),
+        expected.compile("dense", boson_cutoffs={0: 2}),
+    )
+
+
 def test_tensor_product_grading_and_layout_compatibility() -> None:
     left = tcp.OperatorSpace(fermions=1).fermion.annihilate(0)
     right = tcp.OperatorSpace(fermions=1).fermion.create(0)

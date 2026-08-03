@@ -35,6 +35,33 @@ def fermion_workload(n_modes: int = 12) -> tcp.FermionOperator:
     return tcp.FermionOperator.from_terms(n_modes, terms)
 
 
+def fermion_terms(
+    n_modes: int = 12,
+) -> list[tuple[tuple[tuple[int, str], ...], complex]]:
+    """Return the raw sparse fermion workload for construction benchmarks."""
+    terms = []
+    for mode in range(n_modes - 1):
+        terms.extend(
+            [
+                (((mode, "create"), (mode + 1, "annihilate")), 1.0),
+                (((mode + 1, "create"), (mode, "annihilate")), 1.0),
+            ]
+        )
+    for mode in range(n_modes - 1):
+        terms.append(
+            (
+                (
+                    (mode, "create"),
+                    (mode, "annihilate"),
+                    (mode + 1, "create"),
+                    (mode + 1, "annihilate"),
+                ),
+                0.5,
+            )
+        )
+    return terms
+
+
 def boson_workload() -> Tuple[tcp.HybridOperator, dict[int, int]]:
     """Build a low-degree two-mode finite-Fock workload."""
     space = tcp.OperatorSpace(bosons=2, qubits=1)
@@ -57,6 +84,22 @@ def test_phase7_fermion_jordan_wigner(
     np.testing.assert_allclose(result.apply(state), expected.apply(state))
 
 
+def test_phase7_fermion_native_construction(benchmark: BenchmarkFixture) -> None:
+    """Measure raw Python input conversion plus Rust CAR canonicalization."""
+    terms = fermion_terms()
+    expected = tcp.FermionOperator.from_terms(12, terms)
+    result = benchmark(tcp.FermionOperator.from_terms, 12, terms)
+    assert result.term_count == expected.term_count
+
+
+def test_phase7_fermion_native_mapping(benchmark: BenchmarkFixture) -> None:
+    """Measure batched Rust Jordan-Wigner expansion and Pauli aggregation."""
+    operator = fermion_workload()
+    expected = operator.map_fermions()
+    result = benchmark(operator.map_fermions)
+    np.testing.assert_allclose(result.compile("dense"), expected.compile("dense"))
+
+
 def test_phase7_boson_native_dense(
     benchmark: BenchmarkFixture,
 ) -> None:
@@ -77,3 +120,57 @@ def test_phase7_boson_native_mvp(
     expected = plan.apply(state)
     result = benchmark(plan.apply, state)
     np.testing.assert_allclose(result, expected)
+
+
+def test_phase7_hybrid_native_multiply(benchmark: BenchmarkFixture) -> None:
+    """Measure one coarse PyO3 call for mixed-domain symbolic multiplication."""
+    space = tcp.OperatorSpace(fermions=4, bosons=2, qubits=2, qudits=(3,))
+    left = (
+        space.fermion.annihilate(0)
+        * space.boson.create(0)
+        * space.qubit.x(0)
+        * space.qudit.weyl(0, 1, 2)
+    )
+    right = (
+        space.fermion.create(0)
+        * space.boson.annihilate(0)
+        * space.qubit.y(0)
+        * space.qudit.weyl(0, 2, 1)
+    )
+    expected = left * right
+    result = benchmark(left.multiply, right)
+    np.testing.assert_allclose(
+        result.compile("dense", boson_cutoffs={0: 2, 1: 2}),
+        expected.compile("dense", boson_cutoffs={0: 2, 1: 2}),
+    )
+
+
+def test_phase7_hybrid_native_mapping(benchmark: BenchmarkFixture) -> None:
+    """Measure batched mixed-domain Jordan-Wigner mapping."""
+    space = tcp.OperatorSpace(fermions=4, bosons=2, qubits=1)
+    operator = (
+        space.fermion.create(0) * space.boson.annihilate(0)
+        + space.fermion.annihilate(1) * space.boson.create(1)
+        + space.qubit.z(0)
+    )
+    expected = operator.map_fermions()
+    result = benchmark(operator.map_fermions)
+    np.testing.assert_allclose(
+        result.compile("dense", boson_cutoffs={0: 2, 1: 2}),
+        expected.compile("dense", boson_cutoffs={0: 2, 1: 2}),
+    )
+
+
+def test_phase7_hybrid_native_builder(benchmark: BenchmarkFixture) -> None:
+    """Measure batched Rust canonicalization from raw builder products."""
+    space = tcp.OperatorSpace(fermions=8, bosons=2, qubits=2)
+    builder = space.builder()
+    for mode in range(7):
+        builder.add_product(
+            fermions=((mode, "create"), (mode + 1, "annihilate")),
+            bosons=((0, "create"), (1, "annihilate")),
+            qubits=((mode % 2, "Z"),),
+        )
+    expected = builder.finish()
+    result = benchmark(builder.finish)
+    assert result.term_count == expected.term_count
