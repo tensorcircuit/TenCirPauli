@@ -14,6 +14,12 @@ import numpy as np
 # lower or raise this per call through the public ``max_bytes`` parameter.
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024 * 1024
 
+# These labels are part of the reusable-plan metadata contract.  Pauli plans
+# keep the historical qubit spelling; structured plans use the ordered axes of
+# OperatorSpace and therefore must not advertise a binary qubit basis.
+MIXED_RADIX_BASIS_ORDERING = "operator_space_axis0_msb_mixed_radix"
+DIRECT_WEYL_BASIS_ORDERING = "qudit0_msb_matrix"
+
 
 @dataclass(frozen=True)
 class COOMatrix:
@@ -336,6 +342,8 @@ class BackendMVPPlan:
                 raise ValueError("direct Weyl exponents must be reduced modulo d")
             if self.weyl_convention != "X^a Z^b":
                 raise ValueError("direct Weyl plans require convention 'X^a Z^b'")
+            if self.basis_ordering != DIRECT_WEYL_BASIS_ORDERING:
+                raise ValueError("direct Weyl plans require qudit0_msb_matrix ordering")
             if (
                 not self.required_operations
                 or "cyclic_shift" not in self.required_operations

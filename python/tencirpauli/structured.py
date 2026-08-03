@@ -33,6 +33,8 @@ import numpy as np
 from . import _native
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
+    DIRECT_WEYL_BASIS_ORDERING,
+    MIXED_RADIX_BASIS_ORDERING,
     BackendMVPPlan,
     CompileResult,
     COOMatrix,
@@ -2535,6 +2537,7 @@ def _compile_finite(
             "structured_mvp_native",
             native_plan,
             local_dimensions=dimensions,
+            basis_ordering=MIXED_RADIX_BASIS_ORDERING,
             estimated_bytes=int(native_plan.estimated_bytes),
             mapping=mapping,
             boson_cutoffs=tuple(sorted(cutoffs.items())),
@@ -2631,14 +2634,14 @@ def _direct_weyl_backend_plan(
     _check_allocation(estimated_bytes, max_bytes, "direct Weyl backend MVP plan")
     return BackendMVPPlan(
         2,
-        len(dimensions),
-        len(dimensions),
+        0,
+        0,
         np.empty((0, 0), dtype=np.uint64),
         np.empty((0, 0), dtype=np.uint64),
         coefficients,
         local_dimensions=dimensions,
-        basis_ordering="qudit0_msb_matrix",
-        ordering="qudit0_msb_matrix",
+        basis_ordering=DIRECT_WEYL_BASIS_ORDERING,
+        ordering=DIRECT_WEYL_BASIS_ORDERING,
         estimated_bytes=estimated_bytes,
         plan_kind="direct_weyl",
         qudit_dimension=dimension,

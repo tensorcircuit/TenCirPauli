@@ -221,6 +221,8 @@ def test_direct_weyl_reference_and_targets(dimension: int) -> None:
 def test_native_weyl_plan_metadata_and_unbounded_guard() -> None:
     operator = tcp.QuditWeylOperator.from_terms(5, [(((0, 1, 2),), 1.0)], n_sites=2)
     plan = operator.compile("native_mvp", max_bytes=None)
+    assert plan.basis_ordering == "operator_space_axis0_msb_mixed_radix"
+    assert plan.nqubits == 0
     assert plan.qudit_dimension == 5
     assert plan.weyl_convention == "X^a Z^b"
     assert plan.boson_cutoffs == ()
@@ -228,6 +230,81 @@ def test_native_weyl_plan_metadata_and_unbounded_guard() -> None:
     np.testing.assert_allclose(
         plan.apply(state, max_bytes=None), operator.compile("dense") @ state
     )
+
+
+def test_phase7_plan_metadata_matches_the_physical_basis() -> None:
+    pauli = tcp.PauliOperator.from_terms(2, [("XZ", 1.0)]).compile("native_mvp")
+    assert pauli.basis_ordering == "qubit0_msb_matrix"
+    assert pauli.nqubits == 2
+    assert pauli.local_dimensions == (2, 2)
+
+    fermion = tcp.FermionOperator.from_terms(
+        2, [(((0, "create"), (1, "annihilate")), 1.0)]
+    ).compile("native_mvp")
+    assert fermion.basis_ordering == "qubit0_msb_matrix"
+    assert fermion.mapping == "jordan_wigner"
+    assert fermion.nqubits == 2
+
+    boson_space = tcp.OperatorSpace(bosons=1)
+    boson = boson_space.boson.create(0).compile("native_mvp", boson_cutoffs={0: 2})
+    assert boson.basis_ordering == "operator_space_axis0_msb_mixed_radix"
+    assert boson.nqubits == 0
+    assert boson.local_dimensions == (3,)
+
+    hybrid_space = tcp.OperatorSpace(fermions=1, bosons=1, qubits=1)
+    hybrid = (hybrid_space.fermion.create(0) * hybrid_space.boson.create(0)).compile(
+        "native_mvp", boson_cutoffs={0: 1}
+    )
+    assert hybrid.basis_ordering == "operator_space_axis0_msb_mixed_radix"
+    assert hybrid.nqubits == 0
+    assert hybrid.local_dimensions == (2, 2, 2)
+
+    backend = tcp.QuditWeylOperator.from_terms(
+        3, [(((0, 1, 1),), 1.0)], n_sites=2
+    ).compile("backend_mvp")
+    assert backend.basis_ordering == "qudit0_msb_matrix"
+    assert backend.nqubits == 0
+    assert backend.word_count == 0
+    assert backend.local_dimensions == (3, 3)
+
+
+def test_phase7_holstein_independent_dense_sparse_and_mvp_differential() -> None:
+    cutoff = 2
+    space = tcp.OperatorSpace(fermions=1, bosons=1)
+    hamiltonian = (
+        0.7 * space.fermion.create(0) * space.fermion.annihilate(0)
+        + 0.5 * space.boson.create(0) * space.boson.annihilate(0)
+        + 0.3
+        * (space.fermion.create(0) + space.fermion.annihilate(0))
+        * (space.boson.create(0) + space.boson.annihilate(0))
+    )
+    fermion_number = _fermion_matrix(1, ((0, "create"), (0, "annihilate")))
+    boson_number = _boson_matrix(cutoff, ((0, "create"), (0, "annihilate")))
+    fermion_x = _fermion_matrix(1, ((0, "create"),)) + _fermion_matrix(
+        1, ((0, "annihilate"),)
+    )
+    boson_x = _boson_matrix(cutoff, ((0, "create"),)) + _boson_matrix(
+        cutoff, ((0, "annihilate"),)
+    )
+    independent = 0.7 * np.kron(fermion_number, np.eye(cutoff + 1))
+    independent += 0.5 * np.kron(np.eye(2), boson_number)
+    independent += 0.3 * np.kron(fermion_x, boson_x)
+
+    dense = hamiltonian.compile("dense", boson_cutoffs={0: cutoff})
+    np.testing.assert_allclose(dense, independent)
+    coo = hamiltonian.compile("coo", boson_cutoffs={0: cutoff})
+    reconstructed = np.zeros_like(dense)
+    reconstructed[coo.row, coo.column] = coo.data
+    np.testing.assert_array_equal(reconstructed, independent)
+    csr = hamiltonian.compile("csr", boson_cutoffs={0: cutoff})
+    csr_reconstructed = np.zeros_like(dense)
+    for row in range(dense.shape[0]):
+        start, stop = int(csr.indptr[row]), int(csr.indptr[row + 1])
+        csr_reconstructed[row, csr.indices[start:stop]] = csr.data[start:stop]
+    np.testing.assert_array_equal(csr_reconstructed, independent)
+    state = np.arange(dense.shape[0], dtype=np.complex128)
+    plan = hamiltonian.compile("native_mvp", boson_cutoffs={0: cutoff})
+    np.testing.assert_allclose(plan.apply(state), independent @ state)
 
 
 def test_hybrid_targets_and_mixed_radix_ordering() -> None:

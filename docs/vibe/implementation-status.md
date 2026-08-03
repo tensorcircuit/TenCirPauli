@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoint 是 Phase 7 review remediation。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 已补齐关键代数、有限目标和 backend MVP 修复并继续进行 P0–P5 acceptance。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha、Phase 6 和 Phase 7 的实现均已完成；当前 checkpoint 是 Phase 7.5 P0。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭，Phase 7.5 的 Majorana、fermion mapping 和 additive-charge contract 现已进入实现。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
 
 ## Active status
 
@@ -13,7 +13,8 @@ Phase 1–5.5、Phase Alpha 和 Phase 6 的实现均已完成；当前 checkpoin
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
 | Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
-| Phase 7 structured Hamiltonian algebra | review remediation implemented; under acceptance review | Fermion CAR/Jordan–Wigner, symbolic boson CCR with projected finite targets, Rust-native pure and batched hybrid canonicalization/multiplication/mapping, validated `OperatorSpace` embedding, direct Weyl, shared finite targets, matrix-free structured native MVP, direct uniform-qudit TensorCircuit backend MVP, public docs/examples, tests, and benchmark sources are present; the full P0–P5 evidence matrix remains acceptance work. |
+| Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | P0 in progress | Frozen contract in `phase-7.5-spec.md`; first work is to freeze independent Majorana, GF(2) mapping, charge, and restricted-basis references before native optimization. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -55,7 +56,7 @@ The structured finite compiler now has one shared Rust transition implementation
 
 The review remediation benchmark source covers small and large finite structured targets, direct uniform-Weyl backend MVP, native plan construction/apply, expansion guards, and plan metadata. Release recording remains informational and is not a wall-time gate; the local record must include finite dimension, term/transition counts, plan/output bytes, thread count, target strategy, and numerical error.
 
-Correctness evidence includes dense reconstruction for COO and CSR, matrix-free MVP versus dense matrix multiplication, the mixed boson/qubit workload, partial-mapping and full-domain embedding permutation regressions, overflow-safe finite boson amplitudes, repeated Pauli builder products, explicit spinful Hubbard quartic interactions, direct-Weyl algebra and backend differentials for `d=3/4/5/6` on TensorCircuit NumPy/JAX, checked plan-dimension overflow, native-Weyl plan metadata, long canonical/inversion-only CAR words, CAR identities, contraction guards, and graded raw/mapped tensor products. The focused Phase 7 test file has 42 passing tests after the second-round remediation; the full Python and Rust suites remain the required handoff gate.
+Correctness evidence includes dense reconstruction for COO and CSR, matrix-free MVP versus dense matrix multiplication, the mixed boson/qubit workload, partial-mapping and full-domain embedding permutation regressions, overflow-safe finite boson amplitudes, repeated Pauli builder products, explicit spinful Hubbard quartic interactions, direct-Weyl algebra and backend differentials for `d=3/4/5/6` on TensorCircuit NumPy/JAX, checked plan-dimension overflow, native-Weyl plan metadata, long canonical/inversion-only CAR words, CAR identities, contraction guards, and graded raw/mapped tensor products. The focused Phase 7 test file has 44 passing tests after the third-round remediation; the full Python and Rust suites remain the required handoff gate.
 
 The second-round algebra fix resolves the only accepted partially mapped representation by eagerly mapping both operands whenever raw and mapped fermion factors meet, preserving original multiplication order; `tensor_product()` uses global Jordan–Wigner mode indices and inserts the left parity string for a mapped right factor. CAR expansion now selects a cheap canonical/no-contraction fast path and checks actual recursive result growth rather than charging every word `2**len`; the selected owner decision is to retain this low-overhead guard and not add an exact symbolic dry run or allocator accounting. Reusable plans cache checked Python-int dimensions and expose schema/target, source and plan term counts, mapping, cutoffs/boundary, Weyl convention, and backend operation metadata; the dead Python finite-transition implementation and obsolete adaptive labels were removed.
 
@@ -70,6 +71,12 @@ The M1 owner decision is now backed by a scoped release A/B on the same local ar
 | No symbolic fast path + running guard | 105.6 µs | 1038.3 µs | 25.1 µs | 117.6 µs | 24.0 µs | 36.8 µs |
 
 The public end-to-end measurements show no material common-path regression and a large bounded improvement for inversion-only words; release instrumentation of the Rust core shows sub-microsecond fast-path handling for ordinary canonical words and microsecond-scale recursive handling only for genuinely contraction-capable words, so Python/PyO3 conversion and aggregation dominate the common cases while recursion dominates branching cases. The selected variant therefore closes the demonstrated false rejection without adding a measured hot-path penalty; the benchmark source and the focused guard regressions remain the reproducible acceptance artifacts, while the temporary variant builds and instrumentation are not shipped.
+
+## Phase 7 acceptance checkpoint
+
+The third-round Holstein gate uses an independently assembled one-fermion/one-boson fixture with explicit Fock and projected ladder matrices, Kronecker products, dense/COO/CSR reconstruction, and native MVP application. Structured native plans now publish `operator_space_axis0_msb_mixed_radix`, while Pauli and mapped-fermion plans retain `qubit0_msb_matrix`; direct-Weyl backend plans publish `qudit0_msb_matrix` with neutral Pauli-only `nqubits=0` and `word_count=0` metadata.
+
+The final local evidence is `conda run -p .conda python scripts/check.py --benchmark smoke`: 31 Rust tests, 232 Python tests, 165 selected benchmark-smoke cases, Black, Ruff, strict mypy, Clippy, release `maturin develop --release --locked`, and the executable benchmark suites all pass. Phase 7 is accepted on this baseline; Phase 7.5 work must preserve the existing Pauli/U1/Z2 contracts and begin from the independent references required by its P0 gate.
 
 ## Frozen owner decisions
 
