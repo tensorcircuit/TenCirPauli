@@ -135,6 +135,19 @@ def test_restricted_qubit_targets_match_independent_projector() -> None:
     state = np.asarray([0.5 - 0.2j, -0.3 + 0.7j])
     np.testing.assert_allclose(restricted.apply(state), independent @ state)
     assert restricted.mvp_plan().transition_count == 2
+    assert restricted.estimated_bytes == restricted.mvp_plan().estimated_bytes
+
+
+def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> None:
+    space = tcp.OperatorSpace(qubits=2)
+    number = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
+    parity_cancellation = space.qubit.x(0) * space.qubit.x(1) + space.qubit.y(
+        0
+    ) * space.qubit.y(1)
+    sector = number.sector(0)
+    restricted = parity_cancellation.restrict_charge(sector)
+    np.testing.assert_array_equal(restricted.dense(), np.zeros((1, 1)))
+    assert restricted.mvp_plan().transition_count == 0
 
 
 def test_restricted_fermion_and_boson_transitions_are_exact() -> None:

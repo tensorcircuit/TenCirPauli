@@ -1,5 +1,6 @@
 //! Pure Rust Pauli algebra and deterministic structural utilities.
 
+mod charge;
 mod circuit_ir;
 mod error;
 mod gate;
@@ -15,6 +16,10 @@ mod symmetry;
 mod u1_circuit;
 mod word;
 
+pub use charge::{
+    compile_charge_transitions, ChargeTransitionLayout, ChargeTransitionResult,
+    ChargeTransitionTerm,
+};
 pub use circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode, CIRCUIT_SCHEMA_VERSION};
 pub use error::PauliError;
 pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};

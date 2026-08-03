@@ -381,7 +381,7 @@ class MajoranaOperator:
         from .mapping import FermionQubitMapping
 
         plan = (
-            FermionQubitMapping.from_name(mapping, self.n_modes)
+            FermionQubitMapping.from_name(mapping, self.n_modes, max_bytes=max_bytes)
             if isinstance(mapping, str)
             else mapping
         )
@@ -403,7 +403,7 @@ class MajoranaOperator:
         from .structured import _with_plan_metadata
 
         plan = (
-            FermionQubitMapping.from_name(mapping, self.n_modes)
+            FermionQubitMapping.from_name(mapping, self.n_modes, max_bytes=max_bytes)
             if isinstance(mapping, str)
             else mapping
         )

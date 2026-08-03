@@ -143,6 +143,26 @@ def charge_mvp_apply(
     state: object,
     max_bytes: int,
 ) -> object: ...
+def charge_compile_transitions(
+    dimension: int,
+    basis: object,
+    local_dimensions: Sequence[int],
+    fermion_positions: Sequence[int],
+    boson_positions: Sequence[int],
+    qubit_positions: Sequence[int],
+    qudit_positions: Sequence[int],
+    fermion_creation: object,
+    fermion_annihilation: object,
+    boson_blocks: object,
+    qubit_codes: object,
+    mapped_present: Sequence[bool],
+    mapped_codes: object,
+    qudit_present: Sequence[bool],
+    qudit_triples: object,
+    coefficients: object,
+    qudit_dimension: int,
+    max_bytes: int,
+) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 
 class NativeMvpPlan:
     @property

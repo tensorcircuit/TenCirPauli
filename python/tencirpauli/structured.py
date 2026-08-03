@@ -1305,7 +1305,9 @@ class _StructuredOperator:
         if mapping != "jordan_wigner":
             from .mapping import FermionQubitMapping
 
-            plan = FermionQubitMapping.from_name(mapping, self.space.fermions)
+            plan = FermionQubitMapping.from_name(
+                mapping, self.space.fermions, max_bytes=max_bytes
+            )
             if self.space.fermions == 0:
                 return self
             if not isinstance(self, HybridOperator):
@@ -2225,7 +2227,7 @@ class FermionOperator(_StructuredOperator):
             from .mapping import FermionQubitMapping
 
             return FermionQubitMapping.from_name(
-                mapping, self.space.fermions
+                mapping, self.space.fermions, max_bytes=max_bytes
             ).map_fermion_operator(self, max_bytes=max_bytes)
         creation, annihilation, real, imaginary = _fermion_arrays(self)
         structures, mapped_real, mapped_imaginary = (

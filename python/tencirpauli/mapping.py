@@ -13,7 +13,11 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 
-from .hamiltonian import DEFAULT_MAX_BYTES
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    _check_allocation,
+    _validate_max_bytes,
+)
 from .pauli import PauliOperator
 from .structured import _PAULI_PRODUCT, HybridOperator, _Term
 
@@ -27,6 +31,13 @@ def _exact_nonnegative(value: object, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return int(value)
+
+
+def _mapping_plan_upper_bound(n_modes: int) -> int:
+    """Return a checked-before-allocation upper bound for one mapping plan."""
+    matrix_bytes = 2 * n_modes * n_modes
+    cnot_bytes = 16 * n_modes * (n_modes - 1) // 2
+    return matrix_bytes + cnot_bytes + 256
 
 
 def _validate_matrix(
@@ -160,10 +171,17 @@ class FermionQubitMapping:
         mapping_name: str,
         n_modes: int,
         encoding: Tuple[Tuple[int, ...], ...],
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         n_modes = _exact_nonnegative(n_modes, "n_modes")
         if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError("unsupported fermion-to-qubit mapping")
+        _validate_max_bytes(max_bytes)
+        _check_allocation(
+            _mapping_plan_upper_bound(n_modes),
+            max_bytes,
+            "fermion mapping plan",
+        )
         matrix = _validate_matrix(encoding, n_modes)
         inverse = _gf2_inverse(matrix)
         cnot_operations = _canonical_cnot_operations(matrix)
@@ -194,30 +212,70 @@ class FermionQubitMapping:
         object.__setattr__(self, name, value)
 
     @classmethod
-    def _build(cls, mapping_name: str, n_modes: int) -> "FermionQubitMapping":
-        return cls(mapping_name, n_modes, _mapping_matrix(mapping_name, n_modes))
+    def _build(
+        cls,
+        mapping_name: str,
+        n_modes: int,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionQubitMapping":
+        normalized_modes = _exact_nonnegative(n_modes, "n_modes")
+        if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
+            raise ValueError("unsupported fermion-to-qubit mapping")
+        _validate_max_bytes(max_bytes)
+        _check_allocation(
+            _mapping_plan_upper_bound(normalized_modes),
+            max_bytes,
+            "fermion mapping plan",
+        )
+        return cls(
+            mapping_name,
+            normalized_modes,
+            _mapping_matrix(mapping_name, normalized_modes),
+            max_bytes=max_bytes,
+        )
 
     @classmethod
-    def jordan_wigner(cls, n_modes: int) -> "FermionQubitMapping":
+    def jordan_wigner(
+        cls,
+        n_modes: int,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionQubitMapping":
         """Build the identity occupation encoding used by Jordan-Wigner."""
-        return cls._build("jordan_wigner", n_modes)
+        return cls._build("jordan_wigner", n_modes, max_bytes=max_bytes)
 
     @classmethod
-    def parity(cls, n_modes: int) -> "FermionQubitMapping":
+    def parity(
+        cls,
+        n_modes: int,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionQubitMapping":
         """Build the prefix-parity occupation encoding."""
-        return cls._build("parity", n_modes)
+        return cls._build("parity", n_modes, max_bytes=max_bytes)
 
     @classmethod
-    def bravyi_kitaev(cls, n_modes: int) -> "FermionQubitMapping":
+    def bravyi_kitaev(
+        cls,
+        n_modes: int,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionQubitMapping":
         """Build the frozen Fenwick-interval Bravyi-Kitaev encoding."""
-        return cls._build("bravyi_kitaev", n_modes)
+        return cls._build("bravyi_kitaev", n_modes, max_bytes=max_bytes)
 
     @classmethod
-    def from_name(cls, name: str, n_modes: int) -> "FermionQubitMapping":
+    def from_name(
+        cls,
+        name: str,
+        n_modes: int,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionQubitMapping":
         """Build a plan from a stable mapping name."""
         if not isinstance(name, str):
             raise TypeError("mapping name must be a string")
-        return cls._build(name, n_modes)
+        return cls._build(name, n_modes, max_bytes=max_bytes)
 
     @property
     def name(self) -> str:
@@ -298,12 +356,23 @@ class FermionQubitMapping:
         )
         return transformed + tuple(codes[prefix_length:]), phase
 
-    def map_pauli(self, operator: PauliOperator) -> PauliOperator:
+    def map_pauli(
+        self,
+        operator: PauliOperator,
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> PauliOperator:
         """Conjugate a pure fermion-axis Pauli operator by the encoding CNOTs."""
         if not isinstance(operator, PauliOperator):
             raise TypeError("map_pauli expects a PauliOperator")
         if operator.nqubits != self.n_modes:
             raise ValueError("mapping plan and Pauli qubit count are incompatible")
+        _validate_max_bytes(max_bytes)
+        _check_allocation(
+            max(1, len(operator.terms)) * (self.n_modes + 4) * 16,
+            max_bytes,
+            "mapped Pauli operator",
+        )
         return PauliOperator.from_terms(
             self.n_modes,
             (
@@ -326,7 +395,7 @@ class FermionQubitMapping:
         if operator.space.fermions != self.n_modes:
             raise ValueError("mapping plan and fermion mode counts are incompatible")
         jordan_wigner = operator.map_fermions("jordan_wigner", max_bytes=max_bytes)
-        return self.map_pauli(jordan_wigner)
+        return self.map_pauli(jordan_wigner, max_bytes=max_bytes)
 
     def map_hybrid(
         self, operator: HybridOperator, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -338,6 +407,13 @@ class FermionQubitMapping:
             raise ValueError("mapping plan and fermion axis counts are incompatible")
         jordan_wigner = operator.map_fermions("jordan_wigner", max_bytes=max_bytes)
         if isinstance(jordan_wigner, PauliOperator):
+            _check_allocation(
+                max(1, len(jordan_wigner.terms))
+                * (operator.space.fermions + len(operator.space._axes) + 4)
+                * 16,
+                max_bytes,
+                "mapped hybrid Pauli operator",
+            )
             return PauliOperator.from_terms(
                 jordan_wigner.nqubits,
                 (

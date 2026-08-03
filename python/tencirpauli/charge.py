@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import cmath
 import math
 from typing import (
     Any,
     Dict,
-    Iterable,
     List,
     Mapping,
     Optional,
@@ -577,7 +575,7 @@ class ChargeSector:
             "charge-sector basis states",
         )
         values: np.ndarray[Any, Any] = np.asarray(
-            [self.unrank(index) for index in range(self.dimension)], dtype=np.int64
+            [self.unrank(index) for index in range(self.dimension)], dtype=np.uint64
         ).reshape((self.dimension, axis_count))
         values.setflags(write=False)
         return values
@@ -675,94 +673,6 @@ class ChargeMvpPlan:
         return self.apply(state)
 
 
-def _pauli_action(
-    values: List[int],
-    codes: Sequence[int],
-    axis_positions: Mapping[Tuple[str, int], int],
-) -> complex:
-    phase = 1.0 + 0j
-    for index, code in enumerate(codes):
-        if not code:
-            continue
-        position = axis_positions[("qubit", index)]
-        bit = values[position]
-        if code == 1:
-            values[position] = 1 - bit
-        elif code == 2:
-            values[position] = 1 - bit
-            phase *= 1j if bit == 0 else -1j
-        elif code == 3:
-            phase *= -1.0 if bit else 1.0
-        else:
-            raise ValueError("Pauli code must be in 0..3")
-    return phase
-
-
-def _structured_action(
-    values: Tuple[int, ...],
-    term: _Term,
-    space: OperatorSpace,
-    axis_positions: Mapping[Tuple[str, int], int],
-    local_dimensions: Tuple[int, ...],
-) -> Optional[Tuple[Tuple[int, ...], complex]]:
-    output = list(values)
-    coefficient = term.coefficient
-    if term.fermion is not None:
-        for mode, action in reversed(term.fermion.factors):
-            position = axis_positions[("fermion", mode)]
-            occupied = output[position]
-            parity = (
-                sum(output[axis_positions[("fermion", lower)]] for lower in range(mode))
-                & 1
-            )
-            coefficient *= -1.0 if parity else 1.0
-            if action == "create":
-                if occupied:
-                    return None
-                output[position] = 1
-            else:
-                if not occupied:
-                    return None
-                output[position] = 0
-    if term.boson is not None:
-        for mode, action in reversed(term.boson.factors):
-            position = axis_positions[("boson", mode)]
-            occupation = output[position]
-            if action == "create":
-                if occupation >= local_dimensions[position] - 1:
-                    return None
-                coefficient *= math.sqrt(occupation + 1)
-                output[position] += 1
-            else:
-                if occupation == 0:
-                    return None
-                coefficient *= math.sqrt(occupation)
-                output[position] -= 1
-    if term.mapped_fermion is not None:
-        coefficient *= _pauli_action(output, term.mapped_fermion, axis_positions)
-    if term.qubit:
-        coefficient *= _pauli_action(output, term.qubit, axis_positions)
-    if term.qudit is not None:
-        dimension = term.qudit.dimension
-        omega = cmath.exp(2j * math.pi / dimension)
-        for site, a, b in term.qudit.triples:
-            position = axis_positions[("qudit", site)]
-            input_value = output[position]
-            coefficient *= omega ** (b * input_value)
-            output[position] = (input_value + a) % dimension
-    return tuple(output), coefficient
-
-
-def _pauli_operator_action(
-    values: Tuple[int, ...],
-    codes: Sequence[int],
-    axis_positions: Mapping[Tuple[str, int], int],
-) -> Tuple[Tuple[int, ...], complex]:
-    output = list(values)
-    phase = _pauli_action(output, codes, axis_positions)
-    return tuple(output), phase
-
-
 class ChargeRestrictedOperator:
     """Exact action of a conserved structured/Pauli operator in one sector."""
 
@@ -836,6 +746,11 @@ class ChargeRestrictedOperator:
     ) -> np.ndarray[Any, Any]:
         return self._plan.apply(state, max_bytes=max_bytes)
 
+    @property
+    def estimated_bytes(self) -> int:
+        """Return the immutable transition-array storage estimate."""
+        return self._plan.estimated_bytes
+
     def mvp_plan(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> ChargeMvpPlan:
@@ -898,56 +813,128 @@ def _compile_restricted_transitions(
         (axis.domain, axis.index): position
         for position, axis in enumerate(sector.space._axes)
     }
-    transitions: Dict[Tuple[int, int], complex] = {}
-    for column in range(sector.dimension):
-        occupations = sector.unrank(column)
-        if isinstance(operator, PauliOperator):
-            term_values: Iterable[Tuple[Tuple[int, ...], complex]] = (
-                _pauli_operator_action(
-                    occupations,
-                    term.word.to_codes(),
-                    axis_positions,
-                )
-                for term in operator.terms
-            )
-        else:
-            term_values = (
-                action
-                for term in operator._terms
-                for action in (
-                    _structured_action(
-                        occupations,
-                        term,
-                        sector.space,
-                        axis_positions,
-                        sector.local_dimensions,
-                    ),
-                )
-                if action is not None
-            )
-        for destination, coefficient in term_values:
-            try:
-                row = sector.rank(destination)
-            except ValueError as error:
+    basis = sector.basis_states(max_bytes=max_bytes)
+    _check_allocation(int(basis.nbytes), max_bytes, "charge restricted basis workspace")
+    if max_bytes is None:
+        remaining: Optional[int] = None
+    else:
+        if basis.nbytes > max_bytes:
+            raise MemoryError("charge restricted basis workspace exceeds max_bytes")
+        remaining = max_bytes - int(basis.nbytes)
+
+    fermion_positions = [
+        axis_positions[("fermion", index)] for index in range(sector.space.fermions)
+    ]
+    boson_positions = [
+        axis_positions[("boson", index)] for index in range(sector.space.bosons)
+    ]
+    qubit_positions = [
+        axis_positions[("qubit", index)] for index in range(sector.space.qubits)
+    ]
+    qudit_positions = [
+        axis_positions[("qudit", index)] for index in range(len(sector.space.qudits))
+    ]
+    term_count = (
+        len(operator.terms)
+        if isinstance(operator, PauliOperator)
+        else operator.term_count
+    )
+    fermion_creation: List[List[int]] = []
+    fermion_annihilation: List[List[int]] = []
+    boson_blocks: List[List[Tuple[int, int, int]]] = []
+    qubit_codes: List[List[int]] = []
+    mapped_present: List[bool] = []
+    mapped_codes: List[List[int]] = []
+    qudit_present: List[bool] = []
+    qudit_triples: List[List[Tuple[int, int, int]]] = []
+    coefficients: List[complex] = []
+    if isinstance(operator, PauliOperator):
+        for pauli_term in operator.terms:
+            fermion_creation.append([])
+            fermion_annihilation.append([])
+            boson_blocks.append([])
+            qubit_codes.append(list(pauli_term.word.to_codes()))
+            mapped_present.append(False)
+            mapped_codes.append([0] * sector.space.fermions)
+            qudit_present.append(False)
+            qudit_triples.append([])
+            coefficients.append(pauli_term.coefficient)
+    else:
+        for structured_term in operator._terms:
+            if (
+                structured_term.fermion is not None
+                and structured_term.mapped_fermion is not None
+            ):
                 raise ValueError(
-                    "operator is not exactly conserved on the selected charge sector"
-                ) from error
-            key = (row, column)
-            transitions[key] = transitions.get(key, 0j) + coefficient
-        _check_allocation(
-            len(transitions) * 40,
-            max_bytes,
-            "charge restricted transition plan",
-        )
-    ordered = tuple(
-        (row, column, coefficient)
-        for (row, column), coefficient in sorted(transitions.items())
-        if coefficient.real != 0.0 or coefficient.imag != 0.0
+                    "cannot restrict a term containing both raw and mapped fermion factors"
+                )
+            fermion_creation.append(
+                list(structured_term.fermion.creation_modes)
+                if structured_term.fermion is not None
+                else []
+            )
+            fermion_annihilation.append(
+                list(structured_term.fermion.annihilation_modes)
+                if structured_term.fermion is not None
+                else []
+            )
+            boson_blocks.append(
+                list(structured_term.boson.blocks)
+                if structured_term.boson is not None
+                else []
+            )
+            qubit_codes.append(list(structured_term.qubit))
+            mapped_present.append(structured_term.mapped_fermion is not None)
+            mapped_codes.append(
+                list(structured_term.mapped_fermion)
+                if structured_term.mapped_fermion is not None
+                else [0] * sector.space.fermions
+            )
+            qudit_present.append(structured_term.qudit is not None)
+            qudit_triples.append(
+                list(structured_term.qudit.triples)
+                if structured_term.qudit is not None
+                else []
+            )
+            coefficients.append(structured_term.coefficient)
+    if len(coefficients) != term_count:
+        raise RuntimeError("restricted transition term serialization is inconsistent")
+    coefficient_array = np.ascontiguousarray(coefficients, dtype=np.complex128)
+    basis_array = np.ascontiguousarray(basis, dtype=np.uint64)
+    _check_allocation(
+        int(coefficient_array.nbytes),
+        remaining,
+        "charge restricted coefficient workspace",
+    )
+    if remaining is None:
+        native_limit: Optional[int] = None
+    else:
+        native_limit = remaining - int(coefficient_array.nbytes)
+    rows, columns, real, imaginary = _native.charge_compile_transitions(
+        sector.dimension,
+        basis_array,
+        list(sector.local_dimensions),
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        fermion_creation,
+        fermion_annihilation,
+        boson_blocks,
+        qubit_codes,
+        mapped_present,
+        mapped_codes,
+        qudit_present,
+        qudit_triples,
+        coefficient_array,
+        sector.space.qudits[0] if sector.space.qudits else 0,
+        _effective_max_bytes(native_limit),
     )
     return (
-        np.asarray([item[0] for item in ordered], dtype=np.intp),
-        np.asarray([item[1] for item in ordered], dtype=np.intp),
-        np.asarray([item[2] for item in ordered], dtype=np.complex128),
+        np.asarray(rows, dtype=np.intp),
+        np.asarray(columns, dtype=np.intp),
+        np.asarray(real, dtype=np.float64)
+        + 1j * np.asarray(imaginary, dtype=np.float64),
     )
 
 

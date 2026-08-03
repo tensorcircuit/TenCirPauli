@@ -179,6 +179,15 @@ def test_majorana_mapping_and_reusable_plan_metadata() -> None:
     assert compiled.basis_ordering == "qubit0_msb_matrix"
 
 
+def test_mapping_plan_and_mapped_output_honor_memory_limits() -> None:
+    with pytest.raises(MemoryError):
+        tcp.FermionQubitMapping.parity(8, max_bytes=1)
+    plan = tcp.FermionQubitMapping.bravyi_kitaev(2)
+    operator = tcp.FermionOperator.from_terms(2, [(((0, "create"),), 1.0)])
+    with pytest.raises(MemoryError):
+        plan.map_fermion_operator(operator, max_bytes=1)
+
+
 def test_hybrid_mapping_replaces_only_fermion_axes() -> None:
     space = tcp.OperatorSpace(fermions=2, bosons=1, qubits=1)
     operator = (
