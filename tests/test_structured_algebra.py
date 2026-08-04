@@ -1,4 +1,4 @@
-"""Independent small-system checks for the Phase 7 structured algebra slice."""
+"""Independent small-system checks for the structured algebra slice."""
 
 from __future__ import annotations
 

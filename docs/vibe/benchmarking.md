@@ -12,7 +12,7 @@ Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `Paul
 
 `python benchmarks/run.py record` 为每次运行生成唯一 label，并保存 Git commit、dirty 状态、UTC 时间、平台与工具版本。Criterion baseline、pytest-benchmark JSON 和 manifest 使用同一 label；`python benchmarks/run.py compare <label>` 在当前代码上重新测量并分别输出 Rust 与 Python 的历史对比。
 
-Phase 7 的完整 focused release handoff 使用 `python benchmarks/run.py record --suite phase7 --label <label>`，只运行 `benchmarks/python/test_phase7_structured_benchmark.py`，并保留统一 manifest/pytest-benchmark schema；`all`/`python` suite 仍用于全仓库历史测量。这样可避免与未参与 Phase 7 的 optional large benchmark skip 共同触发 pytest-benchmark 的空样本序列化问题。
+Phase 7 的完整 focused release handoff 使用 `python benchmarks/run.py record --suite phase7 --label <label>`，只运行 `benchmarks/python/test_structured_algebra_benchmark.py`，并保留统一 manifest/pytest-benchmark schema；`all`/`python` suite 仍用于全仓库历史测量。这样可避免与未参与 Phase 7 的 optional large benchmark skip 共同触发 pytest-benchmark 的空样本序列化问题。
 
 提交 hook 默认调用 `python scripts/check.py --benchmark smoke`：Rust benchmark 只执行 `cargo bench -- --test` 的 harness/build 检查，Python benchmark 排除 `performance_large` 标记，因此不会在每次 commit 中重复完整 release measurement。完整 release record 是显式的性能检查，使用 `python scripts/check.py --benchmark record`；若希望某一次 commit 同时执行，可使用 `TENCIRPAULI_PRE_COMMIT_BENCHMARK=record git commit ...`。`TENCIRPAULI_PRE_COMMIT_BENCHMARK=skip` 或 `scripts/check.py --benchmark skip` 仅跳过 benchmark，不跳过格式、lint、typing、Rust/Python tests 和 release extension build；hook 只接受 `smoke`、`record`、`skip` 三种值。
 

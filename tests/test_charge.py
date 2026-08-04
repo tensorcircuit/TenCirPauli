@@ -1,4 +1,4 @@
-"""Independent charge, sector, and restricted-basis checks for Phase 7.5."""
+"""Independent charge, sector, and restricted-basis checks."""
 
 from __future__ import annotations
 

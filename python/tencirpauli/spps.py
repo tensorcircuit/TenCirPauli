@@ -61,7 +61,13 @@ class SPPSValueEstimate:
 
 
 class SPPSEngine:
-    """Reusable Rust-native stochastic Pauli-path value-and-gradient handle."""
+    """Reusable Rust-native stochastic Pauli-path estimation handle.
+
+    Fixed-budget estimates use independent replicates and report a standard
+    error for the sampled path distribution. Adaptive estimates add samples in
+    cumulative rounds until the requested gradient error proxy is reached or
+    the maximum budget is exhausted.
+    """
 
     def __init__(
         self,
@@ -133,7 +139,18 @@ class SPPSEngine:
         samples_per_term: int,
         seed: int,
     ) -> SPPSValueEstimate:
-        """Estimate only the value without computing a gradient."""
+        """Estimate the expectation value without computing a gradient.
+
+        Args:
+            parameters: Finite runtime values for all circuit parameter slots.
+            samples_per_term: Fixed path budget per observable term; must be at
+                least two.
+            seed: Non-negative unsigned 64-bit random seed.
+
+        Returns:
+            A value estimate containing the standard error, replicate budgets,
+            total sampled paths, and effective seed.
+        """
         budget = self._budget(samples_per_term, "samples_per_term")
         normalized_seed = self._seed(seed)
         value, standard_error, replicates, budgets, total_paths, result_seed = (
@@ -157,7 +174,12 @@ class SPPSEngine:
         samples_per_term: int,
         seed: int,
     ) -> SPPSEstimate:
-        """Estimate value and all slot gradients with one fixed budget."""
+        """Estimate the value and all parameter gradients with one fixed budget.
+
+        The returned gradient is a read-only float64 vector indexed by runtime
+        parameter slot. The estimate also includes a value standard error and
+        a gradient error proxy when the native estimator provides one.
+        """
         budget = self._budget(samples_per_term, "samples_per_term")
         normalized_seed = self._seed(seed)
         result = self._native.value_and_grad(
@@ -174,7 +196,13 @@ class SPPSEngine:
         gradient_tolerance: float,
         seed: int,
     ) -> SPPSEstimate:
-        """Estimate with two independently seeded cumulative A/B replicates."""
+        """Estimate value and gradients with an adaptive sample budget.
+
+        Sampling starts at ``initial_samples_per_term`` and grows up to
+        ``max_samples_per_term`` until ``gradient_tolerance`` is met. The
+        returned ``converged`` flag distinguishes tolerance convergence from
+        exhaustion of the maximum budget.
+        """
         initial = self._budget(initial_samples_per_term, "initial_samples_per_term")
         maximum = self._budget(max_samples_per_term, "max_samples_per_term")
         if maximum < initial:

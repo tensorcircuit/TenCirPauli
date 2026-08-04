@@ -1,4 +1,4 @@
-"""Matched end-to-end Phase 4 comparisons against TensorCircuit/JAX.
+"""Matched end-to-end comparisons against TensorCircuit/JAX.
 
 The TensorCircuit SPPS side intentionally imports the repository's
 ``examples/spps_pauli_path_vqe.py`` implementation.  Both reference calls are

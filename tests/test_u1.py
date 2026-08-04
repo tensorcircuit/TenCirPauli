@@ -1,4 +1,4 @@
-"""Independent big-int and sparse differential tests for the Phase 5 U1 engine."""
+"""Independent big-int and sparse differential tests for the U1 engine."""
 
 from __future__ import annotations
 

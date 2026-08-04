@@ -20,7 +20,7 @@ The current `implementation-status.md:7,16,56-58,206` correctly keeps Phase 7 un
 | --- | --- | --- |
 | Original C2 embedding invariants | PASS | Explicit maps are validated before the fast path; map names, exact integer indices, complete coverage, injectivity, target ranges, qudit dimensions, canonical sorting, and fermionic permutation signs are handled in `python/tencirpauli/structured.py:585-751`. |
 | Original M2 matrix-free native structured MVP | PASS | `StructuredMvpPlan` stores local operations and coefficients rather than COO transitions in `crates/tencir-pauli-core/src/structured.rs:1338-1479`; focused dense/MVP equivalence passes. |
-| Original M3 finite-boson numeric consistency | PASS | Ladder amplitudes use representable square-root recurrences and dense/sparse targets agree at the reviewed `(b†)^171` boundary; `tests/test_phase7_structured.py:326-332` passes. |
+| Original M3 finite-boson numeric consistency | PASS | Ladder amplitudes use representable square-root recurrences and dense/sparse targets agree at the reviewed `(b†)^171` boundary; `tests/test_structured_algebra.py:326-332` passes. |
 | Original M5 repeated Pauli builder product | PASS | Local Pauli factors are multiplied in input order with their phase in `python/tencirpauli/structured.py:2152-2169`; the `X*Y=iZ` regression passes. |
 | Original M6 production coarse-FFI path | PASS with cleanup observation | Adjoint and tensor product no longer cross PyO3 per term, and finite compilation dispatches to native kernels. An unused Python transition implementation remains as MINOR N1. |
 | Original N1/N2 validation and signatures | PASS | `OperatorSpace` enforces `d <= u32::MAX`, and boson/qudit public compile methods reject irrelevant mapping keywords through explicit signatures. |
@@ -36,7 +36,7 @@ The current `implementation-status.md:7,16,56-58,206` correctly keeps Phase 7 un
 
 ### C1. Partially mapped hybrid multiplication still corrupts raw-left/mapped-right operator order
 
-Locations: `crates/tencir-pauli-core/src/structured.rs:82-145,675-728` and `tests/test_phase7_structured.py:290-300`.
+Locations: `crates/tencir-pauli-core/src/structured.rs:82-145,675-728` and `tests/test_structured_algebra.py:290-300`.
 
 The remediation now preserves an existing mapped Pauli factor when `map_fermions()` expands a remaining raw fermion word, but it always evaluates the final product as `base_mapped * newly_mapped_raw` at `structured.rs:695-701`. Hybrid multiplication separately combines all raw fermion factors at `structured.rs:102-105` and all mapped factors at `structured.rs:110-111`; the term representation does not retain whether a mapped factor originally appeared before or after a raw fermion factor. It therefore cannot represent the general product `(M_left F_left)(M_right F_right)` as one unordered pair of `mapped_codes` and raw `fermion` data.
 
@@ -121,9 +121,9 @@ Resolution path:
 
 ### M3. The frozen Phase 7 correctness and property matrix remains incomplete
 
-Locations: `tests/test_phase7_structured.py:81-353`; contract: `docs/vibe/phase-7-spec.md:440-455,493-521`.
+Locations: `tests/test_structured_algebra.py:81-353`; contract: `docs/vibe/phase-7-spec.md:440-455,493-521`.
 
-The focused file has increased from 13 to 18 passing tests, but the additions are narrow regressions rather than the required acceptance matrix. The direct-Weyl parameterized test at `tests/test_phase7_structured.py:112-130` checks one monomial against dense/COO/CSR/native MVP. It does not test Weyl multiplication phases, adjoint, commutation, Hermiticity, modular properties, or coefficient aggregation. The backend test at `tests/test_phase7_structured.py:335-353` covers only TensorCircuit NumPy, `d=3`, one coefficient set, and one two-site layout; JAX, `d=4/5/6`, coefficient override, JIT-compatible execution, and invalid-dimension boundaries are absent.
+The focused file has increased from 13 to 18 passing tests, but the additions are narrow regressions rather than the required acceptance matrix. The direct-Weyl parameterized test at `tests/test_structured_algebra.py:112-130` checks one monomial against dense/COO/CSR/native MVP. It does not test Weyl multiplication phases, adjoint, commutation, Hermiticity, modular properties, or coefficient aggregation. The backend test at `tests/test_structured_algebra.py:335-353` covers only TensorCircuit NumPy, `d=3`, one coefficient set, and one two-site layout; JAX, `d=4/5/6`, coefficient override, JIT-compatible execution, and invalid-dimension boundaries are absent.
 
 Other missing gates include property-based CAR/CCR/Weyl identities, both partial-mapping operand orders, complete embedding permutation vectors, multiple-cutoff reuse, deterministic structural replay across supported Rayon thread counts, explicit `max_bytes=None`, plan-metadata invariants, and checked direct-Weyl dimension overflow.
 
@@ -137,7 +137,7 @@ Resolution path:
 
 ### M4. The release benchmark handoff is still not an accepted record and lacks required workloads/metadata
 
-Locations: `benchmarks/python/test_phase7_structured_benchmark.py:15-338`, `.benchmarks/runs/phase7-remediation-20260803.json:1-25`, and `docs/vibe/phase-7-spec.md:457-472,523-531`.
+Locations: `benchmarks/python/test_structured_algebra_benchmark.py:15-338`, `.benchmarks/runs/phase7-remediation-20260803.json:1-25`, and `docs/vibe/phase-7-spec.md:457-472,523-531`.
 
 A clean focused pytest-benchmark JSON exists for commit `2b0f0dc`, but the official harness manifest `phase7-remediation-20260803` is marked `"status": "failed"`. It therefore does not satisfy the P5 requirement for a completed clean release record through the benchmark harness.
 
@@ -169,7 +169,7 @@ Resolution path:
 
 ### N1. Dead Python finite-transition code and stale adaptive labels remain after the native-kernel cleanup
 
-Locations: `python/tencirpauli/structured.py:2394-2550` and `benchmarks/python/test_phase7_structured_benchmark.py:106-116,181-182,211,241`.
+Locations: `python/tencirpauli/structured.py:2394-2550` and `benchmarks/python/test_structured_algebra_benchmark.py:106-116,181-182,211,241`.
 
 `_finite_entries()` and its transition helpers are no longer called by production compilation, but the duplicate numerical implementation remains in the runtime module. Benchmark case names such as `small_python`, `medium_rust`, and descriptions of adaptive dispatch are now misleading because `native_mvp`, dense, and sparse structured targets use the native kernels. Remove the dead runtime implementation after preserving any needed logic as an explicitly independent test reference, and rename benchmark cases by workload size rather than an obsolete dispatch strategy.
 
@@ -204,7 +204,7 @@ Locations: `python/tencirpauli/structured.py:2394-2550` and `benchmarks/python/t
 ## Validation performed
 
 - `conda run -p .conda maturin develop --release --locked` — passed on the reviewed commit.
-- `conda run -p .conda pytest -q tests/test_phase7_structured.py` — 18 passed.
+- `conda run -p .conda pytest -q tests/test_structured_algebra.py` — 18 passed.
 - `conda run -p .conda python scripts/check.py --benchmark smoke` — passed formatting, Clippy, Ruff, strict mypy, 31 Rust tests, release build, 206 Python tests, Rust benchmark smoke, and 158 selected Python benchmark-smoke cases.
 - `conda run -p .conda python examples/structured_algebra.py` — passed and printed `structured targets agree`.
 - Independent read-only probes reproduced C1 with maximum dense error `1.4142135623730951`, reproduced the canonical 40-creation false memory rejection at 211,106,232,532,992 estimated bytes, and reproduced direct-Weyl platform-index wrap for `3**50`.

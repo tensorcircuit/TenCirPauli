@@ -153,7 +153,13 @@ def _mapping_matrix(name: str, n_modes: int) -> Tuple[Tuple[int, ...], ...]:
 
 
 class FermionQubitMapping:
-    """Immutable occupation-encoding plan for JW, parity, or BK mapping."""
+    """Immutable occupation-encoding plan for JW, parity, or BK mapping.
+
+    The plan maps ``n_modes`` fermion occupations to the same number of qubits
+    over GF(2), and stores the inverse transform plus a deterministic CNOT
+    synthesis. Public mapped operators use mode-zero-increasing ordering and
+    the ``qubit0_msb_matrix`` basis convention.
+    """
 
     __slots__ = (
         "_clifford_operations",
@@ -286,7 +292,11 @@ class FermionQubitMapping:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionQubitMapping":
-        """Build the identity occupation encoding used by Jordan-Wigner."""
+        """Build the identity occupation encoding used by Jordan-Wigner.
+
+        ``n_modes`` determines both the fermion-mode and qubit counts.
+        ``max_bytes`` guards the mapping matrices and native plan workspace.
+        """
         return cls._build("jordan_wigner", n_modes, max_bytes=max_bytes)
 
     @classmethod
@@ -306,7 +316,7 @@ class FermionQubitMapping:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionQubitMapping":
-        """Build the frozen Fenwick-interval Bravyi-Kitaev encoding."""
+        """Build the deterministic Fenwick-interval Bravyi-Kitaev encoding."""
         return cls._build("bravyi_kitaev", n_modes, max_bytes=max_bytes)
 
     @classmethod
@@ -317,7 +327,7 @@ class FermionQubitMapping:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionQubitMapping":
-        """Build a plan from a stable mapping name."""
+        """Build a mapping plan from ``jordan_wigner``, ``parity``, or ``bravyi_kitaev``."""
         if not isinstance(name, str):
             raise TypeError("mapping name must be a string")
         return cls._build(name, n_modes, max_bytes=max_bytes)
@@ -334,26 +344,34 @@ class FermionQubitMapping:
 
     @property
     def encoding_matrix(self) -> np.ndarray[Any, Any]:
-        """Read-only binary matrix ``q = B n (mod 2)``."""
+        """Return the read-only binary matrix for ``q = B n (mod 2)``."""
         return self._encoding
 
     @property
     def inverse_encoding_matrix(self) -> np.ndarray[Any, Any]:
-        """Read-only inverse binary occupation transform."""
+        """Return the read-only inverse transform from qubits to occupations."""
         return self._inverse_encoding
 
     @property
     def cnot_operations(self) -> Tuple[Tuple[int, int], ...]:
-        """Canonical ``(control, target)`` provenance for the linear transform."""
+        """Return deterministic ``(control, target)`` CNOT provenance."""
         return self._cnot_operations
 
     @property
     def clifford_operations(self) -> np.ndarray[Any, Any]:
-        """Read-only CNOT array in deterministic synthesis order."""
+        """Return the read-only CNOT array in synthesis order."""
         return self._clifford_operations
 
     def encode_occupation(self, occupation: Sequence[int]) -> Tuple[int, ...]:
-        """Encode one occupation vector with the frozen GF(2) convention."""
+        """Encode one binary occupation vector with the frozen GF(2) convention.
+
+        Args:
+            occupation: Length-``n_modes`` sequence containing only ``0`` and
+                ``1``.
+
+        Returns:
+            The encoded length-``nqubits`` binary vector.
+        """
         values = tuple(occupation)
         if len(values) != self.n_modes or any(value not in (0, 1) for value in values):
             raise ValueError("occupation must be a binary vector of length n_modes")
@@ -409,7 +427,11 @@ class FermionQubitMapping:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> PauliOperator:
-        """Conjugate a pure fermion-axis Pauli operator by the encoding CNOTs."""
+        """Conjugate a pure fermion-axis Pauli operator by the mapping CNOTs.
+
+        The returned operator has ``n_modes`` qubits, exact conjugation signs,
+        deterministic term ordering, and aggregated duplicate words.
+        """
         if not isinstance(operator, PauliOperator):
             raise TypeError("map_pauli expects a PauliOperator")
         if operator.nqubits != self.n_modes:
@@ -444,7 +466,20 @@ class FermionQubitMapping:
     def map_fermion_operator(
         self, operator: Any, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> PauliOperator:
-        """Map a pure :class:`FermionOperator` through one batched JW result."""
+        """Map a pure ``FermionOperator`` to a canonical Pauli operator.
+
+        Fermion ladder products are expanded through one batched Jordan-Wigner
+        path and then conjugated by this mapping's encoding.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> number = tcp.FermionOperator.from_terms(
+            ...     1, [(((0, "create"), (0, "annihilate")), 1.0)]
+            ... )
+            >>> mapped = tcp.FermionQubitMapping.jordan_wigner(1).map_fermion_operator(number)
+            >>> mapped.nqubits
+            1
+        """
         from .structured import FermionOperator
 
         if not isinstance(operator, FermionOperator):
@@ -457,7 +492,11 @@ class FermionQubitMapping:
     def map_majorana_operator(
         self, operator: Any, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> PauliOperator:
-        """Map a Majorana operator without materializing a fermion expansion."""
+        """Map a Majorana operator without materializing a fermion expansion.
+
+        This is the preferred path for Majorana input because the native batch
+        kernel aggregates mapped words directly and preserves exact signs.
+        """
         from .majorana import MajoranaOperator
 
         if not isinstance(operator, MajoranaOperator):
@@ -508,7 +547,12 @@ class FermionQubitMapping:
     def map_hybrid(
         self, operator: HybridOperator, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> Union[HybridOperator, PauliOperator]:
-        """Map only fermion axes of a compatible structured hybrid operator."""
+        """Map only the fermion axes of a compatible hybrid operator.
+
+        Boson, qubit, and qudit axes remain in their original operator-space
+        ordering. A pure-qubit result is returned as :class:`PauliOperator`;
+        mixed results remain :class:`HybridOperator`.
+        """
         if not isinstance(operator, HybridOperator):
             raise TypeError("mapping expects a HybridOperator")
         if operator.space.fermions != self.n_modes:

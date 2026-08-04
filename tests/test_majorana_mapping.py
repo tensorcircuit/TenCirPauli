@@ -1,4 +1,4 @@
-"""Independent P0/P1 checks for Phase 7.5 Majorana and mapping contracts."""
+"""Independent checks for Majorana and mapping contracts."""
 
 from __future__ import annotations
 

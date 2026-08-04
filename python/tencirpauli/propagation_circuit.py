@@ -112,7 +112,13 @@ def _operation_from_tape(
 
 
 class PropagationCircuitPlan:
-    """Immutable compiled deterministic propagation facade."""
+    """Immutable compiled facade for a :class:`PropagationCircuit`.
+
+    Dynamic symbolic angles are evaluated once per call and their Jacobian is
+    chained into the native parameter gradient. The plan is invalidated when
+    the source circuit is mutated and should be reused for repeated parameter
+    evaluations.
+    """
 
     def __init__(
         self,
@@ -146,6 +152,7 @@ class PropagationCircuitPlan:
     def expectation(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> float:
+        """Evaluate the compiled circuit and return one real expectation."""
         native, _ = self._native_parameters(parameters)
         return self._engine.expectation(native)
 
@@ -155,6 +162,7 @@ class PropagationCircuitPlan:
         *,
         checkpoint_interval: Optional[int] = None,
     ) -> PropagationValueAndGradient:
+        """Return the expectation and gradient with respect to circuit parameters."""
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad(
             native, checkpoint_interval=checkpoint_interval
@@ -166,18 +174,35 @@ class PropagationCircuitPlan:
     def propagate_operator(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> PauliOperator:
+        """Return the canonical propagated operator for the supplied parameters."""
         native, _ = self._native_parameters(parameters)
         return self._engine.propagate_operator(native)
 
     def profile(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> ProfiledExpectation:
+        """Evaluate the circuit and return the expectation plus profile metadata."""
         native, _ = self._native_parameters(parameters)
         return self._engine.profile(native)
 
 
 class PropagationCircuit:
-    """TensorCircuit-style builder for deterministic Pauli propagation."""
+    """TensorCircuit-style builder for deterministic Pauli propagation.
+
+    Gates are appended in execution order with zero-based wires. Rotation
+    angles may be constants, :class:`Parameter` objects, or arithmetic
+    :class:`ParameterExpr` values. Call :meth:`compile` for repeated use or
+    the convenience evaluation methods for one-off calls.
+
+    Examples:
+        >>> import tencirpauli as tcp
+        >>> circuit = tcp.PropagationCircuit(1)
+        >>> circuit.h(0)
+        >>> observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+        >>> plan = circuit.compile(observable)
+        >>> plan.nqubits
+        1
+    """
 
     def __init__(
         self,
@@ -201,6 +226,7 @@ class PropagationCircuit:
 
     @property
     def nparameters(self) -> int:
+        """Return one plus the largest parameter slot used by the circuit."""
         slots = {
             slot
             for operation in self._operations
@@ -269,48 +295,63 @@ class PropagationCircuit:
         self._cached_plan = None
 
     def x(self, wire: int) -> None:
+        """Append an X gate on ``wire``."""
         self._append("x", (wire,))
 
     def y(self, wire: int) -> None:
+        """Append a Y gate on ``wire``."""
         self._append("y", (wire,))
 
     def z(self, wire: int) -> None:
+        """Append a Z gate on ``wire``."""
         self._append("z", (wire,))
 
     def h(self, wire: int) -> None:
+        """Append a Hadamard gate on ``wire``."""
         self._append("h", (wire,))
 
     def s(self, wire: int) -> None:
+        """Append an S gate on ``wire``."""
         self._append("s", (wire,))
 
     def sdg(self, wire: int) -> None:
+        """Append an inverse-S gate on ``wire``."""
         self._append("sdg", (wire,))
 
     def cnot(self, control: int, target: int) -> None:
+        """Append a directed CNOT from ``control`` to ``target``."""
         self._append("cnot", (control, target))
 
     def cz(self, wire0: int, wire1: int) -> None:
+        """Append a controlled-Z gate on two distinct wires."""
         self._append("cz", (wire0, wire1))
 
     def swap(self, wire0: int, wire1: int) -> None:
+        """Append a SWAP gate on two distinct wires."""
         self._append("swap", (wire0, wire1))
 
     def rx(self, wire: int, theta: Angle = 0.0) -> None:
+        """Append an X rotation; ``theta`` is in radians or symbolic form."""
         self._append("rx", (wire,), theta)
 
     def ry(self, wire: int, theta: Angle = 0.0) -> None:
+        """Append a Y rotation; ``theta`` is in radians or symbolic form."""
         self._append("ry", (wire,), theta)
 
     def rz(self, wire: int, theta: Angle = 0.0) -> None:
+        """Append a Z rotation; ``theta`` is in radians or symbolic form."""
         self._append("rz", (wire,), theta)
 
     def rxx(self, wire0: int, wire1: int, theta: Angle = 0.0) -> None:
+        """Append an X-X rotation; ``theta`` is in radians or symbolic form."""
         self._append("rxx", (wire0, wire1), theta)
 
     def ryy(self, wire0: int, wire1: int, theta: Angle = 0.0) -> None:
+        """Append a Y-Y rotation; ``theta`` is in radians or symbolic form."""
         self._append("ryy", (wire0, wire1), theta)
 
     def rzz(self, wire0: int, wire1: int, theta: Angle = 0.0) -> None:
+        """Append a Z-Z rotation; ``theta`` is in radians or symbolic form."""
         self._append("rzz", (wire0, wire1), theta)
 
     def ptm(
@@ -320,6 +361,7 @@ class PropagationCircuit:
         *,
         name: str | None = None,
     ) -> None:
+        """Append a finite one- or two-qubit real Pauli-transfer matrix."""
         del name
         self._append("ptm", wires, payload=np.asarray(matrix, dtype=np.float64))
 
@@ -376,6 +418,20 @@ class PropagationCircuit:
         max_weight: Optional[int] = None,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> PropagationCircuitPlan:
+        """Compile an observable and circuit into a reusable propagation plan.
+
+        Args:
+            observable: Pauli observable with the same qubit count as the
+                circuit.
+            initial_state: Optional override for the circuit's initial state.
+            max_weight: Optional post-aggregation Pauli-weight projection.
+            max_bytes: Optional best-effort memory bound; the sentinel uses
+                the circuit default.
+
+        Returns:
+            A cached :class:`PropagationCircuitPlan` when the inputs are
+            unchanged, otherwise a newly compiled plan.
+        """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         state = self.initial_state if initial_state is None else initial_state
@@ -411,6 +467,7 @@ class PropagationCircuit:
         max_weight: Optional[int] = None,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> float:
+        """Compile if needed and return one real observable expectation."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -428,6 +485,7 @@ class PropagationCircuit:
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
         checkpoint_interval: Optional[int] = None,
     ) -> PropagationValueAndGradient:
+        """Compile if needed and return the value plus parameter gradient."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -444,6 +502,7 @@ class PropagationCircuit:
         max_weight: Optional[int] = None,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> PauliOperator:
+        """Compile if needed and return the canonical propagated operator."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -460,6 +519,7 @@ class PropagationCircuit:
         max_weight: Optional[int] = None,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> ProfiledExpectation:
+        """Compile if needed and return the expectation plus profile metadata."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -468,6 +528,7 @@ class PropagationCircuit:
         ).profile(parameters)
 
     def to_qir(self) -> list[dict[str, object]]:
+        """Serialize the circuit to deterministic JSON-like gate records."""
         result: list[dict[str, object]] = []
         for operation in self._operations:
             item: dict[str, object] = {
@@ -494,6 +555,12 @@ class PropagationCircuit:
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PropagationCircuit":
+        """Convert a supported TensorCircuit circuit into this facade.
+
+        ``tensorcircuit-ng`` must be installed. ``parameter_order`` fixes the
+        runtime slot order for symbolic circuit parameters; without it, the
+        integration's deterministic order is used.
+        """
         from .integrations.tensorcircuit import gate_tape_from_circuit
 
         converted = gate_tape_from_circuit(circuit, parameter_order=parameter_order)
@@ -519,6 +586,13 @@ class PropagationCircuit:
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PropagationCircuit":
+        """Restore a propagation circuit from QIR gate records.
+
+        ``circuit_params`` must contain ``nqubits`` and may contain a
+        ``parameter_order`` sequence used to resolve symbolic angle values.
+        Unsupported gates, malformed wires, and inconsistent parameter slots
+        raise ``ValueError``.
+        """
         nqubits = circuit_params.get("nqubits")
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
             raise ValueError("circuit_params nqubits must be a non-negative integer")

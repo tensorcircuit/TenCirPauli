@@ -121,7 +121,7 @@ Resolution: make adjoint and tensor product direct canonical transformations wit
 
 ### M7. The P0–P5 handoff is materially incomplete despite the smoke gate passing
 
-Locations: `docs/vibe/phase-7-spec.md:440-472,491-531`, `tests/test_phase7_structured.py:1-287`, and `benchmarks/python/test_phase7_structured_benchmark.py:1-288`.
+Locations: `docs/vibe/phase-7-spec.md:440-472,491-531`, `tests/test_structured_algebra.py:1-287`, and `benchmarks/python/test_structured_algebra_benchmark.py:1-288`.
 
 The current 13 focused tests do not cover direct-Weyl multiplication/adjoint/commutation/Hermiticity, explicit embedding, partial-mapping algebra, uniform-qudit backend MVP, TensorCircuit NumPy/JAX execution, deterministic thread-count outputs, expansion limits, or property-based identities. The benchmark source has no uniform-Weyl chain benchmark, Holstein/spin-boson scaling, aggregation-heavy duplicate workload, guarded expansion case, or required memory/transition/thread/error metadata. `benchmarks/run.py list` contains no Phase 7/HEAD release record.
 
@@ -171,6 +171,6 @@ Boson and qudit operators inherit the generic `**kwargs` compile path and accept
 
 ## Validation performed
 
-- `conda run -p .conda pytest -q tests/test_phase7_structured.py` — 13 passed.
+- `conda run -p .conda pytest -q tests/test_structured_algebra.py` — 13 passed.
 - `conda run -p .conda python scripts/check.py --benchmark smoke` — passed format, Clippy, Ruff, mypy, Rust tests, release build, 201 Python tests, Rust benchmark smoke, and 156 selected Python benchmark-smoke cases.
 - Targeted read-only probes reproduced C1, C2, M1, M3, M5, and the M2 metadata underestimate on the release-built extension.

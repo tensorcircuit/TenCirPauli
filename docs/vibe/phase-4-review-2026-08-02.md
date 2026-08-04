@@ -8,8 +8,8 @@
 
 - 权威合同：`docs/vibe/phase-4-spec.md`，重点核对第 4–12 节和第 14 节一次性验收标准。
 - 实现：`crates/tencir-pauli-core/src/propagation.rs`、`crates/tencir-pauli-core/src/spps.rs`、两层 PyO3 binding、Python facade 和 TensorCircuit adapter。
-- 测试与 reference：`tests/test_phase4_gradient.py`、`tests/test_spps.py`、`tests/spps_reference.py` 及相关 Phase 1–3 regression。
-- 性能证据：Criterion、`benchmarks/python/test_phase4_benchmark.py`、large matched comparison、`implementation-status.md` 的历史 profile/benchmark 记录，以及本 review 的两个定向实验。
+- 测试与 reference：`tests/test_propagation_gradient.py`、`tests/test_spps.py`、`tests/spps_reference.py` 及相关 Phase 1–3 regression。
+- 性能证据：Criterion、`benchmarks/python/test_propagation_engines_benchmark.py`、large matched comparison、`implementation-status.md` 的历史 profile/benchmark 记录，以及本 review 的两个定向实验。
 - 当前质量门：`.conda/bin/python scripts/check.py --benchmark smoke` 完整通过，包括 Rustfmt、Clippy `-D warnings`、17 个 Rust tests、Black、Ruff、strict mypy、release maturin build、106 passed/4 skipped Python tests、全部 Criterion smoke 和 73 passed/41 skipped benchmark smoke。通过本地 TensorCircuit source 运行 adapter tests 得到 3 passed/2 skipped；跳过项需要额外 JAX/SymPy 环境。
 
 ## Compliance checklist
@@ -36,7 +36,7 @@
 
 ### M1. SPPS 正确性证据没有覆盖真正不同的数学分支，完成声明过强
 
-`tests/test_spps.py:35-46` 只用一个单 qubit `RY`、单项 observable、`ZeroState` 做大样本近似；`tests/test_spps.py:49-69` 补了 zero/near-zero factor；`tests/spps_reference.py:129-155` 虽能枚举路径，但当前只返回完整路径和的 exact value/gradient，没有逐路径或按 proposal 加权地对照 native sample kernel。Deterministic tests 同样只直接差分了单 qubit `RX/RY/RZ`（`tests/test_phase4_gradient.py:13-39`）。
+`tests/test_spps.py:35-46` 只用一个单 qubit `RY`、单项 observable、`ZeroState` 做大样本近似；`tests/test_spps.py:49-69` 补了 zero/near-zero factor；`tests/spps_reference.py:129-155` 虽能枚举路径，但当前只返回完整路径和的 exact value/gradient，没有逐路径或按 proposal 加权地对照 native sample kernel。Deterministic tests 同样只直接差分了单 qubit `RX/RY/RZ`（`tests/test_propagation_gradient.py:13-39`）。
 
 建议只补下面五组小系统测试；它们各自进入不同逻辑，不是重复尺寸扫描：
 

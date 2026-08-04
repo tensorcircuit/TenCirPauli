@@ -124,7 +124,12 @@ def _complex_sort_key(value: complex) -> Tuple[bytes, bytes]:
 
 @dataclass(frozen=True)
 class FermionWord:
-    """Canonical fermionic monomial ``creations * annihilations``."""
+    """Canonical fermionic monomial ``creations * annihilations``.
+
+    Creation modes are stored in increasing order and annihilation modes in
+    decreasing order. Use :meth:`from_factors` for arbitrary raw products so
+    CAR contractions and signs are canonicalized.
+    """
 
     n_modes: int
     creation_modes: Tuple[int, ...] = ()
@@ -204,7 +209,12 @@ class FermionWord:
 
 @dataclass(frozen=True)
 class BosonWord:
-    """Canonical normal-ordered bosonic power blocks."""
+    """Canonical normal-ordered bosonic power blocks.
+
+    Each block is ``(mode, creation_power, annihilation_power)``. Raw products
+    should be constructed through :class:`BosonOperator` so CCR contractions
+    are retained exactly.
+    """
 
     n_modes: int
     blocks: Tuple[Tuple[int, int, int], ...] = ()
@@ -272,7 +282,12 @@ class BosonWord:
 
 @dataclass(frozen=True)
 class QuditWeylWord:
-    """Direct-convention ``X**a Z**b`` word with modular exponents."""
+    """Direct-convention ``X**a Z**b`` word with modular exponents.
+
+    Exponents are reduced modulo ``dimension`` and triples are sorted by site.
+    Multiplication returns a :class:`QuditProduct` with the modular phase
+    exponent kept separate from the canonical word.
+    """
 
     dimension: int
     triples: Tuple[Tuple[int, int, int], ...] = ()
@@ -413,7 +428,19 @@ class _Axis:
 
 
 class OperatorSpace:
-    """Immutable logical subsystem layout used by structured operators."""
+    """Immutable ordered logical subsystem layout for structured operators.
+
+    Axes are ordered as fermions, bosons, qubits, then uniform-dimension
+    qudits. This ordering controls term serialization, mixed-radix basis
+    ordering, embedding, tensor products, and finite matrix targets.
+
+    Examples:
+        >>> import tencirpauli as tcp
+        >>> space = tcp.OperatorSpace(fermions=1, qubits=1)
+        >>> operator = space.fermion.create(0) * space.qubit.z(0)
+        >>> operator.term_count
+        1
+    """
 
     __slots__ = ("_axes", "_locked", "bosons", "fermions", "qubits", "qudits")
     fermions: int
@@ -540,7 +567,12 @@ class OperatorSpace:
     def embed(
         self, operator: "_StructuredOperator", **maps: object
     ) -> "_StructuredOperator":
-        """Embed a structured operator with explicit domain index maps."""
+        """Embed an operator into this space with explicit domain index maps.
+
+        Each supplied map is a source-to-target index mapping for one of
+        ``fermions``, ``bosons``, ``qubits``, or ``qudits``. Unmapped domains
+        must be empty; no implicit axis matching is performed.
+        """
         if not isinstance(operator, _StructuredOperator):
             raise TypeError("embed expects a Phase 7 structured operator")
         valid_domains = {"fermions", "bosons", "qubits", "qudits"}
@@ -1979,7 +2011,12 @@ def _hybrid_from_native(
 
 
 class FermionOperator(_StructuredOperator):
-    """Immutable canonical fermionic operator governed by CAR."""
+    """Immutable canonical fermionic operator governed by CAR.
+
+    Raw ladder products are expanded and aggregated exactly. Use
+    :meth:`map_fermions` for a Pauli representation or :meth:`compile` for a
+    matrix/MVP target.
+    """
 
     _domain = "fermion"
 
@@ -2035,7 +2072,20 @@ class FermionOperator(_StructuredOperator):
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionOperator":
-        """Construct and CAR-canonicalize raw ordered fermion factors."""
+        """Construct and CAR-canonicalize raw ordered fermion factors.
+
+        Each term is ``(factors, coefficient)`` with factors such as
+        ``(mode, "create")`` and ``(mode, "annihilate")``. Equal canonical
+        words are aggregated and exact zero coefficients are removed.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> number = tcp.FermionOperator.from_terms(
+            ...     1, [(((0, "create"), (0, "annihilate")), 1.0)]
+            ... )
+            >>> number.term_count
+            1
+        """
         return cls._from_raw(n_modes, terms, max_bytes)
 
     @classmethod
@@ -2057,6 +2107,7 @@ class FermionOperator(_StructuredOperator):
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "_StructuredOperator":
+        """Multiply two fermion operators while retaining CAR contractions."""
         if not isinstance(other, FermionOperator) or other.space != self.space:
             return cast(
                 "_StructuredOperator", super().multiply(other, max_bytes=max_bytes)
@@ -2085,7 +2136,12 @@ class FermionOperator(_StructuredOperator):
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> PauliOperator:
-        """Return the Jordan-Wigner Pauli representation."""
+        """Map the fermion operator to a canonical Pauli operator.
+
+        ``mapping`` may be a supported mapping name or a reusable
+        :class:`FermionQubitMapping`. The result has one qubit per fermion
+        mode and includes exact Jordan-Wigner/CNOT conjugation phases.
+        """
         if not isinstance(mapping, str):
             from .mapping import FermionQubitMapping
 
@@ -2126,7 +2182,7 @@ class FermionOperator(_StructuredOperator):
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
-        """Compile after applying the requested Jordan-Wigner mapping."""
+        """Map to qubits and compile to a dense, sparse, or MVP target."""
         result: CompileResult = self.map_fermions(mapping, max_bytes=max_bytes).compile(
             target, max_bytes=max_bytes
         )
@@ -2148,7 +2204,11 @@ class FermionOperator(_StructuredOperator):
 
 
 class BosonOperator(_StructuredOperator):
-    """Immutable symbolic boson operator with infinite-Fock CCR semantics."""
+    """Immutable symbolic boson operator with infinite-Fock CCR semantics.
+
+    Finite matrix and MVP targets require explicit per-mode occupation cutoffs;
+    symbolic algebra itself remains cutoff-free.
+    """
 
     _domain = "boson"
 
@@ -2185,6 +2245,7 @@ class BosonOperator(_StructuredOperator):
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "_StructuredOperator":
+        """Multiply two boson operators while retaining CCR contractions."""
         if not isinstance(other, BosonOperator) or other.space != self.space:
             return cast(
                 "_StructuredOperator", super().multiply(other, max_bytes=max_bytes)
@@ -2232,7 +2293,12 @@ class BosonOperator(_StructuredOperator):
 
 
 class QuditWeylOperator(_StructuredOperator):
-    """Immutable uniform-dimension direct-convention Weyl operator."""
+    """Immutable uniform-dimension direct-convention Weyl operator.
+
+    Factors use ``X^a Z^b`` with exponents reduced modulo the common local
+    dimension. Matrix targets use deterministic qudit-zero-MSB mixed-radix
+    ordering.
+    """
 
     _domain = "qudit"
 
@@ -2312,7 +2378,11 @@ class QuditWeylOperator(_StructuredOperator):
 
 
 class HybridOperator(_StructuredOperator):
-    """Immutable mixed-domain operator with canonical domain factors."""
+    """Immutable mixed-domain operator with canonical domain factors.
+
+    Hybrid terms may combine fermion, boson, qubit, and qudit factors. Fermion
+    mapping and finite boson cutoffs are explicit at compilation time.
+    """
 
     _domain = "hybrid"
 
@@ -2366,7 +2436,12 @@ def _canonical_terms(
 
 
 class OperatorBuilder:
-    """Single-owner batched structured-term builder."""
+    """Single-owner batched structured-term builder.
+
+    Add raw products incrementally, then call :meth:`finish` once to perform
+    native canonicalization and duplicate aggregation in one coarse-grained
+    operation.
+    """
 
     def __init__(self, space: OperatorSpace) -> None:
         self.space = space
@@ -2381,7 +2456,12 @@ class OperatorBuilder:
         qubits: Sequence[Tuple[int, object]] = (),
         qudits: Sequence[Tuple[int, int, int]] = (),
     ) -> "OperatorBuilder":
-        """Append one raw hybrid product to the batched construction buffer."""
+        """Append one raw hybrid product to the construction buffer.
+
+        The builder accepts sparse factors for each domain and returns itself
+        so products can be chained. Validation and canonicalization occur in
+        :meth:`finish`.
+        """
         self._products.append(
             {
                 "coefficient": _finite_complex(coefficient),
@@ -2394,7 +2474,11 @@ class OperatorBuilder:
         return self
 
     def finish(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> HybridOperator:
-        """Canonicalize all buffered products in one native batch call."""
+        """Canonicalize all buffered products in one native batch call.
+
+        Returns a deterministic :class:`HybridOperator`; repeated equal
+        products are aggregated and exact zeros are removed.
+        """
         fermion_factors: List[List[Tuple[int, int]]] = []
         boson_factors: List[List[Tuple[int, int]]] = []
         qubit_codes: List[List[int]] = []

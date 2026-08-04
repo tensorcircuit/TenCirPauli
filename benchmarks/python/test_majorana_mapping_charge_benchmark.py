@@ -1,4 +1,4 @@
-"""Release benchmarks for Phase 7.5 algebra, mappings, and charge sectors."""
+"""Release benchmarks for Majorana algebra, mappings, and charge sectors."""
 
 from __future__ import annotations
 

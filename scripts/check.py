@@ -81,6 +81,7 @@ def run_tests() -> None:
     run(["cargo", "test", "--locked", "--workspace"])
     run(["maturin", "develop", "--release", "--locked"])
     run([sys.executable, "-m", "pytest"])
+    run([sys.executable, "-m", "pytest", "--doctest-modules", "python/tencirpauli"])
 
 
 def run_benchmarks(mode: str) -> None:

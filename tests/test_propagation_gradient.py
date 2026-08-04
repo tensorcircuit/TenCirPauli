@@ -1,4 +1,4 @@
-"""Independent functional checks for the deterministic Phase 4 reverse path."""
+"""Independent functional checks for the deterministic reverse path."""
 
 from __future__ import annotations
 

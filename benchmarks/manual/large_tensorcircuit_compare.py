@@ -1,8 +1,8 @@
-"""Large matched Phase 4 comparisons against TensorCircuit/JAX.
+"""Large matched comparisons against TensorCircuit/JAX.
 
 Run from the repository root with the local TensorCircuit checkout available::
 
-    PYTHONPATH=../tensorcircuit .conda/bin/python benchmarks/phase4_large_compare.py
+    PYTHONPATH=../tensorcircuit .conda/bin/python benchmarks/manual/large_tensorcircuit_compare.py
 
 The deterministic comparison uses TensorCircuit's ``PauliPropagationEngine``
 with the same global locality cutoff as TenCirPauli. The SPPS comparison uses
@@ -155,7 +155,7 @@ def make_tensorcircuit(
     )
 
     example_path = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "tensorcircuit"
         / "examples"
         / "spps_pauli_path_vqe.py"

@@ -192,10 +192,12 @@ def record(label: str, suite: str) -> None:
             record_python(label)
         if suite == "phase7":
             record_python(
-                label, ["benchmarks/python/test_phase7_structured_benchmark.py"]
+                label, ["benchmarks/python/test_structured_algebra_benchmark.py"]
             )
         if suite == "phase75":
-            record_python(label, ["benchmarks/python/test_phase75_benchmark.py"])
+            record_python(
+                label, ["benchmarks/python/test_majorana_mapping_charge_benchmark.py"]
+            )
     except (OSError, subprocess.CalledProcessError):
         data["status"] = "failed"
         write_manifest(data)
@@ -266,9 +268,13 @@ def compare(label: str, suite: Optional[str]) -> None:
     if selected_suite in ("all", "python"):
         compare_python(label)
     if selected_suite == "phase7":
-        compare_python(label, ["benchmarks/python/test_phase7_structured_benchmark.py"])
+        compare_python(
+            label, ["benchmarks/python/test_structured_algebra_benchmark.py"]
+        )
     if selected_suite == "phase75":
-        compare_python(label, ["benchmarks/python/test_phase75_benchmark.py"])
+        compare_python(
+            label, ["benchmarks/python/test_majorana_mapping_charge_benchmark.py"]
+        )
 
 
 def list_runs() -> None:

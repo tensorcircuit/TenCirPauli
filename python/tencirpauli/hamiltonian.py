@@ -23,7 +23,12 @@ DIRECT_WEYL_BASIS_ORDERING = "qudit0_msb_matrix"
 
 @dataclass(frozen=True)
 class COOMatrix:
-    """Deterministic NumPy/SciPy-compatible COO arrays."""
+    """Deterministic coordinate-format sparse matrix arrays.
+
+    ``row``, ``column`` and ``data`` have equal length, and ``shape`` gives the
+    logical matrix shape. Entries are already aggregated and ordered by the
+    producing operator. Use :meth:`to_scipy` for optional SciPy interop.
+    """
 
     row: np.ndarray[Any, Any]
     column: np.ndarray[Any, Any]
@@ -32,11 +37,15 @@ class COOMatrix:
 
     @property
     def value(self) -> np.ndarray[Any, Any]:
-        """Alias for the conventional COO value field."""
+        """Return ``data`` under the conventional sparse-matrix name ``value``."""
         return self.data
 
     def to_scipy(self) -> Any:
-        """Convert to SciPy COO only when the optional dependency is installed."""
+        """Convert to a SciPy COO matrix.
+
+        Raises:
+            ImportError: If SciPy is not installed in the current environment.
+        """
         try:
             from scipy.sparse import coo_matrix  # type: ignore[import-untyped]
         except ImportError as error:
@@ -46,7 +55,12 @@ class COOMatrix:
 
 @dataclass(frozen=True)
 class CSRMatrix:
-    """Deterministic NumPy/SciPy-compatible CSR arrays."""
+    """Deterministic compressed-sparse-row matrix arrays.
+
+    ``indptr``, ``indices`` and ``data`` follow the standard CSR contract and
+    ``shape`` gives the logical matrix shape. Use :meth:`to_scipy` for optional
+    SciPy interop.
+    """
 
     indptr: np.ndarray[Any, Any]
     indices: np.ndarray[Any, Any]
@@ -55,11 +69,15 @@ class CSRMatrix:
 
     @property
     def value(self) -> np.ndarray[Any, Any]:
-        """Alias for the conventional CSR value field."""
+        """Return ``data`` under the conventional sparse-matrix name ``value``."""
         return self.data
 
     def to_scipy(self) -> Any:
-        """Convert to SciPy CSR only when the optional dependency is installed."""
+        """Convert to a SciPy CSR matrix.
+
+        Raises:
+            ImportError: If SciPy is not installed in the current environment.
+        """
         try:
             from scipy.sparse import csr_matrix
         except ImportError as error:
@@ -359,7 +377,21 @@ class BackendMVPPlan:
         state: Sequence[complex],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
-        """Apply the plan using only NumPy arrays and deterministic indexing."""
+        """Apply the plan using deterministic array operations.
+
+        Args:
+            state: A flat complex state of length ``dimension``. Direct-Weyl
+                plans also accept the mixed-radix tensor shape described by
+                ``local_dimensions``.
+            max_bytes: Best-effort bound for temporary and output arrays.
+
+        Returns:
+            A complex128 state with the same logical shape as the input.
+
+        Raises:
+            ValueError: If the state shape is incompatible with the plan.
+            MemoryError: If the estimated workspace exceeds ``max_bytes``.
+        """
         if self._generic_entries is not None:
             return _apply_generic_entries(self._generic_entries, state, max_bytes)
         if self.plan_kind == "direct_weyl":
@@ -393,12 +425,12 @@ class BackendMVPPlan:
 
     @property
     def dimension(self) -> int:
-        """Finite basis dimension represented by this plan."""
+        """Return the finite basis dimension represented by this plan."""
         return self._dimension_value
 
     @property
     def term_count(self) -> int:
-        """Number of canonical plan terms."""
+        """Return the number of canonical terms stored in this plan."""
         return len(self.coefficients)
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:

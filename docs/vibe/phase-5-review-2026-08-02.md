@@ -16,12 +16,12 @@ Phase 5 should nevertheless not be accepted as fully complete on performance gro
 
 | Area | Status | Evidence |
 |---|---|---|
-| Arbitrary-width packed occupation representation | PASS | `crates/tencir-pauli-core/src/sector.rs:112-137`, `821-895`; wide boundary tests in `tests/test_phase5_u1.py:84-153` |
+| Arbitrary-width packed occupation representation | PASS | `crates/tencir-pauli-core/src/sector.rs:112-137`, `821-895`; wide boundary tests in `tests/test_u1.py:84-153` |
 | TensorCircuit ordering and particle-hole rank/unrank | PASS | `crates/tencir-pauli-core/src/sector.rs:140-227`, `300-330`; Rust exhaustive small-system checks at `crates/tencir-pauli-core/src/tests.rs:413-443` |
-| Stable X-group aggregation, exact-zero removal, then leakage validation | PASS | `crates/tencir-pauli-core/src/sector.rs:919-975`; independent Python oracle at `tests/test_phase5_u1.py:49-81` |
+| Stable X-group aggregation, exact-zero removal, then leakage validation | PASS | `crates/tencir-pauli-core/src/sector.rs:919-975`; independent Python oracle at `tests/test_u1.py:49-81` |
 | Deterministic flat destination-major plan shared by operator/MVP | PASS | `crates/tencir-pauli-core/src/sector.rs:334-418`, `437-439` |
 | Public Python compatibility and batched wide basis materialization | PASS | `crates/tencirpauli-native/src/symmetry.rs:251-303`, `python/tencirpauli/symmetry.py:95-181` |
-| Focused correctness verification | PASS | `cargo test --workspace`: 22 passed; `pytest -q tests/test_phase5_u1.py tests/test_symmetry.py`: 31 passed |
+| Focused correctness verification | PASS | `cargo test --workspace`: 22 passed; `pytest -q tests/test_u1.py tests/test_symmetry.py`: 31 passed |
 | Low-k setup complexity expected by the specification | FAIL | Specification requires rank near `O(min(k,n-k))` at `docs/vibe/phase-5-spec.md:212-215`; implementation repeatedly scans all limbs at `crates/tencir-pauli-core/src/sector.rs:300-324`, `930-945` |
 | Required P5 benchmark/profile evidence | FAIL | Requirements at `docs/vibe/phase-5-spec.md:362-388`, `435-442`; gaps described below |
 
@@ -66,7 +66,7 @@ The `max_bytes` estimate is checked after `U1Sector` combinatorics and compiled 
 ## Verification performed
 
 - `conda run -p .conda cargo test --workspace` — 22 passed.
-- `.conda/bin/python -m pytest -q tests/test_phase5_u1.py tests/test_symmetry.py` — 31 passed.
+- `.conda/bin/python -m pytest -q tests/test_u1.py tests/test_symmetry.py` — 31 passed.
 - Read-only release-path scaling check for nearest-neighbor `XX+YY`, k=2 at 64/128/192/256/384/512 qubits; no benchmark artifacts were written.
 - Source review of the Phase 5 commits, frozen specification, implementation status, Rust/Python APIs, tests, and benchmark definitions.
 
@@ -76,4 +76,4 @@ Major 1 is resolved in the current implementation without changing the public AP
 
 Major 2 is resolved by adding the required cross-limb long-range/duplicate-X workload to both Rust Criterion and Python/FFI benchmarks, adding the 512q/k2 scaling point, and recording source dimension, term count, distinct X-group count, nnz, word count, plan/output bytes, thread count, and numerical error in the Python benchmark metadata. Release benchmark runs completed for the new cases; the local macOS sampler remains unavailable, so the repository records deterministic release-boundary workload metadata and timings instead of sampler percentages.
 
-Remediation verification: `cargo test --workspace` passed 22 tests, `pytest -q tests/test_phase5_u1.py tests/test_symmetry.py` passed 31 tests, workspace Clippy passed with `-D warnings`, `cargo bench --locked -p tencir-pauli-core --bench symmetry -- --test` completed all registered cases, and the focused Python long-range benchmark passed. Existing exact-zero, Y-phase, wide-boundary, ordering, sparse-output, and post-aggregation leakage tests remain green.
+Remediation verification: `cargo test --workspace` passed 22 tests, `pytest -q tests/test_u1.py tests/test_symmetry.py` passed 31 tests, workspace Clippy passed with `-D warnings`, `cargo bench --locked -p tencir-pauli-core --bench symmetry -- --test` completed all registered cases, and the focused Python long-range benchmark passed. Existing exact-zero, Y-phase, wide-boundary, ordering, sparse-output, and post-aggregation leakage tests remain green.

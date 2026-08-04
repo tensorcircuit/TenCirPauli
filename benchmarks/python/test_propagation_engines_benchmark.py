@@ -1,4 +1,4 @@
-"""Release-boundary benchmarks for Phase 4 value-and-gradient engines."""
+"""Release-boundary benchmarks for propagation value-and-gradient engines."""
 
 from __future__ import annotations
 

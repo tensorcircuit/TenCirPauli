@@ -91,7 +91,7 @@ Required resolution: consume `PauliOperator._arrays()` once. If subsequent profi
 
 ### SR5 — MEDIUM: the clean Phase 7.5 release matrix does not cover the full first-review mapping scale request
 
-Locations: `docs/vibe/phase-7.5-review-2026-08-03.md:241-251` and `benchmarks/python/test_phase75_benchmark.py:340-521`.
+Locations: `docs/vibe/phase-7.5-review-2026-08-03.md:241-251` and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:340-521`.
 
 The repaired benchmarks correctly assert their actual canonical term counts, but committed mapping-plan cases stop at 128 modes and mapping batches stop at 128 terms. The first review requested safe coverage through 512 modes and 1,024 unique terms, mapping-sensitive long parity strings, and first-plan versus reused-plan timing.
 

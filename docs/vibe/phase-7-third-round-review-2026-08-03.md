@@ -31,7 +31,7 @@ No remaining CRITICAL issue was found.
 
 ### M1. Add an independent Holstein or spin-boson correctness differential
 
-Locations: `tests/test_phase7_structured.py:111-777` and `benchmarks/python/test_phase7_structured_benchmark.py:552-605`; contract: `phase-7-spec.md:440-455,511-515`.
+Locations: `tests/test_structured_algebra.py:111-777` and `benchmarks/python/test_structured_algebra_benchmark.py:552-605`; contract: `phase-7-spec.md:440-455,511-515`.
 
 The current Holstein benchmark compares repeated applications of the same native plan. It verifies replay and performance but cannot detect a shared Jordan-Wigner, mixed-radix, projected-boson-boundary, or coefficient error. Add a small one- or two-site Holstein or spin-boson fixture whose reference matrix is assembled independently from explicit fermion matrices, projected boson ladder matrices, Pauli matrices where applicable, and Kronecker products. Compare the independent reference with dense, COO, CSR, and native MVP results.
 
@@ -61,7 +61,7 @@ No remaining MINOR issue was found.
 
 ## Validation performed
 
-- `conda run -p .conda pytest -q tests/test_phase7_structured.py tests/test_hamiltonian.py` — 56 passed.
+- `conda run -p .conda pytest -q tests/test_structured_algebra.py tests/test_hamiltonian.py` — 56 passed.
 - `conda run -p .conda python scripts/check.py --benchmark smoke` — passed; 31 Rust tests, 230 Python tests, and 165 selected benchmark-smoke cases.
 - `conda run -p .conda python examples/structured_algebra.py` — passed and printed `structured targets agree`.
 - Independent read-only probes covered the original C1 case, 320 nested early-mapping variants, 48 graded raw/mapped tensor cases, 700 random CAR words, long CAR fast paths, direct-Weyl dimension overflow, and public plan metadata.

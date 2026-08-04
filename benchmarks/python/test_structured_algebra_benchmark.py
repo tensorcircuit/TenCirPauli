@@ -1,4 +1,4 @@
-"""Release benchmarks for Phase 7 symbolic construction and finite kernels."""
+"""Release benchmarks for structured symbolic construction and finite kernels."""
 
 from __future__ import annotations
 

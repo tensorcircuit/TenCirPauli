@@ -38,7 +38,11 @@ if TYPE_CHECKING:
 
 
 class PauliPhase(IntEnum):
-    """The exact four-valued phase returned by Pauli multiplication."""
+    """Exact phase labels returned by phase-free Pauli multiplication.
+
+    The integer values encode ``+1``, ``+i``, ``-1``, and ``-i`` in that
+    order. Use :attr:`value_complex` when a numerical coefficient is needed.
+    """
 
     PLUS_ONE = 0
     PLUS_I = 1
@@ -47,7 +51,7 @@ class PauliPhase(IntEnum):
 
     @property
     def value_complex(self) -> complex:
-        """Return the phase as a Python complex scalar."""
+        """Return the enumerated phase as a Python complex scalar."""
         return (1.0, 1.0j, -1.0, -1.0j)[int(self)]
 
 
@@ -69,7 +73,8 @@ class PauliWord:
 
     The packed representation uses qubit zero as its least-significant bit;
     matrix-producing APIs explicitly convert that layout to TensorCircuit's
-    qubit-zero-is-MSB convention.
+    qubit-zero-is-MSB convention. Words are immutable and canonical, so their
+    packed arrays can be safely reused as dictionary keys and native inputs.
     """
 
     nqubits: int
@@ -109,7 +114,11 @@ class PauliWord:
 
     @classmethod
     def from_codes(cls, codes: Sequence[int]) -> "PauliWord":
-        """Construct one word from an ordered sequence of I/X/Y/Z codes."""
+        """Construct one word from ordered ``0..3`` I/X/Y/Z codes.
+
+        The input order is public qubit order, with qubit zero first. The
+        returned word stores the equivalent packed symplectic representation.
+        """
         normalized = tuple(codes)
         if any(
             not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
@@ -137,7 +146,11 @@ class PauliWord:
     def batch_from_codes(
         cls, nqubits: int, structures: Iterable[Sequence[int]]
     ) -> Tuple["PauliWord", ...]:
-        """Convert many structures with one coarse-grained native call."""
+        """Convert many same-width code rows with one native batch call.
+
+        Each structure must have length ``nqubits`` and contain only integer
+        codes ``0..3``. Results preserve input order.
+        """
         normalized = tuple(tuple(structure) for structure in structures)
         for structure in normalized:
             if len(structure) != nqubits:
@@ -167,15 +180,19 @@ class PauliWord:
         return tuple(_native.pauli_support(self.nqubits, self.x_words, self.z_words))
 
     def to_codes(self) -> Tuple[int, ...]:
-        """Return the external I/X/Y/Z codes in qubit order."""
+        """Return immutable external codes in public qubit order."""
         return tuple(_native.pauli_codes(self.nqubits, self.x_words, self.z_words))
 
     def to_string(self) -> str:
-        """Return the canonical ``IXYZ`` string representation."""
+        """Return the canonical ``IXYZ`` string in public qubit order."""
         return "".join(_PAULI_CODE_TO_CHAR[code] for code in self.to_codes())
 
     def symplectic_inner_product(self, other: "PauliWord") -> int:
-        """Return the binary symplectic inner product in ``{0, 1}``."""
+        """Return the binary symplectic inner product in ``{0, 1}``.
+
+        A result of ``1`` means the words anticommute; ``0`` means they
+        commute. Both words must have the same qubit count.
+        """
         _ensure_compatible(self, other)
         return int(
             _native.pauli_symplectic_inner_product(
@@ -188,7 +205,7 @@ class PauliWord:
         )
 
     def commutes_with(self, other: "PauliWord") -> bool:
-        """Return whether this Pauli word commutes with another word."""
+        """Return whether two equal-width Pauli words commute."""
         _ensure_compatible(self, other)
         return bool(
             _native.pauli_commutes(
@@ -201,7 +218,12 @@ class PauliWord:
         )
 
     def multiply(self, other: "PauliWord") -> PauliProduct:
-        """Multiply words and return a canonical word plus exact phase."""
+        """Multiply words and return the phase-free result plus exact phase.
+
+        The returned :class:`PauliProduct` keeps the phase separate, so a
+        caller can apply it to a numerical coefficient without losing the
+        canonical word representation.
+        """
         _ensure_compatible(self, other)
         x_words, z_words, phase = _native.pauli_multiply(
             self.nqubits,
@@ -277,7 +299,13 @@ class CanonicalizationArrayResult:
 
 @dataclass(frozen=True, init=False)
 class PauliOperator:
-    """A deterministic static Pauli operator with exact-zero aggregation."""
+    """Deterministic sparse Pauli operator with exact-zero aggregation.
+
+    Terms are canonicalized on construction, duplicate words are aggregated,
+    exact zeros are removed, and surviving terms are sorted deterministically.
+    All matrix and MVP targets use the package's documented qubit ordering and
+    honor the best-effort ``max_bytes`` guard.
+    """
 
     nqubits: int
     terms: Tuple[PauliTerm, ...]
@@ -315,7 +343,20 @@ class PauliOperator:
     def from_terms(
         cls, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
     ) -> "PauliOperator":
-        """Construct and canonicalize mixed string, code, or word terms."""
+        """Construct and canonicalize mixed string, code, or word terms.
+
+        Each term is ``(word, coefficient)`` where ``word`` may be an ``IXYZ``
+        string, a code sequence, or a :class:`PauliWord`. All words must have
+        width ``nqubits``.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> operator = tcp.PauliOperator.from_terms(
+            ...     2, [("XX", 0.5), ("YY", 0.5)]
+            ... )
+            >>> operator.compile("dense").shape
+            (4, 4)
+        """
         return cls(nqubits, terms)
 
     @classmethod
@@ -324,7 +365,11 @@ class PauliOperator:
         structures: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
     ) -> "PauliOperator":
-        """Construct directly from contiguous-friendly code and coefficient arrays."""
+        """Construct from a batch of code rows and complex coefficients.
+
+        This is the preferred constructor for large array-backed inputs because
+        it makes one coarse-grained native canonicalization call.
+        """
         code_array, coefficient_array = _normalize_code_arrays(structures, coefficients)
         nqubits = int(code_array.shape[1])
         result = _native.pauli_canonicalize_array(
@@ -592,7 +637,15 @@ class PauliOperator:
         algorithm: str = "largest_first",
         max_matrix_entries: int = 10_000_000,
     ) -> "GroupingResult":
-        """Return a deterministic QWC or general-commuting grouping result."""
+        """Return a deterministic QWC or general-commuting grouping result.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> operator = tcp.PauliOperator.from_terms(2, [("XX", 1.0), ("ZZ", 1.0)])
+            >>> result = operator.group_commuting(mode="qubit_wise")
+            >>> result.nterms
+            2
+        """
         from .grouping import group_operator
 
         return group_operator(
@@ -839,7 +892,12 @@ class PauliOperator:
     def compile(
         self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "CompileResult":
-        """Compile one named Hamiltonian target through the public API."""
+        """Compile one named Hamiltonian target.
+
+        Supported targets are ``"dense"``, ``"coo"``, ``"csr"``,
+        ``"native_mvp"``, and ``"backend_mvp"``. Dense and sparse targets
+        materialize arrays; MVP targets return reusable plans.
+        """
         if target == "dense":
             return self.dense(max_bytes=max_bytes)
         if target == "coo":

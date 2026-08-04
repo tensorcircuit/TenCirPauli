@@ -23,7 +23,11 @@ SPPSState = Union[ZeroState, ComputationalBasisState, ProductBlochState, str]
 
 
 class SPPSCircuitPlan:
-    """Immutable compiled stochastic propagation facade."""
+    """Immutable compiled stochastic propagation facade.
+
+    The plan caches the native tape and applies the symbolic-angle Jacobian
+    when returning gradients with respect to the circuit's public parameters.
+    """
 
     def __init__(
         self,
@@ -71,6 +75,7 @@ class SPPSCircuitPlan:
         samples_per_term: int,
         seed: int,
     ) -> SPPSValueEstimate:
+        """Estimate one observable expectation with a fixed path budget."""
         native = self._native_values(parameters)
         return self._engine.expectation(
             native, samples_per_term=samples_per_term, seed=seed
@@ -83,6 +88,7 @@ class SPPSCircuitPlan:
         samples_per_term: int,
         seed: int,
     ) -> SPPSEstimate:
+        """Estimate the observable value and circuit-parameter gradient."""
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad(
             native, samples_per_term=samples_per_term, seed=seed
@@ -100,6 +106,7 @@ class SPPSCircuitPlan:
         gradient_tolerance: float,
         seed: int,
     ) -> SPPSEstimate:
+        """Estimate value and gradient using the adaptive path budget."""
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad_adaptive(
             native,
@@ -114,7 +121,19 @@ class SPPSCircuitPlan:
 
 
 class SPPSCircuit(PropagationCircuit):
-    """TensorCircuit-style builder for stochastic Pauli-path estimation."""
+    """TensorCircuit-style builder for stochastic Pauli-path estimation.
+
+    Gate construction follows :class:`PropagationCircuit`; execution requires
+    explicit sampling budgets and a random seed through the SPPS methods.
+
+    Examples:
+        >>> import tencirpauli as tcp
+        >>> circuit = tcp.SPPSCircuit(1)
+        >>> observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+        >>> plan = circuit.compile(observable)
+        >>> plan.nqubits
+        1
+    """
 
     def compile(  # type: ignore[override]
         self,
@@ -124,6 +143,12 @@ class SPPSCircuit(PropagationCircuit):
         smoothing: float = 0.01,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> SPPSCircuitPlan:
+        """Compile and cache an SPPS plan for one observable.
+
+        ``smoothing`` must be a finite positive value. The plan is invalidated
+        whenever the circuit is mutated or its observable/state configuration
+        changes.
+        """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         state = self.initial_state if initial_state is None else initial_state
@@ -167,6 +192,7 @@ class SPPSCircuit(PropagationCircuit):
         smoothing: float = 0.01,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> SPPSValueEstimate:
+        """Compile if needed and return a fixed-budget value estimate."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -185,6 +211,7 @@ class SPPSCircuit(PropagationCircuit):
         smoothing: float = 0.01,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> SPPSEstimate:
+        """Compile if needed and return a fixed-budget value-and-gradient estimate."""
         return self.compile(
             observable,
             initial_state=initial_state,
@@ -205,6 +232,7 @@ class SPPSCircuit(PropagationCircuit):
         smoothing: float = 0.01,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
     ) -> SPPSEstimate:
+        """Compile if needed and return an adaptive value-and-gradient estimate."""
         return self.compile(
             observable,
             initial_state=initial_state,

@@ -14,7 +14,13 @@ from .pauli import PauliOperator
 
 @dataclass(frozen=True)
 class QWCGroupingResult:
-    """A locally measurable qubit-wise commuting partition."""
+    """A deterministic qubit-wise commuting measurement partition.
+
+    ``groups`` contains indices into the canonical operator terms. ``bases``
+    gives the required single-qubit basis code per group, where ``0`` means
+    identity and ``1/2/3`` mean X/Y/Z. Use :meth:`reconstruct` to convert
+    computational-basis samples after that basis rotation into term values.
+    """
 
     nqubits: int
     groups: Tuple[Tuple[int, ...], ...]
@@ -27,13 +33,27 @@ class QWCGroupingResult:
 
     @property
     def nterms(self) -> int:
-        """Return the number of canonical terms represented by this result."""
+        """Return the number of canonical operator terms covered by the groups."""
         return sum(len(group) for group in self.groups)
 
     def reconstruct(
         self, group_index: int, bitstrings: Sequence[Sequence[int]]
-    ) -> np.ndarray:
-        """Reconstruct eigenvalues for one group from rotated measurement bits."""
+    ) -> np.ndarray[Any, Any]:
+        """Reconstruct eigenvalues for one QWC group from rotated samples.
+
+        Args:
+            group_index: Index of the group whose terms should be reconstructed.
+            bitstrings: Binary samples with shape ``(shots, nqubits)`` after
+                applying the group's basis rotations.
+
+        Returns:
+            An ``int8`` array of shape ``(shots, group_size)`` containing
+            eigenvalues in ``{-1, +1}``, in canonical term order.
+
+        Raises:
+            IndexError: If ``group_index`` is not a valid group.
+            ValueError: If the sample shape or binary-value contract is invalid.
+        """
         if not 0 <= group_index < len(self.groups):
             raise IndexError(f"group index {group_index} is out of range")
         raw_values = np.asarray(bitstrings)
@@ -58,7 +78,13 @@ class QWCGroupingResult:
 
 @dataclass(frozen=True)
 class GeneralCommutingGroupingResult:
-    """An algebraic commuting partition without a joint-measurement plan."""
+    """A deterministic algebraic commuting partition.
+
+    Terms in each group commute as operators, but the result intentionally does
+    not provide a common tensor-product measurement basis. Use this mode for
+    algebraic grouping or downstream measurement schemes that handle general
+    commuting sets separately.
+    """
 
     nqubits: int
     groups: Tuple[Tuple[int, ...], ...]
@@ -69,7 +95,7 @@ class GeneralCommutingGroupingResult:
 
     @property
     def nterms(self) -> int:
-        """Return the number of canonical terms represented by this result."""
+        """Return the number of canonical operator terms covered by the groups."""
         return sum(len(group) for group in self.groups)
 
 
@@ -82,7 +108,24 @@ def group_operator(
     algorithm: str = "largest_first",
     max_matrix_entries: int = 10_000_000,
 ) -> GroupingResult:
-    """Group terms with a deterministic native call and entry bound."""
+    """Group a Pauli operator with deterministic ordering and bounded workspace.
+
+    Args:
+        operator: Canonical Pauli operator whose terms are grouped.
+        mode: ``"qubit_wise"`` for jointly measurable QWC groups or
+            ``"general"`` for algebraically commuting groups.
+        algorithm: ``"largest_first"`` or ``"dsatur"`` graph-coloring order.
+        max_matrix_entries: Maximum compatibility-matrix entries allowed by
+            the grouping preflight.
+
+    Returns:
+        A :class:`QWCGroupingResult` for ``qubit_wise`` mode or a
+        :class:`GeneralCommutingGroupingResult` for ``general`` mode.
+
+    Raises:
+        ValueError: If ``mode`` or ``algorithm`` is unsupported.
+        MemoryError: If the compatibility workspace exceeds the entry bound.
+    """
     validate_nonnegative_int(max_matrix_entries, "max_matrix_entries")
     mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
     algorithm_code = {"largest_first": 0, "dsatur": 1}.get(algorithm)

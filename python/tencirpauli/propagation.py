@@ -56,7 +56,13 @@ class ProductBlochState:
 
 
 class GateTape:
-    """Mutable typed builder for a Schrödinger-order gate tape."""
+    """Mutable typed builder for a Schrödinger-order gate tape.
+
+    Wires are zero-based and gates execute in append order. Rotation angles are
+    in radians; a rotation accepts either a static ``angle`` or a non-negative
+    runtime ``parameter`` slot. The tape is consumed by
+    :class:`PropagationEngine` and :class:`SPPSEngine`.
+    """
 
     def __init__(self, nqubits: int) -> None:
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
@@ -69,6 +75,7 @@ class GateTape:
 
     @property
     def nparameters(self) -> int:
+        """Return one plus the largest runtime parameter slot, or zero."""
         slots = [operation[3] for operation in self._operations if operation[3] >= 0]
         return max(slots, default=-1) + 1
 
@@ -96,39 +103,39 @@ class GateTape:
         self._operations.append((kind, first, second, -1, 0.0, ()))
 
     def x(self, wire: int) -> None:
-        """Append an X Clifford gate."""
+        """Append an X gate on ``wire``."""
         self._append_clifford(0, wire)
 
     def y(self, wire: int) -> None:
-        """Append a Y Clifford gate."""
+        """Append a Y gate on ``wire``."""
         self._append_clifford(1, wire)
 
     def z(self, wire: int) -> None:
-        """Append a Z Clifford gate."""
+        """Append a Z gate on ``wire``."""
         self._append_clifford(2, wire)
 
     def h(self, wire: int) -> None:
-        """Append a Hadamard gate."""
+        """Append a Hadamard gate on ``wire``."""
         self._append_clifford(3, wire)
 
     def s(self, wire: int) -> None:
-        """Append an S gate."""
+        """Append an S gate on ``wire``."""
         self._append_clifford(4, wire)
 
     def sdg(self, wire: int) -> None:
-        """Append an inverse-S gate."""
+        """Append an inverse-S gate on ``wire``."""
         self._append_clifford(5, wire)
 
     def cnot(self, control: int, target: int) -> None:
-        """Append a directed CNOT gate."""
+        """Append a directed CNOT from ``control`` to ``target``."""
         self._append_clifford(6, control, target)
 
     def cz(self, wire0: int, wire1: int) -> None:
-        """Append a controlled-Z gate."""
+        """Append a controlled-Z gate on two distinct wires."""
         self._append_clifford(7, wire0, wire1)
 
     def swap(self, wire0: int, wire1: int) -> None:
-        """Append a SWAP gate."""
+        """Append a SWAP gate on two distinct wires."""
         self._append_clifford(8, wire0, wire1)
 
     def _slot(self, parameter: int) -> int:
@@ -177,7 +184,11 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a parameterized or static RX gate."""
+        """Append an X rotation with a static angle or runtime slot.
+
+        Exactly one of ``angle`` and ``parameter`` must be provided. Angles
+        are measured in radians.
+        """
         self._rotation(9, wire, None, angle=angle, parameter=parameter)
 
     def ry(
@@ -187,7 +198,11 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a parameterized or static RY gate."""
+        """Append a Y rotation with a static angle or runtime slot.
+
+        Exactly one of ``angle`` and ``parameter`` must be provided. Angles
+        are measured in radians.
+        """
         self._rotation(10, wire, None, angle=angle, parameter=parameter)
 
     def rz(
@@ -197,7 +212,11 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a parameterized or static RZ gate."""
+        """Append a Z rotation with a static angle or runtime slot.
+
+        Exactly one of ``angle`` and ``parameter`` must be provided. Angles
+        are measured in radians.
+        """
         self._rotation(11, wire, None, angle=angle, parameter=parameter)
 
     def rxx(
@@ -208,7 +227,7 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a two-qubit X-X rotation."""
+        """Append a two-qubit X-X rotation with a static angle or runtime slot."""
         self._rotation(12, wire0, wire1, angle=angle, parameter=parameter)
 
     def ryy(
@@ -219,7 +238,7 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a two-qubit Y-Y rotation."""
+        """Append a two-qubit Y-Y rotation with a static angle or runtime slot."""
         self._rotation(13, wire0, wire1, angle=angle, parameter=parameter)
 
     def rzz(
@@ -230,7 +249,7 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append a two-qubit Z-Z rotation."""
+        """Append a two-qubit Z-Z rotation with a static angle or runtime slot."""
         self._rotation(14, wire0, wire1, angle=angle, parameter=parameter)
 
     def ptm(
@@ -240,7 +259,12 @@ class GateTape:
         *,
         name: Optional[str] = None,
     ) -> None:
-        """Append a real one- or two-qubit Pauli-transfer matrix."""
+        """Append a real one- or two-qubit Pauli-transfer matrix.
+
+        ``matrix`` must be a finite float64 array with shape ``(4, 4)`` for
+        one wire or ``(16, 16)`` for two wires. The matrix is copied into the
+        tape, so later mutation of the input does not change the circuit.
+        """
         del name  # Names are diagnostic metadata and do not affect semantics.
         normalized_wires = tuple(wires)
         if len(normalized_wires) not in (1, 2):
@@ -319,7 +343,13 @@ class PropagationBatchValueAndGradient:
 
 
 class PropagationEngine:
-    """Reusable Rust-native Heisenberg propagation handle."""
+    """Reusable Rust-native Heisenberg propagation handle.
+
+    The engine propagates a Pauli observable backwards through a fixed gate
+    tape and evaluates it on the selected product initial state. It supports
+    exact dynamic operators and optional Pauli-weight projection; projection
+    is applied after equal Pauli words have been aggregated.
+    """
 
     def __init__(
         self,
@@ -368,7 +398,11 @@ class PropagationEngine:
         return _coerce_parameters(parameters, self.nparameters)
 
     def expectation(self, parameters: Sequence[float] | np.ndarray[Any, Any]) -> float:
-        """Propagate and return a scalar expectation for a Hermitian observable."""
+        """Return the scalar expectation for a Hermitian observable.
+
+        ``parameters`` must contain exactly ``nparameters`` finite values. The
+        result is real because the observable is required to be Hermitian.
+        """
         return float(self._native.expectation(self._parameters(parameters)))
 
     def value_and_grad(
@@ -402,14 +436,23 @@ class PropagationEngine:
     def propagate_operator(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> PauliOperator:
-        """Materialize the canonical propagated operator on the explicit path."""
+        """Materialize the canonical propagated Pauli operator.
+
+        This exposes the final aggregated operator on the same exact or
+        weight-projected path used by the engine. It may require substantially
+        more memory than :meth:`expectation`.
+        """
         result = self._native.propagate_operator(self._parameters(parameters))
         return PauliOperator._from_native(self.nqubits, result)
 
     def profile(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> ProfiledExpectation:
-        """Return a Hermitian-observable scalar and propagation diagnostics."""
+        """Return an expectation together with propagation diagnostics.
+
+        The profile reports gate count, initial/final/peak term counts, a
+        best-effort peak-byte estimate, final weight counts, and kernel time.
+        """
         value, initial, final, peak, estimated, weights, seconds = self._native.profile(
             self._parameters(parameters)
         )
@@ -426,7 +469,11 @@ class PropagationEngine:
 
 
 class PropagationBatch:
-    """Propagate independent observables over one shared immutable program."""
+    """Propagate independent observables over one shared immutable program.
+
+    All observables must use the tape's qubit count. Batch execution amortizes
+    tape handling while preserving one output row per input observable.
+    """
 
     def __init__(
         self,
@@ -491,7 +538,11 @@ class PropagationBatch:
     def expectations(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> np.ndarray[Any, Any]:
-        """Return one product-state expectation for each observable."""
+        """Return one real expectation for each observable.
+
+        The result is a read-only float64 vector with shape
+        ``(observable_count,)`` and deterministic observable order.
+        """
         result = np.asarray(
             self._native.expectations(self._parameters(parameters)), dtype=np.float64
         )
@@ -505,7 +556,12 @@ class PropagationBatch:
         *,
         checkpoint_interval: Optional[int] = None,
     ) -> PropagationBatchValueAndGradient:
-        """Return row-wise values and frozen-support reverse gradients."""
+        """Return values and row-wise frozen-support reverse gradients.
+
+        The returned ``values`` has shape ``(observable_count,)`` and
+        ``gradients`` has shape ``(observable_count, nparameters)``. Support
+        decisions and truncation branches are those of the forward execution.
+        """
         if checkpoint_interval is not None and (
             not isinstance(checkpoint_interval, int)
             or isinstance(checkpoint_interval, bool)

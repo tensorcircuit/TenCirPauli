@@ -1,7 +1,7 @@
-"""Small release-mode A/B workloads for Phase 6 execution changes.
+"""Small release-mode A/B workloads for U1 execution changes.
 
 The script intentionally measures public Python entry points after a release
-extension build.  It reports setup metadata and steady medians so each Phase 6
+extension build. It reports setup metadata and steady medians so each
 optimization can be compared with the previous recorded result on the same
 machine.
 """

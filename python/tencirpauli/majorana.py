@@ -78,7 +78,13 @@ def _guard_expansion(branches: int, max_bytes: Optional[int], context: str) -> N
 
 @dataclass(frozen=True)
 class MajoranaWord:
-    """Canonical phase-free product of Majorana generators."""
+    """Canonical phase-free product of Majorana generators.
+
+    Majorana indices use ``2 * mode`` for the creation-like generator and
+    ``2 * mode + 1`` for the annihilation-like generator. ``indices`` is
+    strictly increasing; raw products should be constructed with
+    :meth:`from_indices` so the fermionic sign is retained.
+    """
 
     n_modes: int
     indices: Tuple[int, ...] = ()
@@ -104,25 +110,29 @@ class MajoranaWord:
 
     @property
     def is_identity(self) -> bool:
-        """Whether the word is the identity."""
+        """Return whether this word contains no Majorana generator."""
         return not self.indices
 
     @classmethod
     def from_indices(cls, n_modes: int, indices: Sequence[object]) -> "MajoranaProduct":
-        """Canonicalize an arbitrary raw generator sequence and retain its sign."""
+        """Canonicalize a raw generator sequence and retain its fermionic sign.
+
+        Returns a :class:`MajoranaProduct` because sorting and cancelling
+        repeated generators can contribute a sign of ``+1`` or ``-1``.
+        """
         n_modes = _exact_nonnegative(n_modes, "n_modes")
         canonical, sign = _canonicalize_indices(n_modes, indices)
         return MajoranaProduct(cls(n_modes, canonical), sign)
 
     def multiply(self, other: "MajoranaWord") -> "MajoranaProduct":
-        """Multiply two canonical words without branching."""
+        """Multiply two canonical words and return the canonical sign."""
         if not isinstance(other, MajoranaWord) or other.n_modes != self.n_modes:
             raise ValueError("Majorana words require equal n_modes")
         word, sign = _multiply_canonical(self, other)
         return MajoranaProduct(word, sign)
 
     def adjoint(self) -> "MajoranaProduct":
-        """Return the exact phase-free word adjoint and its sign."""
+        """Return the word adjoint and its exact reversal sign."""
         sign = -1 if (self.degree * (self.degree - 1) // 2) & 1 else 1
         return MajoranaProduct(self, sign)
 
@@ -153,7 +163,12 @@ class MajoranaTerm:
 
 
 class MajoranaOperator:
-    """Immutable deterministic sparse operator in the Majorana algebra."""
+    """Immutable deterministic sparse operator in the Majorana algebra.
+
+    Input products are canonicalized, duplicate words are aggregated, exact
+    zero coefficients are removed, and surviving terms are sorted
+    lexicographically by generator indices.
+    """
 
     __slots__ = ("_locked", "_terms", "n_modes")
     n_modes: int
@@ -220,7 +235,12 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Construct from arbitrary raw Majorana factor sequences."""
+        """Construct from arbitrary raw Majorana factor sequences.
+
+        Each input term is ``(indices, coefficient)``. Repeated indices are
+        reduced with the exact Majorana sign before duplicate words are
+        aggregated.
+        """
         return cls(n_modes, terms, max_bytes=max_bytes)
 
     @classmethod
@@ -232,7 +252,14 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Construct one operator from an arbitrary raw generator sequence."""
+        """Construct one operator term from an arbitrary generator sequence.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> operator = tcp.MajoranaOperator.from_indices(1, [0, 1])
+            >>> operator.term_count
+            1
+        """
         return cls(n_modes, ((indices, coefficient),), max_bytes=max_bytes)
 
     @classmethod
@@ -261,7 +288,7 @@ class MajoranaOperator:
 
     @property
     def terms(self) -> Tuple[MajoranaTerm, ...]:
-        """Return immutable canonical terms in lexicographic order."""
+        """Return immutable nonzero terms in deterministic lexicographic order."""
         return self._terms
 
     @property
@@ -282,7 +309,7 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Return the exact canonical sum."""
+        """Return the exact canonical sum of two equal-mode operators."""
         other = self._check_other(other)
         aggregate: Dict[MajoranaWord, complex] = {
             term.word: term.coefficient for term in self._terms
@@ -298,7 +325,7 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Return an exactly scaled operator."""
+        """Return a new operator with every coefficient multiplied by ``coefficient``."""
         scalar = _finite_complex(coefficient, "scale")
         _guard_expansion(len(self._terms), max_bytes, "Majorana scaling")
         return self._from_canonical(
@@ -312,7 +339,7 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Return the exact product, which has one output word per pair."""
+        """Return the exact product and aggregate equal output words."""
         other = self._check_other(other)
         pair_count = len(self._terms) * len(other._terms)
         _guard_expansion(pair_count, max_bytes, "Majorana multiplication")
@@ -339,7 +366,7 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Return ``self * other - other * self``."""
+        """Return the exact commutator ``self * other - other * self``."""
         return self.multiply(other, max_bytes=max_bytes).add(
             other.multiply(self, max_bytes=max_bytes).scale(-1, max_bytes=max_bytes),
             max_bytes=max_bytes,
@@ -351,7 +378,7 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "MajoranaOperator":
-        """Return ``self * other + other * self``."""
+        """Return the exact anticommutator ``self * other + other * self``."""
         return self.multiply(other, max_bytes=max_bytes).add(
             other.multiply(self, max_bytes=max_bytes), max_bytes=max_bytes
         )
@@ -359,7 +386,7 @@ class MajoranaOperator:
     def adjoint(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "MajoranaOperator":
-        """Return the exact coefficient-conjugated adjoint."""
+        """Return the exact coefficient-conjugated operator adjoint."""
         _guard_expansion(len(self._terms), max_bytes, "Majorana adjoint")
         aggregate: Dict[MajoranaWord, complex] = {}
         for term in self._terms:
@@ -368,7 +395,7 @@ class MajoranaOperator:
         return self._from_canonical(self.n_modes, aggregate)
 
     def is_hermitian(self, tolerance: float = 0.0) -> bool:
-        """Check equality with the adjoint using an explicit tolerance."""
+        """Return whether the operator equals its adjoint within ``tolerance``."""
         if (
             isinstance(tolerance, bool)
             or not isinstance(tolerance, (int, float))
@@ -385,7 +412,12 @@ class MajoranaOperator:
     def to_fermion(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> FermionOperator:
-        """Expand exactly into the Phase 7 canonical fermion algebra."""
+        """Expand exactly into the canonical ladder-operator algebra.
+
+        Each degree-``d`` Majorana word can produce up to ``2**d`` fermion
+        branches. The expansion is guarded by ``max_bytes`` before native
+        allocation and returns a canonical :class:`FermionOperator`.
+        """
         branches = sum(1 << term.word.degree for term in self._terms)
         _guard_expansion(branches, max_bytes, "Majorana-to-fermion expansion")
         result = _native.majorana_to_fermion(
@@ -412,7 +444,12 @@ class MajoranaOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> Any:
-        """Map through a string-selected or reusable fermion mapping plan."""
+        """Map directly to qubits through a named or reusable mapping plan.
+
+        ``mapping`` may be ``"jordan_wigner"``, ``"parity"``,
+        ``"bravyi_kitaev"``, or a :class:`FermionQubitMapping` instance.
+        The Majorana expansion is handled in one batched path.
+        """
         from .mapping import FermionQubitMapping
 
         plan = (
@@ -431,7 +468,13 @@ class MajoranaOperator:
         mapping: Union[str, Any] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> Any:
-        """Compile after exact fermion conversion and requested qubit mapping."""
+        """Compile a mapped Majorana operator to a named Hamiltonian target.
+
+        Supported targets are the same as :meth:`PauliOperator.compile` after
+        mapping: ``dense``, ``coo``, ``csr``, ``native_mvp``, and
+        ``backend_mvp``. The mapping name and source term count are attached to
+        reusable plan metadata.
+        """
         from .mapping import FermionQubitMapping
         from .structured import _with_plan_metadata
 

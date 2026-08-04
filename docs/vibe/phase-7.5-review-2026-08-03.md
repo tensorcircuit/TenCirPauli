@@ -211,7 +211,7 @@ M2 closes when low-budget rejection occurs before material Python expansion, the
 
 ### M3. Parity execution replays an O(n²) provenance circuit, while the mapping benchmark silently collapses every term-count scale to four canonical terms
 
-Locations: `crates/tencir-pauli-core/src/mapping.rs:44-98,102-177,222-250`, `python/tencirpauli/mapping.py:336-472`, and `benchmarks/python/test_phase75_benchmark.py:52-75,315-383`; contract: `docs/vibe/phase-7.5-spec.md:123-194,435-449,465-469`.
+Locations: `crates/tencir-pauli-core/src/mapping.rs:44-98,102-177,222-250`, `python/tencirpauli/mapping.py:336-472`, and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:52-75,315-383`; contract: `docs/vibe/phase-7.5-spec.md:123-194,435-449,465-469`.
 
 #### Current problem
 
@@ -303,7 +303,7 @@ M4 closes when restricted construction no longer materializes owned basis-row ke
 
 ### M5. The current acceptance tests and benchmark manifest do not cover several frozen Phase 7.5 gates
 
-Locations: `tests/test_phase75_charge.py`, `tests/test_phase75_majorana_mapping.py`, `benchmarks/python/test_phase75_benchmark.py`, and `docs/vibe/implementation-status.md:81-108`; contract: `docs/vibe/phase-7.5-spec.md:420-487`.
+Locations: `tests/test_charge.py`, `tests/test_majorana_mapping.py`, `benchmarks/python/test_majorana_mapping_charge_benchmark.py`, and `docs/vibe/implementation-status.md:81-108`; contract: `docs/vibe/phase-7.5-spec.md:420-487`.
 
 #### Current problem
 
@@ -347,7 +347,7 @@ M5 closes when the complete focused quality gate and the repaired release benchm
 ## Validation performed during this review
 
 - `conda run -p .conda cargo test --workspace` — 36 Rust tests passed.
-- `conda run -p .conda pytest -q tests/test_phase75_charge.py tests/test_phase75_majorana_mapping.py` — 23 focused Python tests passed.
+- `conda run -p .conda pytest -q tests/test_charge.py tests/test_majorana_mapping.py` — 23 focused Python tests passed.
 - Exact-integer adversarial probe — reproduced false conservation for weights `2**53` and `2**53 + 1`.
 - Majorana mapping probe — reproduced approximately 0.27/1.16/20.45/748.94 ms for degree 4/6/8/10 one-output words.
 - Mapping workload audit — confirmed the nominal 16/64/128-term benchmark inputs each contain only four canonical terms.

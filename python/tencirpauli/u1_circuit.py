@@ -205,7 +205,11 @@ class _FinalStateCache:
 
 @dataclass(frozen=True, init=False)
 class U1CircuitPlan:
-    """Immutable compiled U(1) execution plan."""
+    """Immutable compiled execution plan in a fixed-particle-number sector.
+
+    The plan acts on vectors of length ``sector.dimension`` and never leaves
+    the selected U(1) sector. Returned arrays are read-only NumPy arrays.
+    """
 
     sector: U1Sector
     dimension: int
@@ -228,6 +232,12 @@ class U1CircuitPlan:
         initial_state: Sequence[complex] | np.ndarray[Any, Any],
         parameters: Sequence[float] | np.ndarray[Any, Any] = (),
     ) -> np.ndarray[Any, Any]:
+        """Apply the circuit to a restricted-sector state vector.
+
+        ``initial_state`` must have length ``dimension`` and parameters must
+        match ``nparameters``. The returned complex128 vector remains in the
+        same sector ordering.
+        """
         result = self._native.run(
             _state_array(initial_state, self.dimension), self._params(parameters)
         )
@@ -238,6 +248,7 @@ class U1CircuitPlan:
         initial_state: Sequence[complex] | np.ndarray[Any, Any],
         parameters: Sequence[float] | np.ndarray[Any, Any] = (),
     ) -> np.ndarray[Any, Any]:
+        """Return probabilities in the restricted-sector basis ordering."""
         result = self._native.probability(
             _state_array(initial_state, self.dimension), self._params(parameters)
         )
@@ -248,6 +259,7 @@ class U1CircuitPlan:
         initial_state: Sequence[complex] | np.ndarray[Any, Any],
         parameters: Sequence[float] | np.ndarray[Any, Any] = (),
     ) -> np.ndarray[Any, Any]:
+        """Return the final restricted-sector state as a dense vector."""
         result = self._native.to_dense(
             _state_array(initial_state, self.dimension), self._params(parameters)
         )
@@ -258,6 +270,11 @@ class U1CircuitPlan:
         initial_state: Sequence[complex] | np.ndarray[Any, Any],
         parameters: Sequence[float] | np.ndarray[Any, Any] = (),
     ) -> np.ndarray[Any, Any]:
+        """Return the full computational-basis probability vector.
+
+        This expands the restricted result to length ``2**nqubits`` and is
+        therefore potentially much larger than :meth:`probability`.
+        """
         result = self._native.probability_full(
             _state_array(initial_state, self.dimension), self._params(parameters)
         )
@@ -269,6 +286,7 @@ class U1CircuitPlan:
         observable: PauliOperator,
         parameters: Sequence[float] | np.ndarray[Any, Any] = (),
     ) -> complex:
+        """Return the complex expectation of a Pauli observable."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         real, imaginary = self._native.expectation(
@@ -284,6 +302,7 @@ class U1CircuitPlan:
         observable: PauliOperator,
         parameters: Sequence[float] | np.ndarray[Any, Any],
     ) -> U1CircuitValueAndGradient:
+        """Return an observable expectation and its exact parameter gradient."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         value, gradient = self._native.value_and_grad(
@@ -297,7 +316,20 @@ class U1CircuitPlan:
 
 
 class U1Circuit:
-    """Lazy, fixed-particle-number circuit executed by the Rust backend."""
+    """Lazy circuit that preserves a fixed particle-number sector.
+
+    Construct with either ``k`` occupied particles or an explicit ``filled``
+    occupation list. Gates are diagonal or particle-number preserving, and
+    execution is deferred until a state, probability, expectation, or compiled
+    plan is requested.
+
+    Examples:
+        >>> import tencirpauli as tcp
+        >>> circuit = tcp.U1Circuit(2, k=1)
+        >>> circuit.rz(0, 0.2)
+        >>> circuit.probability().shape
+        (2,)
+    """
 
     def __init__(
         self,
@@ -379,10 +411,12 @@ class U1Circuit:
 
     @property
     def nparameters(self) -> int:
+        """Return the number of symbolic parameter slots in the circuit."""
         return self._program.nparameters
 
     @property
     def dimension(self) -> int:
+        """Return ``C(nqubits, k)``, the restricted-sector dimension."""
         return self.sector.dimension
 
     def _append(self, operation: _LogicalGate) -> None:
@@ -394,27 +428,27 @@ class U1Circuit:
         self._generation += 1
 
     def rz(self, i: int, theta: Angle = 0.0) -> None:
-        """Append an RZ gate; ``theta`` is measured in radians."""
+        """Append an RZ gate; ``theta`` is measured in radians or symbolic form."""
         self._append(_gate("rz", (i,), theta))
 
     def rzz(self, i: int, j: int, theta: Angle = 0.0) -> None:
-        """Append an RZZ gate; ``theta`` is measured in radians."""
+        """Append an RZZ gate; ``theta`` is measured in radians or symbolic form."""
         self._append(_gate("rzz", (i, j), theta))
 
     def cz(self, i: int, j: int) -> None:
-        """Append a controlled-Z gate."""
+        """Append a controlled-Z gate on two distinct qubits."""
         self._append(_gate("cz", (i, j)))
 
     def cphase(self, i: int, j: int, theta: Angle = 0.0) -> None:
-        """Append a controlled-phase gate; ``theta`` is measured in radians."""
+        """Append a controlled-phase gate with a radian or symbolic angle."""
         self._append(_gate("cphase", (i, j), theta))
 
     def swap(self, i: int, j: int) -> None:
-        """Append a SWAP gate."""
+        """Append a SWAP gate on two distinct qubits."""
         self._append(_gate("swap", (i, j)))
 
     def iswap(self, i: int, j: int, theta: Angle = 1.0) -> None:
-        """Append an iSWAP interpolation using a normalized, non-radian angle."""
+        """Append an iSWAP interpolation using the normalized angle convention."""
         self._append(_gate("iswap", (i, j), theta))
 
     def diagonal(
@@ -423,6 +457,12 @@ class U1Circuit:
         diagonal: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
         diag: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
     ) -> None:
+        """Append a static diagonal gate on the selected qubits.
+
+        The payload must contain exactly ``2**len(indices)`` finite complex
+        values. ``diagonal`` and its compatibility alias ``diag`` are mutually
+        exclusive.
+        """
         if diagonal is not None and diag is not None:
             raise ValueError("provide only one of diagonal or diag")
         payload = diagonal if diagonal is not None else diag
@@ -437,6 +477,7 @@ class U1Circuit:
         self._append(_gate("diagonal", indices, payload=values.tolist()))
 
     def compile(self) -> U1CircuitPlan:
+        """Compile and cache the native fixed-sector execution plan."""
         if self._native_plan is None:
             expression_nodes, gates = _encode_program(self._program)
             native = _native.u1_circuit_plan(
@@ -470,6 +511,7 @@ class U1Circuit:
     def state(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
+        """Return the final state in restricted-sector ordering."""
         cache = self._cached_final(parameters)
         if cache.state is None:
             cache.state = _readonly(
@@ -482,6 +524,7 @@ class U1Circuit:
     def probability(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
+        """Return probabilities in restricted-sector ordering."""
         return _readonly(
             np.asarray(self._cached_final(parameters).native.probability())
         )
@@ -489,11 +532,13 @@ class U1Circuit:
     def to_dense(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
+        """Return the final restricted-sector state as a dense vector."""
         return _readonly(np.asarray(self._cached_final(parameters).native.to_dense()))
 
     def probability_full(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
+        """Expand and return probabilities over the full computational basis."""
         return _readonly(
             np.asarray(self._cached_final(parameters).native.probability_full())
         )
@@ -504,6 +549,7 @@ class U1Circuit:
         *,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> float:
+        """Return the Z expectation for one qubit in the final state."""
         value = self.expectation_ps(z=(i,), parameters=parameters)
         return float(value.real)
 
@@ -516,6 +562,11 @@ class U1Circuit:
         *,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> complex:
+        """Return one Pauli expectation using X/Y/Z index specifications.
+
+        Exactly one of ``ps`` or the combination of ``x``, ``y`` and ``z``
+        may describe each Pauli word; omitted axes are identity.
+        """
         codes = _pauli_codes(self.nqubits, x, y, z, ps)
         observable = PauliOperator(self.nqubits, [(codes, 1.0)])
         real, imaginary = self._cached_final(parameters).native.expectation(
@@ -530,6 +581,7 @@ class U1Circuit:
         *,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> complex:
+        """Return the expectation of a finite linear combination of Pauli words."""
         normalized = tuple(_normalize_ps(value, self.nqubits) for value in ps_list)
         values = np.asarray(coefficients, dtype=np.complex128).reshape(-1)
         if len(normalized) != values.shape[0]:
@@ -561,6 +613,7 @@ class U1Circuit:
         *,
         parameters: Sequence[float] | np.ndarray[Any, Any],
     ) -> U1CircuitValueAndGradient:
+        """Return an observable expectation and exact native gradient."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         value, gradient = self._cached_final(parameters).native.value_and_grad(
@@ -587,12 +640,15 @@ class U1Circuit:
         return conversion.circuit
 
     def bind_parameters(self, values: Mapping[int, float]) -> "U1Circuit":
+        """Return a copy with selected parameter slots replaced by constants."""
         return self._from_program(self, self._program.bind(values))
 
     def remap_parameters(self, mapping: Mapping[int, int]) -> "U1Circuit":
+        """Return a copy with parameter slots renamed according to ``mapping``."""
         return self._from_program(self, self._program.remap(mapping))
 
     def inverse(self) -> "U1Circuit":
+        """Return a copy with the gate sequence inverted."""
         return self._from_program(self, self._program.inverse())
 
     def append(
@@ -601,6 +657,11 @@ class U1Circuit:
         *,
         parameter_map: Optional[Mapping[int, int]] = None,
     ) -> "U1Circuit":
+        """Return the concatenation of two compatible U1 circuits.
+
+        ``parameter_map`` optionally remaps the appended circuit's parameter
+        slots before concatenation.
+        """
         if not isinstance(other, U1Circuit):
             raise TypeError("other must be a U1Circuit")
         return self._from_program(
@@ -608,6 +669,7 @@ class U1Circuit:
         )
 
     def to_qir(self) -> list[dict[str, object]]:
+        """Serialize the circuit to deterministic JSON-like gate records."""
         return self._program.to_qir()
 
     @classmethod

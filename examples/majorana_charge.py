@@ -1,4 +1,4 @@
-"""Small executable Phase 7.5 Majorana/mapping/charge example."""
+"""Small executable Majorana/mapping/charge example."""
 
 from __future__ import annotations
 

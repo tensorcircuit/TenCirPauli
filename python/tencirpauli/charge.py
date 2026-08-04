@@ -110,7 +110,13 @@ def _qubit_levels(
 
 
 class AdditiveCharge:
-    """Immutable exact integer-valued diagonal charge on an OperatorSpace."""
+    """Immutable exact integer-valued diagonal charge on an ``OperatorSpace``.
+
+    Fermion and boson weights contribute ``weight * occupation``. Qubit axes
+    use the explicit ``(level_0, level_1)`` pair, and ``offset`` is added to
+    every eigenvalue. Qudit axes are currently spectators. Charges are the
+    input to :meth:`sector` and :func:`analyze_charge`.
+    """
 
     __slots__ = (
         "_locked",
@@ -188,13 +194,27 @@ class AdditiveCharge:
 
     @property
     def layout_fingerprint(self) -> Tuple[Tuple[str, int, int], ...]:
-        """Return the compatible OperatorSpace fingerprint."""
+        """Return the axis layout required by operators using this charge.
+
+        The fingerprint is deterministic and can be compared with another
+        operator-space fingerprint before constructing a sector.
+        """
         return self.space.layout_fingerprint
 
     def as_operator(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> _StructuredOperator:
-        """Materialize the exact diagonal generator in structured form."""
+        """Materialize the charge generator as a structured operator.
+
+        Returns:
+            A canonical operator whose diagonal eigenvalue on each basis state
+            is the charge value. The result preserves the charge's operator
+            space and deterministic term ordering.
+
+        Raises:
+            MemoryError: If the estimated operator workspace exceeds
+                ``max_bytes``.
+        """
         identity_qubits = (0,) * self.space.qubits
         identity_qudit = (
             QuditWeylWord(self.space.qudits[0])
@@ -274,7 +294,12 @@ class AdditiveCharge:
         return _make_operator(self.space, terms, max_bytes)
 
     def as_pauli(self) -> PauliOperator:
-        """Materialize a qubit-only charge as a Pauli operator."""
+        """Materialize a pure-qubit charge as a Pauli operator.
+
+        The qubit level pair ``(level_0, level_1)`` is decomposed into an
+        identity coefficient and a ``Z`` coefficient. Fermion, boson, and
+        qudit charges are rejected because they are not Pauli operators.
+        """
         if self.space.fermions or self.space.bosons or self.space.qudits:
             raise ValueError("as_pauli requires a pure qubit charge space")
         terms: List[Tuple[Tuple[int, ...], complex]] = []
@@ -319,7 +344,25 @@ class AdditiveCharge:
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "ChargeSector":
-        """Select one exact charge value as a reusable finite sector plan."""
+        """Select one exact charge value as a reusable finite sector plan.
+
+        Args:
+            value: Required charge eigenvalue.
+            boson_cutoffs: Optional inclusive upper occupation bound for each
+                boson mode. Every boson mode must have a finite cutoff when a
+                finite sector basis is needed.
+            max_bytes: Best-effort bound for the rank/unrank plan workspace.
+
+        Returns:
+            A :class:`ChargeSector` with deterministic mixed-radix ordering.
+
+        Examples:
+            >>> import tencirpauli as tcp
+            >>> space = tcp.OperatorSpace(qubits=2)
+            >>> charge = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
+            >>> charge.sector(1).dimension
+            2
+        """
         return ChargeSector(
             ((self, _exact_int(value, "sector value")),),
             boson_cutoffs=boson_cutoffs,
@@ -456,7 +499,13 @@ def _charge_contribution(
 
 
 class ChargeSector:
-    """Immutable checked rank/unrank plan for simultaneous additive charges."""
+    """Immutable rank/unrank plan for simultaneous additive charge constraints.
+
+    A sector enumerates only finite operator-space basis states satisfying all
+    constraints. Its ordering is ``operator_space_axis0_msb_mixed_radix`` and
+    is shared by ``rank``, ``unrank``, ``basis_states`` and restricted matrix
+    targets.
+    """
 
     __slots__ = (
         "_contributions",
@@ -620,7 +669,19 @@ class ChargeSector:
         return values
 
     def rank(self, occupations: Sequence[object]) -> int:
-        """Return the lexicographic rank of one selected basis state."""
+        """Return the deterministic rank of a selected basis occupation.
+
+        Args:
+            occupations: One non-negative occupation per ``OperatorSpace``
+                axis, in ``local_dimensions`` order.
+
+        Returns:
+            An integer in ``[0, dimension)``. No basis array is materialized.
+
+        Raises:
+            ValueError: If the occupations have the wrong length, exceed a
+                local dimension, or violate any charge constraint.
+        """
         values = self._validate_occupations(occupations)
         if self._native_plan is not None:
             return int(self._native_plan.rank(values))
@@ -643,7 +704,18 @@ class ChargeSector:
         return rank
 
     def unrank(self, index: int) -> Tuple[int, ...]:
-        """Return one selected basis state without materializing earlier states."""
+        """Return the occupation tuple at a deterministic sector index.
+
+        Args:
+            index: Zero-based index in the restricted sector ordering.
+
+        Returns:
+            One occupation per operator-space axis. This operation does not
+            materialize any preceding basis state.
+
+        Raises:
+            IndexError: If ``index`` is outside ``[0, dimension)``.
+        """
         index = _exact_nonnegative(index, "sector index")
         if index >= self.dimension:
             raise IndexError("sector index is out of range")
@@ -671,7 +743,12 @@ class ChargeSector:
     def basis_states(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> np.ndarray[Any, Any]:
-        """Materialize selected occupations only when explicitly requested."""
+        """Materialize all selected occupations as a read-only ``uint64`` array.
+
+        The result has shape ``(dimension, len(local_dimensions))`` and follows
+        the same ordering as :meth:`rank` and :meth:`unrank`. This is an
+        explicit potentially large allocation; use ``max_bytes`` to guard it.
+        """
         _validate_max_bytes(max_bytes)
         axis_count = len(self.local_dimensions)
         _check_allocation(
@@ -697,7 +774,12 @@ class ChargeSector:
 
 
 class ChargeMvpPlan:
-    """Reusable restricted-basis matrix-free transition plan."""
+    """Reusable matrix-free transition plan in a finite charge-sector basis.
+
+    The plan stores aggregated transition rows, columns, and coefficients and
+    can apply the same restricted operator to many state vectors without
+    materializing a dense matrix.
+    """
 
     __slots__ = (
         "_locked",
@@ -786,7 +868,13 @@ class ChargeMvpPlan:
 
 
 class ChargeRestrictedOperator:
-    """Exact action of a conserved structured/Pauli operator in one sector."""
+    """Exact action of a conserved structured or Pauli operator in one sector.
+
+    Construction validates exact charge conservation and aggregates all
+    transitions before exposing MVP, dense, COO, or CSR targets. Matrix rows
+    and columns use the deterministic ordering of the associated
+    :class:`ChargeSector`.
+    """
 
     __slots__ = (
         "_locked",
@@ -856,16 +944,34 @@ class ChargeRestrictedOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
+        """Apply the restricted operator to one sector-state vector.
+
+        Args:
+            state: Complex vector with shape ``(dimension,)`` in sector order.
+            max_bytes: Best-effort bound for the output allocation.
+
+        Returns:
+            A new ``complex128`` vector with the same restricted dimension.
+
+        Raises:
+            ValueError: If ``state`` is not one-dimensional or has the wrong
+                length.
+        """
         return self._plan.apply(state, max_bytes=max_bytes)
 
     @property
     def estimated_bytes(self) -> int:
-        """Return the immutable transition-array storage estimate."""
+        """Return the best-effort byte estimate for immutable transition arrays."""
         return self._plan.estimated_bytes
 
     def mvp_plan(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> ChargeMvpPlan:
+        """Return the reusable matrix-free plan for this restricted operator.
+
+        The returned plan is immutable and can be applied repeatedly. Its
+        storage estimate is checked against ``max_bytes`` before returning.
+        """
         _validate_max_bytes(max_bytes)
         _check_allocation(self._plan.estimated_bytes, max_bytes, "charge MVP plan")
         return self._plan
@@ -873,6 +979,12 @@ class ChargeRestrictedOperator:
     def dense(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> np.ndarray[Any, Any]:
+        """Materialize the restricted operator as a bounded dense matrix.
+
+        The matrix has shape ``(dimension, dimension)`` and follows sector
+        ordering. Use :meth:`mvp_plan` or :meth:`apply` when dense materialization
+        is not required.
+        """
         _validate_max_bytes(max_bytes)
         _check_allocation(
             self.dimension * self.dimension * 16, max_bytes, "charge dense matrix"
@@ -884,6 +996,11 @@ class ChargeRestrictedOperator:
         return result
 
     def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
+        """Materialize deterministic duplicate-aggregated COO arrays.
+
+        The returned :class:`COOMatrix` uses restricted-sector row and column
+        indices and can be converted to SciPy with ``to_scipy()``.
+        """
         _validate_max_bytes(max_bytes)
         _check_allocation(self._plan.estimated_bytes, max_bytes, "charge COO matrix")
         return COOMatrix(
@@ -894,6 +1011,12 @@ class ChargeRestrictedOperator:
         )
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
+        """Materialize deterministic CSR arrays in sector ordering.
+
+        ``indptr``, ``indices`` and ``data`` are returned in the public
+        :class:`CSRMatrix` container. The operation allocates only the CSR
+        arrays and is guarded by ``max_bytes``.
+        """
         _validate_max_bytes(max_bytes)
         row_indices = np.asarray(self._plan.rows, dtype=np.intp)
         indptr = np.bincount(row_indices + 1, minlength=self.dimension + 1).astype(

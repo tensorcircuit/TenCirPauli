@@ -1,4 +1,4 @@
-"""Acceptance tests for the unified Phase Alpha circuit facades."""
+"""Acceptance tests for the unified circuit facades."""
 
 from __future__ import annotations
 
