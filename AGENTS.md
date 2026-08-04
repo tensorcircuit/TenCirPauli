@@ -24,6 +24,7 @@ Correctness tests are the gate for optimization. Maintain dense or otherwise tru
 
 ## Non-Negotiable Rules
 
+- Keep the active milestone label (currently Phase 8.5) out of formal implementation artifacts: filenames and contents under `tests/`, `benchmarks/`, `python/`, `examples/`, and production source files must use capability or behavior names, not labels such as `phase85` or `Phase 8.5`. Milestone labels are allowed in `docs/vibe/` review, specification, status, and archival documents.
 - Keep FFI calls coarse-grained. Never cross PyO3 once per Pauli term, gate, or matrix element in a hot path.
 - Use a canonical binary symplectic representation and test phase, qubit ordering, and endianness against dense references.
 - Keep public outputs deterministic. Hash-map iteration order must not leak into serialized operators, grouping results, or tests.
