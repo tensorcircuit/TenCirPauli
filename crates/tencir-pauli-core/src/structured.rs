@@ -64,7 +64,7 @@ pub struct HybridCanonicalResult {
 pub struct HybridLayout {
     pub n_modes: usize,
     pub n_bosons: usize,
-    pub n_qubits: usize,
+    pub nqubits: usize,
     pub n_qudit_sites: usize,
     pub qudit_dimension: usize,
 }
@@ -97,6 +97,7 @@ pub fn multiply_hybrid_terms(
     check_structured_bytes(pair_count, max_bytes, "hybrid product expansion")?;
 
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for left_index in 0..left.coefficients.len() {
         for right_index in 0..right.coefficients.len() {
             let fermion_products =
@@ -136,6 +137,7 @@ pub fn multiply_hybrid_terms(
                             qudit_triples.clone(),
                         ),
                         value,
+                        &mut total_values,
                         max_bytes,
                     )?;
                 }
@@ -164,11 +166,12 @@ pub fn canonicalize_hybrid_terms(
         });
     }
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for index in 0..count {
         validate_coefficient(batch.coefficients[index], index)?;
-        if batch.qubit_codes[index].len() != layout.n_qubits {
+        if batch.qubit_codes[index].len() != layout.nqubits {
             return Err(PauliError::InvalidStructureLength {
-                expected: layout.n_qubits,
+                expected: layout.nqubits,
                 actual: batch.qubit_codes[index].len(),
             });
         }
@@ -229,16 +232,8 @@ pub fn canonicalize_hybrid_terms(
                 push_aggregate(
                     &mut aggregate,
                     (
-                        if layout.n_modes != 0 {
-                            Some(fermion.clone().unwrap_or_default())
-                        } else {
-                            None
-                        },
-                        if layout.n_bosons != 0 {
-                            Some(boson.clone().unwrap_or_default())
-                        } else {
-                            None
-                        },
+                        fermion.clone(),
+                        boson.clone(),
                         batch.qubit_codes[index].clone(),
                         None,
                         if batch.qudit_present[index] {
@@ -250,6 +245,7 @@ pub fn canonicalize_hybrid_terms(
                     batch.coefficients[index]
                         * checked_integer_to_f64(*fermion_integer, "fermion expansion")?
                         * checked_integer_to_f64(*boson_integer, "boson expansion")?,
+                    &mut total_values,
                     max_bytes,
                 )?;
             }
@@ -416,9 +412,9 @@ fn validate_hybrid_batch(layout: HybridLayout, batch: &HybridBatch<'_>) -> Resul
             std::slice::from_ref(&batch.coefficients[index]),
         )?;
         validate_boson_blocks(layout.n_bosons, &batch.boson_blocks[index])?;
-        if batch.qubit_codes[index].len() != layout.n_qubits {
+        if batch.qubit_codes[index].len() != layout.nqubits {
             return Err(PauliError::InvalidStructureLength {
-                expected: layout.n_qubits,
+                expected: layout.nqubits,
                 actual: batch.qubit_codes[index].len(),
             });
         }
@@ -530,6 +526,7 @@ pub fn canonicalize_fermion_terms(
         });
     }
     let mut aggregate: FxHashMap<FermionKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for (index, (raw_factors, &coefficient)) in factors.iter().zip(coefficients).enumerate() {
         validate_coefficient(coefficient, index)?;
         check_structured_bytes_u128(
@@ -557,6 +554,7 @@ pub fn canonicalize_fermion_terms(
                 &mut aggregate,
                 key,
                 coefficient * checked_integer_to_f64(integer, "fermion expansion")?,
+                &mut total_values,
                 max_bytes,
             )?;
         }
@@ -587,6 +585,7 @@ pub fn multiply_fermion_terms(
         })?;
     check_structured_bytes(pair_count, max_bytes, "fermion product expansion")?;
     let mut aggregate: FxHashMap<FermionKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for left_index in 0..left.coefficients.len() {
         for right_index in 0..right.coefficients.len() {
             let mut sequence =
@@ -602,6 +601,7 @@ pub fn multiply_fermion_terms(
                     left.coefficients[left_index]
                         * right.coefficients[right_index]
                         * checked_integer_to_f64(integer, "fermion product expansion")?,
+                    &mut total_values,
                     max_bytes,
                 )?;
             }
@@ -620,41 +620,21 @@ pub fn jordan_wigner_terms(
 ) -> Result<(Vec<Vec<u8>>, Vec<Complex64>), PauliError> {
     validate_fermion_arrays(n_modes, creation, annihilation, coefficients)?;
     let mut aggregate: FxHashMap<Vec<u8>, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for (index, coefficient) in coefficients.iter().copied().enumerate() {
-        let sequence = fermion_sequence(&creation[index], &annihilation[index]);
-        let mut current: Vec<(Vec<u8>, Complex64)> =
-            vec![(vec![0; n_modes], Complex64::new(1.0, 0.0))];
-        for (mode, is_creation) in sequence {
-            let y_coefficient = if is_creation {
-                Complex64::new(0.0, -0.5)
-            } else {
-                Complex64::new(0.0, 0.5)
-            };
-            let expansion_count = current.len().checked_mul(2).ok_or(PauliError::Overflow {
-                context: "estimating Jordan-Wigner expansion",
-            })?;
-            check_structured_bytes(expansion_count, max_bytes, "Jordan-Wigner expansion")?;
-            let mut next: FxHashMap<Vec<u8>, Complex64> = FxHashMap::default();
-            for (left_word, left_coefficient) in current {
-                for (code, right_coefficient) in
-                    [(1_u8, Complex64::new(0.5, 0.0)), (2_u8, y_coefficient)]
-                {
-                    let mut right_word = vec![3_u8; n_modes];
-                    right_word[mode..].fill(0);
-                    right_word[mode] = code;
-                    let (word, phase) = multiply_pauli_codes(&left_word, &right_word);
-                    let contribution = left_coefficient * right_coefficient * phase;
-                    *next.entry(word).or_default() += contribution;
-                }
-            }
-            current = next
-                .into_iter()
-                .filter(|(_, value)| !is_exact_zero(*value))
-                .collect();
-            current.sort_by(|left, right| left.0.cmp(&right.0));
-        }
+        let current = jordan_wigner_word_expansion(
+            n_modes,
+            fermion_sequence(&creation[index], &annihilation[index]),
+            max_bytes,
+        )?;
         for (word, value) in current {
-            push_pauli_aggregate(&mut aggregate, word, coefficient * value, max_bytes)?;
+            push_pauli_aggregate(
+                &mut aggregate,
+                word,
+                coefficient * value,
+                &mut total_values,
+                max_bytes,
+            )?;
         }
     }
     let mut entries: Vec<_> = aggregate.into_iter().collect();
@@ -679,6 +659,7 @@ pub fn jordan_wigner_hybrid_terms(
 ) -> Result<HybridCanonicalResult, PauliError> {
     validate_hybrid_batch(layout, &batch)?;
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for index in 0..batch.coefficients.len() {
         let expansions = if batch.fermion_present[index] {
             jordan_wigner_word_expansion(
@@ -721,6 +702,7 @@ pub fn jordan_wigner_hybrid_terms(
                     },
                 ),
                 batch.coefficients[index] * mapped_coefficient * mapped_phase,
+                &mut total_values,
                 max_bytes,
             )?;
         }
@@ -733,6 +715,9 @@ fn jordan_wigner_word_expansion(
     sequence: Vec<(usize, bool)>,
     max_bytes: u128,
 ) -> Result<Vec<(Vec<u8>, Complex64)>, PauliError> {
+    // This convention is also used by Python's tensor-product adapter:
+    // X=1/2, Y=+i/2 for annihilation and -i/2 for creation, with Z below the
+    // active mode. Keep the two adapters covered by a differential test.
     let mut current: Vec<(Vec<u8>, Complex64)> = vec![(vec![0; n_modes], Complex64::new(1.0, 0.0))];
     for (mode, is_creation) in sequence {
         let y_coefficient = if is_creation {
@@ -745,12 +730,12 @@ fn jordan_wigner_word_expansion(
         })?;
         check_structured_bytes(expansion_count, max_bytes, "Jordan-Wigner expansion")?;
         let mut next: FxHashMap<Vec<u8>, Complex64> = FxHashMap::default();
+        let mut right_word = vec![3_u8; n_modes];
+        right_word[mode..].fill(0);
         for (left_word, left_coefficient) in current {
             for (code, right_coefficient) in
                 [(1_u8, Complex64::new(0.5, 0.0)), (2_u8, y_coefficient)]
             {
-                let mut right_word = vec![3_u8; n_modes];
-                right_word[mode..].fill(0);
                 right_word[mode] = code;
                 let (word, phase) = multiply_pauli_codes(&left_word, &right_word);
                 *next.entry(word).or_default() += left_coefficient * right_coefficient * phase;
@@ -779,6 +764,7 @@ pub fn canonicalize_boson_terms(
         });
     }
     let mut aggregate: FxHashMap<BosonKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for (index, (raw_factors, &coefficient)) in factors.iter().zip(coefficients).enumerate() {
         validate_coefficient(coefficient, index)?;
         check_structured_bytes_u128(raw_factors.len() as u128, max_bytes, "boson raw expansion")?;
@@ -802,6 +788,7 @@ pub fn canonicalize_boson_terms(
                 &mut aggregate,
                 key,
                 coefficient * checked_integer_to_f64(integer, "boson expansion")?,
+                &mut total_values,
                 max_bytes,
             )?;
         }
@@ -837,6 +824,7 @@ pub fn multiply_boson_terms(
         })?;
     check_structured_bytes(pair_count, max_bytes, "boson product expansion")?;
     let mut aggregate: FxHashMap<BosonKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
     for left in 0..left_blocks.len() {
         for right in 0..right_blocks.len() {
             for (key, integer) in
@@ -848,6 +836,7 @@ pub fn multiply_boson_terms(
                     left_coefficients[left]
                         * right_coefficients[right]
                         * checked_integer_to_f64(integer, "boson product expansion")?,
+                    &mut total_values,
                     max_bytes,
                 )?;
             }
@@ -1340,6 +1329,7 @@ fn push_aggregate<K: Eq + std::hash::Hash>(
     aggregate: &mut FxHashMap<K, Vec<Complex64>>,
     key: K,
     value: Complex64,
+    total_values: &mut usize,
     max_bytes: u128,
 ) -> Result<(), PauliError> {
     validate_coefficient(value, 0)?;
@@ -1348,14 +1338,11 @@ fn push_aggregate<K: Eq + std::hash::Hash>(
         values.push(value);
         values.len()
     };
-    let total_values = aggregate
-        .values()
-        .try_fold(0usize, |count, values| count.checked_add(values.len()))
-        .ok_or(PauliError::Overflow {
-            context: "estimating structured aggregation",
-        })?;
+    *total_values = (*total_values).checked_add(1).ok_or(PauliError::Overflow {
+        context: "estimating structured aggregation",
+    })?;
     check_structured_bytes(
-        total_values.max(value_count),
+        (*total_values).max(value_count),
         max_bytes,
         "structured aggregation",
     )
@@ -1365,9 +1352,10 @@ fn push_pauli_aggregate(
     aggregate: &mut FxHashMap<Vec<u8>, Vec<Complex64>>,
     key: Vec<u8>,
     value: Complex64,
+    total_values: &mut usize,
     max_bytes: u128,
 ) -> Result<(), PauliError> {
-    push_aggregate(aggregate, key, value, max_bytes)
+    push_aggregate(aggregate, key, value, total_values, max_bytes)
 }
 
 fn finish_fermion_aggregate(
@@ -1719,7 +1707,7 @@ pub fn structured_dense_matrix(
     let mut output_digits = vec![0usize; local_dimensions.len()];
     for column in 0..dimension {
         decode_index(column, local_dimensions, &mut digits);
-        for (term, &coefficient) in terms.iter().zip(coefficients) {
+        for (term_index, (term, &coefficient)) in terms.iter().zip(coefficients).enumerate() {
             output_digits.copy_from_slice(&digits);
             let mut amplitude = coefficient;
             let mut valid = true;
@@ -1739,7 +1727,7 @@ pub fn structured_dense_matrix(
                 let entry = &mut matrix[row * dimension + column];
                 *entry += amplitude;
                 if !entry.re.is_finite() || !entry.im.is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient { index: 0 });
+                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
                 }
             }
         }

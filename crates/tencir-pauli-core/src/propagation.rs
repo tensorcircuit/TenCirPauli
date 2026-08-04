@@ -200,11 +200,8 @@ impl PropagationEngine {
             return Err(PauliError::InvalidCheckpointInterval);
         }
 
-        let cutoff = self
-            .is_exact()
-            .then_some(None)
-            .flatten()
-            .or(self.program.max_weight);
+        let exact = self.is_exact();
+        let cutoff = (!exact).then_some(self.program.max_weight).flatten();
         let initial = initial_dynamic_terms(self.program.nqubits, &self.observable, cutoff);
         let mut checkpoints = vec![(0usize, initial)];
         let mut current = checkpoints[0].1.clone();
@@ -325,7 +322,16 @@ impl PropagationEngine {
     }
 
     /// Evaluate already propagated terms against the compiled product state.
+    ///
+    /// This method is defined for Hermitian observables. Callers that do not
+    /// control the source of `terms` should check
+    /// [`Self::is_hermitian_observable`] first; the scalar result keeps only
+    /// the real coefficient by design.
     pub fn expectation_of_terms(&self, terms: &[PauliTerm]) -> f64 {
+        debug_assert!(
+            self.hermitian,
+            "expectation_of_terms requires a Hermitian observable"
+        );
         expectation_from_terms(terms, &self.program.initial_state, self.program.nqubits)
     }
 
@@ -357,6 +363,39 @@ impl PropagationEngine {
             },
             terms: public_terms,
         })
+    }
+
+    /// Propagate without materializing canonical public words and return the
+    /// scalar expectation together with structural counters.
+    pub fn profile_dynamic(
+        &self,
+        parameters: &[f64],
+    ) -> Result<(f64, PropagationStats), PauliError> {
+        if !self.hermitian {
+            return Err(PauliError::NonHermitianExpectation);
+        }
+        let result = self.propagate_dynamic(parameters)?;
+        let mut final_weight_counts = vec![0usize; self.program.nqubits.saturating_add(1)];
+        for term in &result.terms {
+            if let Some(count) = final_weight_counts.get_mut(term.key.weight(self.program.nqubits))
+            {
+                *count += 1;
+            }
+        }
+        let stats = PropagationStats {
+            gate_count: self.program.operations.len(),
+            initial_terms: result.initial_terms,
+            final_terms: result.terms.len(),
+            peak_terms: result.peak_terms,
+            estimated_peak_bytes: result.estimated_peak_bytes,
+            final_weight_counts,
+        };
+        let value = expectation_from_dynamic_terms(
+            &result.terms,
+            &self.program.initial_state,
+            self.program.nqubits,
+        );
+        Ok((value, stats))
     }
 
     fn propagate_dynamic(
@@ -1037,10 +1076,14 @@ impl Ord for PackedKey {
         let left_n = key_nqubits(self);
         let right_n = key_nqubits(other);
         match left_n.cmp(&right_n) {
-            Ordering::Equal => (0..left_n)
-                .map(|qubit| self.code_at(qubit).cmp(&other.code_at(qubit)))
-                .find(|order| *order != Ordering::Equal)
-                .unwrap_or(Ordering::Equal),
+            Ordering::Equal => {
+                let word_count = packed_word_count(left_n);
+                let (left_x, left_z) = packed_masks(self);
+                let (right_x, right_z) = packed_masks(other);
+                left_x[..word_count]
+                    .cmp(&right_x[..word_count])
+                    .then_with(|| left_z[..word_count].cmp(&right_z[..word_count]))
+            }
             order => order,
         }
     }
@@ -1055,6 +1098,13 @@ impl PartialOrd for PackedKey {
 fn key_nqubits(key: &PackedKey) -> usize {
     match key {
         PackedKey::Inline { nqubits, .. } | PackedKey::Wide { nqubits, .. } => *nqubits,
+    }
+}
+
+fn packed_masks(key: &PackedKey) -> (&[u64], &[u64]) {
+    match key {
+        PackedKey::Inline { x, z, .. } => (x, z),
+        PackedKey::Wide { x, z, .. } => (x, z),
     }
 }
 
@@ -1169,8 +1219,7 @@ fn apply_operation(
         GateKind::Clifford1 { gate, wire } => {
             let mut result = Vec::with_capacity(terms.len());
             for (term_index, mut term) in terms.into_iter().enumerate() {
-                let (key, multiplier) = map_clifford1(&term.key, *gate, *wire);
-                term.key = key;
+                let multiplier = apply_clifford1_in_place(&mut term.key, *gate, *wire);
                 term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
@@ -1183,8 +1232,7 @@ fn apply_operation(
         GateKind::Clifford2 { gate, wire0, wire1 } => {
             let mut result = Vec::with_capacity(terms.len());
             for (term_index, mut term) in terms.into_iter().enumerate() {
-                let (key, multiplier) = map_clifford2(&term.key, *gate, *wire0, *wire1);
-                term.key = key;
+                let multiplier = apply_clifford2_in_place(&mut term.key, *gate, *wire0, *wire1);
                 term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
@@ -1209,7 +1257,7 @@ fn apply_operation(
                 match phase {
                     PauliPhase::PlusI | PauliPhase::MinusI => {
                         contributions.push((
-                            term.key.clone(),
+                            term.key,
                             checked_scale(term.coefficient, cosine, term_index)?,
                         ));
                         if sine != 0.0 {
@@ -1407,15 +1455,16 @@ fn aggregate(
             values.insert(key, coefficient);
         }
     }
-    let mut ordered = values.into_iter().collect::<Vec<_>>();
-    ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    Ok(ordered
+    let mut ordered = values
         .into_iter()
-        .filter_map(|(key, coefficient)| {
-            (!is_exact_zero(coefficient) && cutoff.is_none_or(|limit| key.weight(nqubits) <= limit))
-                .then_some(DynamicTerm { key, coefficient })
-        })
-        .collect())
+        .map(|(key, coefficient)| DynamicTerm { key, coefficient })
+        .collect::<Vec<_>>();
+    ordered.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    ordered.retain(|term| {
+        !is_exact_zero(term.coefficient)
+            && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
+    });
+    Ok(ordered)
 }
 
 fn checked_add(
@@ -1747,12 +1796,7 @@ fn expectation_from_dynamic_terms(
 ) -> f64 {
     terms
         .iter()
-        .map(|term| {
-            let local = (0..nqubits).fold(1.0, |product, qubit| {
-                product * expectation_component(state, term.key.code_at(qubit), qubit)
-            });
-            term.coefficient.re * local
-        })
+        .map(|term| term.coefficient.re * expectation_of_key(&term.key, state, nqubits))
         .sum()
 }
 

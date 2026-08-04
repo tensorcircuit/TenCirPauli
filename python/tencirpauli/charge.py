@@ -20,6 +20,7 @@ from typing import (
 import numpy as np
 
 from . import _native
+from ._validation import validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     MIXED_RADIX_BASIS_ORDERING,
@@ -68,10 +69,7 @@ def _exact_int(value: object, name: str) -> int:
 
 
 def _exact_nonnegative(value: object, name: str) -> int:
-    result = _exact_int(value, name)
-    if result < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return result
+    return validate_nonnegative_int(value, name)
 
 
 def _sparse_vector(
@@ -895,8 +893,9 @@ class ChargeRestrictedOperator:
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
         _validate_max_bytes(max_bytes)
-        indptr: np.ndarray[Any, Any] = np.zeros(self.dimension + 1, dtype=np.intp)
-        np.add.at(indptr, self._plan.rows + 1, 1)
+        indptr = np.bincount(self._plan.rows + 1, minlength=self.dimension + 1).astype(
+            np.intp, copy=False
+        )
         np.cumsum(indptr, out=indptr)
         _check_allocation(
             int(
@@ -975,16 +974,19 @@ def _compile_restricted_transitions(
     qudit_triples: List[List[Tuple[int, int, int]]] = []
     coefficients: List[complex] = []
     if isinstance(operator, PauliOperator):
-        for pauli_term in operator.terms:
+        structures, coefficients_re, coefficients_im = operator._arrays()
+        for structure, coefficient_real, coefficient_imaginary in zip(
+            structures, coefficients_re, coefficients_im
+        ):
             fermion_creation.append([])
             fermion_annihilation.append([])
             boson_blocks.append([])
-            qubit_codes.append(list(pauli_term.word.to_codes()))
+            qubit_codes.append(list(structure))
             mapped_present.append(False)
             mapped_codes.append([0] * sector.space.fermions)
             qudit_present.append(False)
             qudit_triples.append([])
-            coefficients.append(pauli_term.coefficient)
+            coefficients.append(complex(coefficient_real, coefficient_imaginary))
     else:
         for structured_term in operator._terms:
             if (

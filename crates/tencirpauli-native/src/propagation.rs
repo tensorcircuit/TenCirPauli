@@ -50,6 +50,11 @@ impl NativePropagationEngine {
         self.engine.is_exact()
     }
 
+    #[getter]
+    fn is_hermitian_observable(&self) -> bool {
+        self.engine.is_hermitian_observable()
+    }
+
     fn expectation<'py>(
         &self,
         py: Python<'py>,
@@ -107,12 +112,12 @@ impl NativePropagationEngine {
         }
         let start = Instant::now();
         let result = py
-            .allow_threads(|| self.engine.propagate(values))
+            .allow_threads(|| self.engine.profile_dynamic(values))
             .map_err(map_error)?;
         let elapsed = start.elapsed().as_secs_f64();
-        let stats: PropagationStats = result.stats;
+        let (value, stats): (f64, PropagationStats) = result;
         Ok((
-            self.engine.expectation_of_terms(&result.terms),
+            value,
             stats.initial_terms,
             stats.final_terms,
             stats.peak_terms,

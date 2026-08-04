@@ -142,7 +142,9 @@ def _pauli_codes(
             not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
             for code in codes
         ):
-            raise ValueError("ps must contain exactly nqubits codes in 0..3")
+            raise ValueError(
+                "ps must contain exactly nqubits codes in 0..3 (inclusive)"
+            )
         return codes
     codes_list: list[int] = [0] * nqubits
     for code, indices in ((1, x or ()), (2, y or ()), (3, z or ())):
@@ -392,21 +394,27 @@ class U1Circuit:
         self._generation += 1
 
     def rz(self, i: int, theta: Angle = 0.0) -> None:
+        """Append an RZ gate; ``theta`` is measured in radians."""
         self._append(_gate("rz", (i,), theta))
 
     def rzz(self, i: int, j: int, theta: Angle = 0.0) -> None:
+        """Append an RZZ gate; ``theta`` is measured in radians."""
         self._append(_gate("rzz", (i, j), theta))
 
     def cz(self, i: int, j: int) -> None:
+        """Append a controlled-Z gate."""
         self._append(_gate("cz", (i, j)))
 
     def cphase(self, i: int, j: int, theta: Angle = 0.0) -> None:
+        """Append a controlled-phase gate; ``theta`` is measured in radians."""
         self._append(_gate("cphase", (i, j), theta))
 
     def swap(self, i: int, j: int) -> None:
+        """Append a SWAP gate."""
         self._append(_gate("swap", (i, j)))
 
     def iswap(self, i: int, j: int, theta: Angle = 1.0) -> None:
+        """Append an iSWAP interpolation using a normalized, non-radian angle."""
         self._append(_gate("iswap", (i, j), theta))
 
     def diagonal(
@@ -610,7 +618,7 @@ class U1Circuit:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1Circuit":
-        """Restore the supported logical gates from TensorCircuit-style QIR."""
+        """Restore supported QIR gates; iSWAP angles use the normalized convention."""
         if "nqubits" not in circuit_params:
             raise ValueError("circuit_params must contain nqubits")
         nqubits_value = circuit_params["nqubits"]

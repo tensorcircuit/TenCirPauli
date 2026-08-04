@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 
 from . import _native
+from ._validation import validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     BackendMVPPlan,
@@ -15,22 +16,15 @@ from .hamiltonian import (
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from .structured import FermionOperator, _fermion_arrays, _fermion_from_native
+from .structured import (
+    FermionOperator,
+    _fermion_arrays,
+    _fermion_from_native,
+    _finite_complex,
+)
 
 
-def _exact_nonnegative(value: object, name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
-    return int(value)
-
-
-def _finite_complex(value: object, name: str = "coefficient") -> complex:
-    if isinstance(value, bool) or not isinstance(value, (int, float, complex)):
-        raise ValueError(f"{name} must be a finite real or complex scalar")
-    result = complex(value)
-    if not math.isfinite(result.real) or not math.isfinite(result.imag):
-        raise ValueError(f"{name} must be finite")
-    return result
+_exact_nonnegative = validate_nonnegative_int
 
 
 def _bit_count(value: int) -> int:

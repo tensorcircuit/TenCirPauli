@@ -78,6 +78,40 @@ def test_propagation_qir_restore_and_tensorcircuit_conversion() -> None:
     )
 
 
+def test_qir_auto_discovery_reuses_duplicate_symbol_slots() -> None:
+    symbol = object()
+    qir = [
+        {"name": "rz", "index": [0], "parameters": {"theta": symbol}},
+        {"name": "rz", "index": [1], "parameters": {"theta": symbol}},
+    ]
+    restored = tcp.PropagationCircuit.from_qir(qir, {"nqubits": 2})
+    assert restored.nparameters == 1
+    assert restored.expectation(
+        tcp.PauliOperator.from_terms(2, [("ZI", 1.0)]), [0.23]
+    ) == pytest.approx(1.0)
+
+
+def test_propagation_compile_caches_retain_key_objects() -> None:
+    import gc
+    import weakref
+
+    observable = _z_observable(1)
+    circuit = tcp.PropagationCircuit(1)
+    circuit.compile(observable)
+    reference = weakref.ref(observable)
+    del observable
+    gc.collect()
+    assert reference() is not None
+
+    spps = tcp.SPPSCircuit(1)
+    spps_observable = _z_observable(1)
+    spps.compile(spps_observable)
+    spps_reference = weakref.ref(spps_observable)
+    del spps_observable
+    gc.collect()
+    assert spps_reference() is not None
+
+
 def test_u1_facade_expectation_and_canonical_diagonal_qir() -> None:
     parameter = tcp.Parameter(0)
     circuit = tcp.U1Circuit(2, k=1, filled=[0])

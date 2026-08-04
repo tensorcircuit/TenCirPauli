@@ -166,7 +166,7 @@ def structured_boson_multiply(
 def structured_hybrid_multiply(
     n_modes: int,
     n_bosons: int,
-    n_qubits: int,
+    nqubits: int,
     n_qudit_sites: int,
     qudit_dimension: int,
     left: object,
@@ -189,7 +189,7 @@ def structured_hybrid_multiply(
 def structured_hybrid_canonicalize(
     n_modes: int,
     n_bosons: int,
-    n_qubits: int,
+    nqubits: int,
     n_qudit_sites: int,
     qudit_dimension: int,
     input: object,
@@ -211,7 +211,7 @@ def structured_hybrid_canonicalize(
 def structured_hybrid_jordan_wigner(
     n_modes: int,
     n_bosons: int,
-    n_qubits: int,
+    nqubits: int,
     n_qudit_sites: int,
     qudit_dimension: int,
     input: object,
@@ -416,6 +416,8 @@ class NativePropagationEngine:
     def max_weight(self) -> int | None: ...
     @property
     def is_exact(self) -> bool: ...
+    @property
+    def is_hermitian_observable(self) -> bool: ...
     def expectation(self, parameters: object) -> float: ...
     def value_and_grad(
         self, parameters: object, checkpoint_interval: int | None = None
@@ -507,8 +509,12 @@ def pauli_batch_from_codes(
     nqubits: int, structures: Sequence[Sequence[int]]
 ) -> tuple[int, Sequence[int], Sequence[int]]: ...
 def pauli_multiply(
-    nqubits: int, left_codes: Sequence[int], right_codes: Sequence[int]
-) -> tuple[Sequence[int], int]: ...
+    nqubits: int,
+    x_words_left: Sequence[int],
+    z_words_left: Sequence[int],
+    x_words_right: Sequence[int],
+    z_words_right: Sequence[int],
+) -> tuple[Sequence[int], Sequence[int], int]: ...
 def pauli_symplectic_inner_product(
     nqubits: int,
     x_words_left: Sequence[int],

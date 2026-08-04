@@ -120,7 +120,7 @@ impl NativeMappingPlan {
                     HybridLayout {
                         n_modes: self.plan.n_modes(),
                         n_bosons,
-                        n_qubits,
+                        nqubits: n_qubits,
                         n_qudit_sites,
                         qudit_dimension,
                     },

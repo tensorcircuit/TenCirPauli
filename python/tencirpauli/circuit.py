@@ -203,6 +203,32 @@ def _evaluate_angle(
     )
 
 
+def _evaluate_angle_value(
+    value: Angle, parameters: np.ndarray[Any, Any], nparameters: int
+) -> float:
+    """Evaluate one angle without allocating its slot Jacobian."""
+    if isinstance(value, Parameter):
+        if value.slot >= nparameters:
+            raise ValueError(f"parameter slot {value.slot} is outside 0..{nparameters}")
+        return float(parameters[value.slot])
+    if not isinstance(value, ParameterExpr):
+        return _real_constant(value)
+
+    left = _evaluate_angle_value(value.operands[0], parameters, nparameters)
+    if value.operation == "neg":
+        return -left
+    right = _evaluate_angle_value(value.operands[1], parameters, nparameters)
+    if value.operation == "add":
+        return left + right
+    if value.operation == "sub":
+        return left - right
+    if value.operation == "mul":
+        return left * right
+    if right == 0.0:
+        raise ValueError("parameter expression divides by zero")
+    return left / right
+
+
 def _replace_expression(
     value: Union[float, Parameter, ParameterExpr],
     replacements: Mapping[int, Union[float, Parameter]],

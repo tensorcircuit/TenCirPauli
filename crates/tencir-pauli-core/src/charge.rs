@@ -1,10 +1,10 @@
 //! Generic finite charge-sector transition compilation.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use crate::charge_sector::ChargeSectorPlan;
 use crate::{Complex64, PauliError};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// One canonical structured term in a finite charge-sector layout.
 #[derive(Clone, Debug)]
@@ -76,10 +76,32 @@ fn positions(values: &[u64], axis_count: usize, limit: u128) -> Result<Vec<usize
         }
         result.push(position);
     }
-    if result.iter().collect::<HashSet<_>>().len() != result.len() {
+    if result.iter().collect::<FxHashSet<_>>().len() != result.len() {
         return Err(invalid_sector());
     }
     Ok(result)
+}
+
+fn validate_qudit_term(
+    term: &ChargeTransitionTerm,
+    index: usize,
+    site_count: usize,
+    dimension: u64,
+) -> Result<(), PauliError> {
+    if (!term.qudit_present && !term.qudit_triples.is_empty())
+        || term
+            .qudit_triples
+            .windows(2)
+            .any(|pair| pair[0].0 >= pair[1].0)
+        || term.qudit_triples.iter().any(|&(site, a, b)| {
+            usize::try_from(site).map_or(true, |site| site >= site_count)
+                || u64::from(a) >= dimension
+                || u64::from(b) >= dimension
+        })
+    {
+        return Err(PauliError::NonCanonicalTerms { index });
+    }
+    Ok(())
 }
 
 fn apply_phase(value: &mut Complex64, phase: Complex64) {
@@ -293,21 +315,22 @@ pub fn compile_charge_transitions(
             }
         }
     }
-    for term in terms {
+    for (index, term) in terms.iter().enumerate() {
         if term.qubit_codes.len() != qubit_positions.len()
             || term.mapped_codes.len() != fermion_positions.len()
             || (term.mapped_present
                 && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
-            || (!term.qudit_present && !term.qudit_triples.is_empty())
         {
             return Err(invalid_sector());
         }
+        validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
         if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index: 0 });
+            return Err(PauliError::NonFiniteCoefficient { index });
         }
     }
 
-    let mut basis_index: HashMap<Vec<u64>, u64> = HashMap::with_capacity(dimension);
+    let mut basis_index: FxHashMap<Vec<u64>, u64> =
+        FxHashMap::with_capacity_and_hasher(dimension, Default::default());
     for row_index in 0..dimension {
         let start = row_index
             .checked_mul(axis_count)
@@ -515,17 +538,17 @@ pub fn compile_charge_transitions_from_plan(
     let boson_positions = positions(boson_positions, axis_count, max_bytes)?;
     let qubit_positions = positions(qubit_positions, axis_count, max_bytes)?;
     let qudit_positions = positions(qudit_positions, axis_count, max_bytes)?;
-    for term in terms {
+    for (index, term) in terms.iter().enumerate() {
         if term.qubit_codes.len() != qubit_positions.len()
             || term.mapped_codes.len() != fermion_positions.len()
             || (term.mapped_present
                 && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
-            || (!term.qudit_present && !term.qudit_triples.is_empty())
         {
             return Err(invalid_sector());
         }
+        validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
         if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index: 0 });
+            return Err(PauliError::NonFiniteCoefficient { index });
         }
     }
 

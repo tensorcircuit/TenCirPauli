@@ -397,7 +397,9 @@ class PropagationCircuit:
             max_bytes=budget,
         )
         plan = PropagationCircuitPlan(engine, dynamic, self.nparameters)
-        self._cached_plan = (*key, plan)
+        # Retain the key objects as well as their ids; otherwise CPython may
+        # reuse an id after garbage collection and return a stale native plan.
+        self._cached_plan = (*key, plan, observable, state)
         return plan
 
     def expectation(
@@ -562,6 +564,12 @@ class PropagationCircuit:
                 if parameter_order is None and not isinstance(
                     value, (str, bytes, list, tuple, dict)
                 ):
+                    for index, symbol in enumerate(seen_symbols):
+                        try:
+                            if bool(value == symbol):
+                                return Parameter(index)
+                        except Exception:
+                            continue
                     seen_symbols.append(value)
                     return Parameter(len(seen_symbols) - 1)
                 raise TypeError(

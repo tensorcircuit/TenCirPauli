@@ -21,7 +21,12 @@ from .pauli import PauliOperator, PauliWord
 
 @dataclass(frozen=True)
 class Z2SymmetryAnalysis:
-    """Deterministic, exactly validated Pauli Z2 symmetry analysis."""
+    """Deterministic, exactly validated Pauli Z2 symmetry analysis.
+
+    ``constraint_rank`` is the GF(2) null-space dimension of the constraint
+    matrix and can exceed the number of mutually commuting generators selected
+    for tapering.
+    """
 
     nqubits: int
     generators: Tuple[PauliWord, ...]
@@ -29,7 +34,7 @@ class Z2SymmetryAnalysis:
 
     @property
     def rank(self) -> int:
-        """Return the number of independent commuting generators."""
+        """Return selected isotropic-generator count, distinct from ``constraint_rank`` and sector ranks."""
         return len(self.generators)
 
     def tapering_plan(self, sector: Sequence[int]) -> "Z2TaperingPlan":
@@ -249,7 +254,7 @@ class U1RestrictedOperator:
         )
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
-        """Materialize bounded CSR arrays in restricted-basis ordering."""
+        """Materialize bounded CSR arrays in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
         dimension, indptr, indices, values = self._native_operator.csr(
             _effective_max_bytes(max_bytes)

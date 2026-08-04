@@ -32,6 +32,7 @@ from typing import (
 import numpy as np
 
 from . import _native
+from ._validation import validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     DIRECT_WEYL_BASIS_ORDERING,
@@ -45,7 +46,7 @@ from .hamiltonian import (
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from .pauli import PauliOperator
+from .pauli import _PAULI_CHAR_TO_CODE, PauliOperator
 
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ if TYPE_CHECKING:
 
 
 _U32_MAX = 2**32 - 1
-_IDENTITY_CODES = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+_IDENTITY_CODES = _PAULI_CHAR_TO_CODE
 _PAULI_PRODUCT: Tuple[Tuple[Tuple[int, complex], ...], ...] = (
     ((0, 1), (1, 1), (2, 1), (3, 1)),
     ((1, 1), (0, 1), (3, 1j), (2, -1j)),
@@ -85,10 +86,7 @@ def _finite_complex(value: object, name: str = "coefficient") -> complex:
     return result
 
 
-def _nonnegative_int(value: object, name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
-    return int(value)
+_nonnegative_int = validate_nonnegative_int
 
 
 def _positive_mode(mode: object, count: int, name: str = "mode") -> int:
@@ -385,109 +383,6 @@ class QuditWeylTerm:
     coefficient: complex
 
 
-def _normal_order_fermions(
-    factors: Tuple[Tuple[int, str], ...], n_modes: int
-) -> Dict[FermionWord, int]:
-    def visit(
-        sequence: Tuple[Tuple[int, str], ...],
-    ) -> Dict[Tuple[Tuple[int, str], ...], int]:
-        for index in range(len(sequence) - 1):
-            left_mode, left_action = sequence[index]
-            right_mode, right_action = sequence[index + 1]
-            inversion = False
-            zero = False
-            sign = -1
-            if left_action == "create" and right_action == "create":
-                inversion = left_mode > right_mode
-                zero = left_mode == right_mode
-            elif left_action == "annihilate" and right_action == "annihilate":
-                inversion = left_mode < right_mode
-                zero = left_mode == right_mode
-            elif left_action == "annihilate" and right_action == "create":
-                inversion = True
-            if zero:
-                return {}
-            if not inversion:
-                continue
-            swapped = (
-                *sequence[:index],
-                sequence[index + 1],
-                sequence[index],
-                *sequence[index + 2 :],
-            )
-            result: Dict[Tuple[Tuple[int, str], ...], int] = {}
-            for key, value in visit(swapped).items():
-                result[key] = result.get(key, 0) + sign * value
-            if (
-                left_action == "annihilate"
-                and right_action == "create"
-                and left_mode == right_mode
-            ):
-                contracted = sequence[:index] + sequence[index + 2 :]
-                for key, value in visit(contracted).items():
-                    result[key] = result.get(key, 0) + value
-            return {key: value for key, value in result.items() if value}
-        return {sequence: 1}
-
-    words: Dict[FermionWord, int] = {}
-    for sequence, coefficient in visit(factors).items():
-        creations = tuple(mode for mode, action in sequence if action == "create")
-        annihilations = tuple(
-            mode for mode, action in sequence if action == "annihilate"
-        )
-        word = FermionWord(n_modes, creations, annihilations)
-        words[word] = words.get(word, 0) + coefficient
-    return {word: coefficient for word, coefficient in words.items() if coefficient}
-
-
-def _normal_order_bosons(
-    factors: Tuple[Tuple[int, str], ...], n_modes: int
-) -> Dict[BosonWord, int]:
-    def visit(
-        sequence: Tuple[Tuple[int, str], ...],
-    ) -> Dict[Tuple[Tuple[int, str], ...], int]:
-        for index in range(len(sequence) - 1):
-            left_mode, left_action = sequence[index]
-            right_mode, right_action = sequence[index + 1]
-            inversion = (left_mode > right_mode) or (
-                left_mode == right_mode
-                and left_action == "annihilate"
-                and right_action == "create"
-            )
-            if not inversion:
-                continue
-            swapped = (
-                *sequence[:index],
-                sequence[index + 1],
-                sequence[index],
-                *sequence[index + 2 :],
-            )
-            result = dict(visit(swapped))
-            if (
-                left_mode == right_mode
-                and left_action == "annihilate"
-                and right_action == "create"
-            ):
-                contracted = sequence[:index] + sequence[index + 2 :]
-                for key, value in visit(contracted).items():
-                    result[key] = result.get(key, 0) + value
-            return {key: value for key, value in result.items() if value}
-        return {sequence: 1}
-
-    words: Dict[BosonWord, int] = {}
-    for sequence, coefficient in visit(factors).items():
-        by_mode: Dict[int, List[int]] = {}
-        for mode, action in sequence:
-            powers = by_mode.setdefault(mode, [0, 0])
-            powers[0 if action == "create" else 1] += 1
-        blocks = tuple(
-            (mode, values[0], values[1]) for mode, values in sorted(by_mode.items())
-        )
-        word = BosonWord(n_modes, blocks)
-        words[word] = words.get(word, 0) + coefficient
-    return {word: coefficient for word, coefficient in words.items() if coefficient}
-
-
 def _aggregate_terms(
     terms: Iterable[Tuple[Tuple[Any, ...], complex]],
     max_bytes: Optional[int],
@@ -759,7 +654,7 @@ class OperatorSpace:
                     for mode in term.fermion.annihilation_modes
                 ]
                 inversions = sum(
-                    left > right
+                    1
                     for values, descending in (
                         (creation_image, False),
                         (annihilation_image, True),
@@ -1071,6 +966,22 @@ class _StructuredOperator:
                 _effective_max_bytes(max_bytes),
             )
             return _hybrid_from_native(self.space, result)
+        if not isinstance(self, QuditWeylOperator) or not isinstance(
+            other, QuditWeylOperator
+        ):
+            left_arrays = _hybrid_arrays(self)
+            right_arrays = _hybrid_arrays(other)
+            result = _native.structured_hybrid_multiply(
+                self.space.fermions,
+                self.space.bosons,
+                self.space.qubits,
+                len(self.space.qudits),
+                self.space.qudits[0] if self.space.qudits else 0,
+                left_arrays,
+                right_arrays,
+                _effective_max_bytes(max_bytes),
+            )
+            return _hybrid_from_native(self.space, result)
         products: List[_Term] = []
         for left_term, right_term in product(self._terms, other._terms):
             products.extend(_multiply_terms(left_term, right_term, self.space))
@@ -1341,34 +1252,9 @@ class _StructuredOperator:
                     ),
                 )
             return mapped_operator
-        mapped: List[_Term] = []
-        for term in self._terms:
-            if term.fermion is None:
-                mapped.append(term)
-                continue
-            for codes, coefficient in _jordan_wigner_word(term.fermion):
-                mapped.append(
-                    _Term(
-                        None,
-                        term.boson,
-                        term.qubit,
-                        term.qudit,
-                        codes,
-                        term.coefficient * coefficient,
-                    )
-                )
-                _guard_terms(len(mapped), max_bytes, "Jordan-Wigner expansion")
-        if all(axis.domain in ("fermion", "qubit") for axis in self.space._axes):
-            structures = []
-            coefficients = []
-            for term in mapped:
-                structures.append(_codes_on_space_axes(term, self.space))
-                coefficients.append(term.coefficient)
-            return PauliOperator.from_terms(
-                len(structures[0]) if structures else len(self.space._axes),
-                zip(structures, coefficients),
-            )
-        return HybridOperator._from_terms(self.space, mapped, max_bytes=max_bytes)
+        raise TypeError(
+            "raw fermion mapping requires a FermionOperator or HybridOperator"
+        )
 
     def compile(
         self,
@@ -1623,25 +1509,7 @@ def _multiply_terms(
     left: _Term, right: _Term, space: OperatorSpace
 ) -> Tuple[_Term, ...]:
     f_products: Dict[Optional[FermionWord], complex] = {None: 1.0}
-    if left.fermion is not None or right.fermion is not None:
-        lf = left.fermion or FermionWord(space.fermions)
-        rf = right.fermion or FermionWord(space.fermions)
-        f_products = {
-            word: complex(value)
-            for word, value in _normal_order_fermions(
-                lf.factors + rf.factors, space.fermions
-            ).items()
-        }
     b_products: Dict[Optional[BosonWord], complex] = {None: 1.0}
-    if left.boson is not None or right.boson is not None:
-        lb = left.boson or BosonWord(space.bosons)
-        rb = right.boson or BosonWord(space.bosons)
-        b_products = {
-            word: complex(value)
-            for word, value in _normal_order_bosons(
-                lb.factors + rb.factors, space.bosons
-            ).items()
-        }
     q_codes = (
         tuple(_PAULI_PRODUCT[a][b][0] for a, b in zip(left.qubit, right.qubit))
         if left.qubit and right.qubit
@@ -1795,6 +1663,9 @@ def _adjoint_qubit_codes(codes: Tuple[int, ...]) -> Tuple[int, ...]:
 def _jordan_wigner_word(
     word: FermionWord,
 ) -> Tuple[Tuple[Tuple[int, ...], complex], ...]:
+    # Keep this tensor-product adapter aligned with Rust's
+    # `jordan_wigner_word_expansion`: X=1/2, Y=+i/2 for annihilation and
+    # -i/2 for creation, with Z on modes below the active mode.
     current: Dict[Tuple[int, ...], complex] = {(0,) * word.n_modes: 1.0 + 0j}
     for mode, action in word.factors:
         factor: Dict[Tuple[int, ...], complex] = {}
@@ -1939,7 +1810,7 @@ def _boson_arrays(
 
 
 def _hybrid_arrays(
-    operator: "HybridOperator",
+    operator: "_StructuredOperator",
 ) -> Tuple[
     List[bool],
     List[List[int]],
@@ -2550,7 +2421,9 @@ class OperatorBuilder:
                 else:
                     code_value = _nonnegative_int(code, "Pauli code")
                 if code_value not in range(4):
-                    raise ValueError("Pauli code must be an integer in 0..3")
+                    raise ValueError(
+                        "Pauli code must be an integer in 0..3 (inclusive)"
+                    )
                 qubit_index = _positive_mode(index, self.space.qubits, "qubit")
                 current_code = qcodes[qubit_index]
                 qcodes[qubit_index], local_phase = _PAULI_PRODUCT[current_code][

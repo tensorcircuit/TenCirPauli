@@ -265,7 +265,7 @@ pub fn build_charge_sector_plan(
             limit: max_bytes,
         });
     }
-    for (position, (dimension, table)) in local_dimensions.iter().zip(&contributions).enumerate() {
+    for (dimension, table) in local_dimensions.iter().zip(&contributions) {
         if table.len() != *dimension {
             return Err(PauliError::InvalidStructureLength {
                 expected: *dimension,
@@ -282,11 +282,6 @@ pub fn build_charge_sector_plan(
                     .iter()
                     .find(|contribution| contribution.len() != target.len())
                     .map_or(0, Vec::len),
-            });
-        }
-        if position == usize::MAX {
-            return Err(PauliError::Overflow {
-                context: "checking charge-sector dimensions",
             });
         }
     }

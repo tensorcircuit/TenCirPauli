@@ -69,7 +69,7 @@ impl fmt::Display for PauliError {
             Self::InvalidCode { code, index } => {
                 write!(
                     formatter,
-                    "invalid Pauli code {code} at index {index}; expected 0..3"
+                    "invalid Pauli code {code} at index {index}; expected 0..=3"
                 )
             }
             Self::InvalidWordLength { expected, actual } => {

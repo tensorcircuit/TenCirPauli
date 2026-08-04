@@ -21,12 +21,17 @@ from .propagation import (
 )
 
 
-_DEFAULT_SPP_STATE = ZeroState()
+_DEFAULT_ZERO_STATE = ZeroState()
 
 
 @dataclass(frozen=True)
 class SPPSEstimate:
-    """One fixed-budget or adaptive SPPS estimate."""
+    """One fixed-budget or adaptive SPPS estimate.
+
+    ``value_standard_error`` uses the population (MLE) variance estimator of
+    the sampled path distribution, so it is biased low for very small sample
+    counts.
+    """
 
     value: float
     gradient: np.ndarray[Any, Any]
@@ -42,7 +47,12 @@ class SPPSEstimate:
 
 @dataclass(frozen=True)
 class SPPSValueEstimate:
-    """One value-only stochastic Pauli-path estimate."""
+    """One value-only stochastic Pauli-path estimate.
+
+    ``value_standard_error`` uses the population (MLE) variance estimator of
+    the sampled path distribution, so it is biased low for very small sample
+    counts.
+    """
 
     value: float
     value_standard_error: float
@@ -62,7 +72,7 @@ class SPPSEngine:
         *,
         initial_state: (
             ZeroState | ComputationalBasisState | ProductBlochState | str
-        ) = _DEFAULT_SPP_STATE,
+        ) = _DEFAULT_ZERO_STATE,
         smoothing: float = 0.01,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:

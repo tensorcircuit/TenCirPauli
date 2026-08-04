@@ -7,7 +7,7 @@ from typing import Any, Optional, Sequence, Union, cast
 
 import numpy as np
 
-from .circuit import Angle, _coerce_parameters, _evaluate_angle
+from .circuit import Angle, _coerce_parameters, _evaluate_angle, _evaluate_angle_value
 from .hamiltonian import _validate_max_bytes
 from .pauli import PauliOperator
 from .propagation import (
@@ -53,6 +53,17 @@ class SPPSCircuitPlan:
             )
         return native, jacobian
 
+    def _native_values(
+        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
+    ) -> np.ndarray[Any, Any]:
+        values = _coerce_parameters(parameters, self.nparameters)
+        native: np.ndarray[Any, Any] = np.empty(
+            len(self._dynamic_angles), dtype=np.float64
+        )
+        for index, angle in enumerate(self._dynamic_angles):
+            native[index] = _evaluate_angle_value(angle, values, self.nparameters)
+        return native
+
     def expectation(
         self,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]],
@@ -60,7 +71,7 @@ class SPPSCircuitPlan:
         samples_per_term: int,
         seed: int,
     ) -> SPPSValueEstimate:
-        native, _ = self._native_parameters(parameters)
+        native = self._native_values(parameters)
         return self._engine.expectation(
             native, samples_per_term=samples_per_term, seed=seed
         )
@@ -140,7 +151,9 @@ class SPPSCircuit(PropagationCircuit):
             max_bytes=budget,
         )
         plan = SPPSCircuitPlan(engine, dynamic, self.nparameters)
-        self._cached_plan = (*key, plan)
+        # Retain the key objects as well as their ids; otherwise CPython may
+        # reuse an id after garbage collection and return a stale native plan.
+        self._cached_plan = (*key, plan, observable, state)
         return plan
 
     def expectation(  # type: ignore[override]

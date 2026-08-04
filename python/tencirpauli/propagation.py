@@ -10,6 +10,7 @@ from typing import Any, Iterable, Optional, Sequence, Tuple, cast
 import numpy as np
 
 from . import _native
+from .circuit import _coerce_parameters
 from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
 from .pauli import PauliOperator
 
@@ -176,7 +177,7 @@ class GateTape:
         angle: Optional[float] = None,
         parameter: Optional[int] = None,
     ) -> None:
-        """Append ``exp(-i angle X / 2)`` or a parameterized RX gate."""
+        """Append a parameterized or static RX gate."""
         self._rotation(9, wire, None, angle=angle, parameter=parameter)
 
     def ry(
@@ -359,19 +360,15 @@ class PropagationEngine:
         self.nparameters = int(self._native.nparameters)
         self.max_weight = max_weight
         self.is_exact = bool(self._native.is_exact)
+        self.is_hermitian = bool(self._native.is_hermitian_observable)
 
     def _parameters(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> np.ndarray[Any, Any]:
-        values = np.asarray(parameters, dtype=np.float64)
-        if values.ndim != 1 or values.shape[0] != self.nparameters:
-            raise ValueError(
-                f"parameters must have shape ({self.nparameters},), got {values.shape}"
-            )
-        return cast(np.ndarray[Any, Any], np.ascontiguousarray(values))
+        return _coerce_parameters(parameters, self.nparameters)
 
     def expectation(self, parameters: Sequence[float] | np.ndarray[Any, Any]) -> float:
-        """Propagate and return a scalar product-state expectation."""
+        """Propagate and return a scalar expectation for a Hermitian observable."""
         return float(self._native.expectation(self._parameters(parameters)))
 
     def value_and_grad(
@@ -384,7 +381,8 @@ class PropagationEngine:
 
         Support decisions, exact-zero branches and finite Pauli-weight
         projection are frozen to this forward execution.  The returned array
-        is a read-only contiguous ``float64`` vector.
+        is a read-only contiguous ``float64`` vector. The observable must be
+        Hermitian.
         """
         if checkpoint_interval is not None and (
             not isinstance(checkpoint_interval, int)
@@ -411,7 +409,7 @@ class PropagationEngine:
     def profile(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> ProfiledExpectation:
-        """Return the scalar and explicit propagation diagnostics."""
+        """Return a Hermitian-observable scalar and propagation diagnostics."""
         value, initial, final, peak, estimated, weights, seconds = self._native.profile(
             self._parameters(parameters)
         )
@@ -488,12 +486,7 @@ class PropagationBatch:
     def _parameters(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
     ) -> np.ndarray[Any, Any]:
-        values = np.asarray(parameters, dtype=np.float64)
-        if values.ndim != 1 or values.shape[0] != self.nparameters:
-            raise ValueError(
-                f"parameters must have shape ({self.nparameters},), got {values.shape}"
-            )
-        return cast(np.ndarray[Any, Any], np.ascontiguousarray(values))
+        return _coerce_parameters(parameters, self.nparameters)
 
     def expectations(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]

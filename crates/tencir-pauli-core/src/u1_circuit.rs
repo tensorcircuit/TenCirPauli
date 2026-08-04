@@ -440,10 +440,16 @@ impl U1CircuitPlan {
                 context: "estimating U1 circuit diagonal-index memory",
             })
         })?;
+        let state_bytes = (dimension as u128)
+            .checked_mul(size_of::<Complex64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating U1 circuit state-vector memory",
+            })?;
         check_budget(
             basis_bytes
                 .checked_add(pair_bytes)
                 .and_then(|bytes| bytes.checked_add(diagonal_bytes))
+                .and_then(|bytes| bytes.checked_add(state_bytes))
                 .ok_or(PauliError::Overflow {
                     context: "estimating U1 circuit compiled metadata",
                 })?,
@@ -604,6 +610,12 @@ impl U1CircuitPlan {
         self.value_and_grad_from_final_state_with_values(&state, observable, &values)
     }
 
+    /// Evaluate a gradient from a caller-supplied final state.
+    ///
+    /// The caller must supply the state produced by this plan's forward
+    /// evolution from the same initial state and `parameters`. This method
+    /// does not rerun the circuit or verify that precondition; use
+    /// [`Self::value_and_grad`] when the final state is not already available.
     pub fn value_and_grad_from_state(
         &self,
         state: &[Complex64],
@@ -1398,7 +1410,7 @@ fn pair_map(
         }
     }
     let occupied = sector.particle_number().saturating_sub(1);
-    if occupied > remaining.len() {
+    if sector.particle_number() == 0 || occupied > remaining.len() {
         let empty: Arc<[PairIndex]> = Arc::from(Vec::<PairIndex>::new().into_boxed_slice());
         cache.insert(key, empty.clone());
         return Ok(empty);

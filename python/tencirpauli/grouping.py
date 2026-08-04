@@ -1,4 +1,4 @@
-"""Deterministic QWC grouping and explicitly non-measurement-ready prototype."""
+"""Deterministic QWC and general-commuting Pauli grouping."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from typing import Any, Sequence, Tuple, Union
 import numpy as np
 
 from . import _native
-from .pauli import PauliOperator, _validate_nonnegative_int
+from ._validation import validate_nonnegative_int
+from .pauli import PauliOperator
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def group_operator(
     max_matrix_entries: int = 10_000_000,
 ) -> GroupingResult:
     """Group terms with a deterministic native call and entry bound."""
-    _validate_nonnegative_int(max_matrix_entries, "max_matrix_entries")
+    validate_nonnegative_int(max_matrix_entries, "max_matrix_entries")
     mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
     algorithm_code = {"largest_first": 0, "dsatur": 1}.get(algorithm)
     if mode_code is None:

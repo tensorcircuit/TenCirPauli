@@ -57,14 +57,24 @@ pub(crate) fn pauli_batch_from_codes(
 
 #[pyfunction]
 pub(crate) fn pauli_multiply(
+    py: Python<'_>,
     nqubits: usize,
-    left_codes: Vec<u8>,
-    right_codes: Vec<u8>,
-) -> PyResult<(Vec<u8>, u8)> {
-    let left = PauliWord::from_codes(nqubits, &left_codes).map_err(map_error)?;
-    let right = PauliWord::from_codes(nqubits, &right_codes).map_err(map_error)?;
-    let (result, phase) = left.multiply(&right).map_err(map_error)?;
-    Ok((result.codes(), phase_code(phase)))
+    x_words_left: Vec<u64>,
+    z_words_left: Vec<u64>,
+    x_words_right: Vec<u64>,
+    z_words_right: Vec<u64>,
+) -> PyResult<(Vec<u64>, Vec<u64>, u8)> {
+    py.allow_threads(|| {
+        let left = PauliWord::from_words(nqubits, x_words_left, z_words_left).map_err(map_error)?;
+        let right =
+            PauliWord::from_words(nqubits, x_words_right, z_words_right).map_err(map_error)?;
+        let (result, phase) = left.multiply(&right).map_err(map_error)?;
+        Ok((
+            result.x_words().to_vec(),
+            result.z_words().to_vec(),
+            phase_code(phase),
+        ))
+    })
 }
 
 #[pyfunction]

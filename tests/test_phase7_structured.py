@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
+from tencirpauli import _native
+from tencirpauli.structured import _jordan_wigner_word
 
 
 def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
@@ -168,6 +170,70 @@ def test_hubbard_quartic_fermion_dense_and_mvp_reference() -> None:
     np.testing.assert_allclose(
         operator.compile("native_mvp").apply(state), expected @ state
     )
+
+
+@pytest.mark.parametrize("dimension", [3, 5])
+@pytest.mark.parametrize("target", ["coo", "csr"])
+def test_qudit_weyl_sparse_targets_match_dense(dimension: int, target: str) -> None:
+    operator = tcp.QuditWeylOperator.from_terms(
+        dimension,
+        [
+            (((0, 1, 2), (1, 2, 1)), 0.7 - 0.2j),
+            (((1, 2, 3),), -0.3 + 0.1j),
+            (((0, 2, 1),), 0.2),
+        ],
+        n_sites=2,
+    )
+    dense = operator.compile("dense")
+    sparse = operator.compile(target)
+    reconstructed = np.zeros_like(dense)
+    if target == "coo":
+        np.add.at(reconstructed, (sparse.row, sparse.column), sparse.data)
+    else:
+        for row in range(dense.shape[0]):
+            start, stop = int(sparse.indptr[row]), int(sparse.indptr[row + 1])
+            reconstructed[row, sparse.indices[start:stop]] += sparse.data[start:stop]
+    np.testing.assert_allclose(reconstructed, dense)
+
+
+def test_qudit_weyl_native_mvp_matches_dense() -> None:
+    operator = tcp.QuditWeylOperator.from_terms(
+        4,
+        [
+            (((0, 1, 2),), 0.7 - 0.2j),
+            (((1, 2, 1),), -0.3 + 0.1j),
+            (((0, 3, 1), (1, 1, 2)), 0.2),
+        ],
+        n_sites=2,
+    )
+    dense = operator.compile("dense")
+    state = np.arange(dense.shape[0], dtype=np.complex128)
+    np.testing.assert_allclose(
+        operator.compile("native_mvp").apply(state), dense @ state
+    )
+
+
+@pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev"])
+@pytest.mark.parametrize("target", ["coo", "csr", "native_mvp"])
+def test_fermion_mapping_sparse_and_mvp_match_dense(mapping: str, target: str) -> None:
+    operator = tcp.FermionOperator.from_terms(4, _hubbard_terms(2))
+    dense = operator.compile("dense", mapping=mapping)
+    compiled = operator.compile(target, mapping=mapping)
+    if target == "coo":
+        reconstructed = np.zeros_like(dense)
+        np.add.at(reconstructed, (compiled.row, compiled.column), compiled.data)
+        np.testing.assert_allclose(reconstructed, dense)
+    elif target == "csr":
+        reconstructed = np.zeros_like(dense)
+        for row in range(dense.shape[0]):
+            start, stop = int(compiled.indptr[row]), int(compiled.indptr[row + 1])
+            reconstructed[row, compiled.indices[start:stop]] += compiled.data[
+                start:stop
+            ]
+        np.testing.assert_allclose(reconstructed, dense)
+    else:
+        state = np.arange(dense.shape[0], dtype=np.complex128)
+        np.testing.assert_allclose(compiled.apply(state), dense @ state)
 
 
 def test_boson_closed_form_and_projected_boundary() -> None:
@@ -487,6 +553,21 @@ def test_embedding_validates_permutations_dimensions_and_fermion_signs() -> None
     embedded = target.embed(operator, fermions={0: 1, 1: 0})
     expected = target.fermion.create(1) * target.fermion.annihilate(0)
     np.testing.assert_allclose(embedded.compile("dense"), expected.compile("dense"))
+
+    annihilation_source = (
+        source.fermion.create(1)
+        * source.fermion.annihilate(1)
+        * source.fermion.annihilate(0)
+    )
+    annihilation_embedded = target.embed(annihilation_source, fermions={0: 1, 1: 0})
+    annihilation_expected = -(
+        target.fermion.create(0)
+        * target.fermion.annihilate(1)
+        * target.fermion.annihilate(0)
+    )
+    np.testing.assert_allclose(
+        annihilation_embedded.compile("dense"), annihilation_expected.compile("dense")
+    )
     with pytest.raises(ValueError, match="injective"):
         target.embed(operator, fermions={0: 0, 1: 0})
     with pytest.raises(ValueError, match="integers"):
@@ -751,6 +832,29 @@ def test_partial_mapping_both_orders_nested_and_tensor_product() -> None:
         .map_fermions()
         .compile("dense", boson_cutoffs={0: 1}),
     )
+
+
+@pytest.mark.parametrize(
+    ("creation", "annihilation"),
+    [((0,), ()), ((2,), (1,)), ((0, 2), (2, 0)), ((1, 3), (2, 0))],
+)
+def test_tensor_product_jordan_wigner_adapter_matches_native(
+    creation: tuple[int, ...], annihilation: tuple[int, ...]
+) -> None:
+    word = tcp.FermionWord(4, creation, annihilation)
+    structures, real, imaginary = _native.structured_fermion_jordan_wigner(
+        word.n_modes,
+        [list(creation)],
+        [list(annihilation)],
+        [1.0],
+        [0.0],
+        tcp.DEFAULT_MAX_BYTES,
+    )
+    native = tuple(
+        (tuple(structure), complex(re, im))
+        for structure, re, im in zip(structures, real, imaginary)
+    )
+    assert _jordan_wigner_word(word) == native
 
 
 @pytest.mark.parametrize("dimension", [3, 4, 5, 6])

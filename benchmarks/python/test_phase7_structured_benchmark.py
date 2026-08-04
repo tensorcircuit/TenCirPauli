@@ -634,6 +634,137 @@ def test_phase7_uniform_weyl_backend_mvp(
     )
 
 
+@pytest.mark.parametrize(
+    ("dimension", "target"),
+    tuple(product((3, 5, 7), ("coo", "csr", "native_mvp"))),
+    ids=lambda value: str(value),
+)
+def test_phase7_uniform_weyl_sparse_and_mvp(
+    benchmark: BenchmarkFixture, dimension: int, target: str
+) -> None:
+    """Measure direct qudit Hamiltonian sparse construction and native MVP."""
+    operator = direct_weyl_workload(dimension, n_sites=3)
+    dense = operator.compile("dense")
+    expected = operator.compile(target)
+    state = (
+        np.random.default_rng(20260804 + dimension)
+        .normal(size=dense.shape[0])
+        .astype(np.complex128)
+    )
+    result = benchmark(operator.compile, target)
+    if target == "coo":
+        reconstructed = np.zeros_like(dense)
+        np.add.at(reconstructed, (result.row, result.column), result.data)
+        numerical_error = float(np.max(np.abs(reconstructed - dense)))
+        np.testing.assert_allclose(reconstructed, dense)
+        nonzeros = len(result.data)
+        output_bytes = int(
+            result.row.nbytes + result.column.nbytes + result.data.nbytes
+        )
+        plan_bytes = 0
+    elif target == "csr":
+        reconstructed = np.zeros_like(dense)
+        for row in range(dense.shape[0]):
+            start, stop = int(result.indptr[row]), int(result.indptr[row + 1])
+            reconstructed[row, result.indices[start:stop]] += result.data[start:stop]
+        numerical_error = float(np.max(np.abs(reconstructed - dense)))
+        np.testing.assert_allclose(reconstructed, dense)
+        nonzeros = len(result.data)
+        output_bytes = int(
+            result.indptr.nbytes + result.indices.nbytes + result.data.nbytes
+        )
+        plan_bytes = 0
+    else:
+        assert target == "native_mvp"
+        expected_apply = expected.apply(state)
+        actual_apply = result.apply(state)
+        numerical_error = float(np.max(np.abs(actual_apply - expected_apply)))
+        np.testing.assert_allclose(actual_apply, expected_apply)
+        nonzeros = operator.term_count * dense.shape[0]
+        output_bytes = int(actual_apply.nbytes)
+        plan_bytes = int(result.estimated_bytes)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count * dense.shape[0],
+        dimension=dense.shape[0],
+        nonzeros_or_transitions=nonzeros,
+        plan_bytes=plan_bytes,
+        output_bytes=output_bytes,
+        numerical_error=numerical_error,
+        workload=f"uniform_weyl_d{dimension}_{target}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mapping", "target"),
+    tuple(
+        product(
+            ("jordan_wigner", "parity", "bravyi_kitaev"),
+            ("coo", "csr", "native_mvp"),
+        )
+    ),
+    ids=lambda value: str(value),
+)
+def test_phase7_fermion_mapping_sparse_and_mvp(
+    benchmark: BenchmarkFixture, mapping: str, target: str
+) -> None:
+    """Compare mapping-specific sparse/MVP compilation end to end."""
+    operator, raw_terms = hubbard_quartic_workload()
+    dense = operator.compile("dense", mapping=mapping)
+    expected = operator.compile(target, mapping=mapping)
+    state = (
+        np.random.default_rng(20260804)
+        .normal(size=dense.shape[0])
+        .astype(np.complex128)
+    )
+    result = benchmark(operator.compile, target, mapping=mapping)
+    if target == "coo":
+        reconstructed = np.zeros_like(dense)
+        np.add.at(reconstructed, (result.row, result.column), result.data)
+        numerical_error = float(np.max(np.abs(reconstructed - dense)))
+        np.testing.assert_allclose(reconstructed, dense)
+        nonzeros = len(result.data)
+        output_bytes = int(
+            result.row.nbytes + result.column.nbytes + result.data.nbytes
+        )
+        plan_bytes = 0
+    elif target == "csr":
+        reconstructed = np.zeros_like(dense)
+        for row in range(dense.shape[0]):
+            start, stop = int(result.indptr[row]), int(result.indptr[row + 1])
+            reconstructed[row, result.indices[start:stop]] += result.data[start:stop]
+        numerical_error = float(np.max(np.abs(reconstructed - dense)))
+        np.testing.assert_allclose(reconstructed, dense)
+        nonzeros = len(result.data)
+        output_bytes = int(
+            result.indptr.nbytes + result.indices.nbytes + result.data.nbytes
+        )
+        plan_bytes = 0
+    else:
+        assert target == "native_mvp"
+        expected_apply = expected.apply(state)
+        actual_apply = result.apply(state)
+        numerical_error = float(np.max(np.abs(actual_apply - expected_apply)))
+        np.testing.assert_allclose(actual_apply, expected_apply)
+        nonzeros = int(np.count_nonzero(dense))
+        output_bytes = int(actual_apply.nbytes)
+        plan_bytes = int(result.estimated_bytes)
+    _record_metadata(
+        benchmark,
+        input_terms=len(raw_terms),
+        canonical_terms=operator.term_count,
+        generated_contributions=int(np.count_nonzero(dense)),
+        dimension=dense.shape[0],
+        nonzeros_or_transitions=nonzeros,
+        plan_bytes=plan_bytes,
+        output_bytes=output_bytes,
+        numerical_error=numerical_error,
+        workload=f"fermion_{mapping}_{target}",
+    )
+
+
 def test_phase7_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
     """Keep the recursive-expansion memory guard executable and bounded."""
     factors = (

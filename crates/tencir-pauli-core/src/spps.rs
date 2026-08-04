@@ -988,6 +988,10 @@ fn combine_fixed(
     stats: &[TermStats],
     nparameters: usize,
 ) -> Result<(f64, Vec<f64>, f64), PauliError> {
+    // `value_standard_error` intentionally uses the MLE (population)
+    // variance estimator for the sampled path distribution. It is slightly
+    // biased low for small sample counts; callers needing an unbiased sample
+    // variance should account for that convention explicitly.
     let mut value = 0.0;
     let mut gradient = vec![0.0; nparameters];
     let mut variance = 0.0;
@@ -1031,24 +1035,27 @@ fn combine_adaptive(
     right: &[TermStats],
     budgets: &[usize],
 ) -> Result<(f64, Vec<f64>, f64), PauliError> {
+    // Keep the estimator convention explicit: this uses population (MLE)
+    // variances, which are biased low for small sample counts.
     let nparameters = left.first().map_or(0, |stat| stat.gradient_sum.len());
     let mut value = 0.0;
     let mut gradient = vec![0.0; nparameters];
     let mut variance = 0.0;
-    for ((left_stat, right_stat), &budget) in left.iter().zip(right).zip(budgets) {
-        let count = budget as f64;
-        let left_mean = left_stat.sum / count;
-        let right_mean = right_stat.sum / count;
+    for ((left_stat, right_stat), _) in left.iter().zip(right).zip(budgets) {
+        let left_count = left_stat.count as f64;
+        let right_count = right_stat.count as f64;
+        let left_mean = left_stat.sum / left_count;
+        let right_mean = right_stat.sum / right_count;
         value += 0.5 * (left_mean + right_mean);
-        let left_var = (left_stat.sum_squared / count - left_mean * left_mean).max(0.0);
-        let right_var = (right_stat.sum_squared / count - right_mean * right_mean).max(0.0);
-        variance += 0.25 * (left_var + right_var) / count;
+        let left_var = (left_stat.sum_squared / left_count - left_mean * left_mean).max(0.0);
+        let right_var = (right_stat.sum_squared / right_count - right_mean * right_mean).max(0.0);
+        variance += 0.25 * (left_var / left_count + right_var / right_count);
         for ((output, left_sum), right_sum) in gradient
             .iter_mut()
             .zip(&left_stat.gradient_sum)
             .zip(&right_stat.gradient_sum)
         {
-            *output += 0.5 * (left_sum + right_sum) / count;
+            *output += 0.5 * (left_sum / left_count + right_sum / right_count);
         }
     }
     if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {

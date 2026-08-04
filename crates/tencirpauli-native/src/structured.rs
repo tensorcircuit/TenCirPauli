@@ -5,7 +5,7 @@ use tencir_pauli_core::{
     canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
     jordan_wigner_hybrid_terms, jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms,
     multiply_hybrid_terms, structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix,
-    Complex64, FermionBatch, HybridBatch, HybridLayout, HybridRawBatch,
+    FermionBatch, HybridBatch, HybridLayout, HybridRawBatch,
     StructuredMvpPlan as CoreStructuredMvpPlan, StructuredOperation,
 };
 
@@ -217,7 +217,7 @@ pub(crate) fn structured_hybrid_multiply(
     py: Python<'_>,
     n_modes: usize,
     n_bosons: usize,
-    n_qubits: usize,
+    nqubits: usize,
     n_qudit_sites: usize,
     qudit_dimension: usize,
     left: HybridInput,
@@ -260,7 +260,7 @@ pub(crate) fn structured_hybrid_multiply(
                 HybridLayout {
                     n_modes,
                     n_bosons,
-                    n_qubits,
+                    nqubits,
                     n_qudit_sites,
                     qudit_dimension,
                 },
@@ -317,7 +317,7 @@ pub(crate) fn structured_hybrid_canonicalize(
     py: Python<'_>,
     n_modes: usize,
     n_bosons: usize,
-    n_qubits: usize,
+    nqubits: usize,
     n_qudit_sites: usize,
     qudit_dimension: usize,
     input: HybridRawInput,
@@ -339,7 +339,7 @@ pub(crate) fn structured_hybrid_canonicalize(
                 HybridLayout {
                     n_modes,
                     n_bosons,
-                    n_qubits,
+                    nqubits,
                     n_qudit_sites,
                     qudit_dimension,
                 },
@@ -378,7 +378,7 @@ pub(crate) fn structured_hybrid_jordan_wigner(
     py: Python<'_>,
     n_modes: usize,
     n_bosons: usize,
-    n_qubits: usize,
+    nqubits: usize,
     n_qudit_sites: usize,
     qudit_dimension: usize,
     input: HybridInput,
@@ -405,7 +405,7 @@ pub(crate) fn structured_hybrid_jordan_wigner(
                 HybridLayout {
                     n_modes,
                     n_bosons,
-                    n_qubits,
+                    nqubits,
                     n_qudit_sites,
                     qudit_dimension,
                 },
@@ -452,21 +452,12 @@ pub(crate) fn structured_dense(
     coefficients_im: Vec<f64>,
     max_bytes: u128,
 ) -> PyResult<(usize, Bound<'_, PyArray1<NumpyComplex128>>)> {
-    if coefficients_re.len() != coefficients_im.len() {
-        return Err(PyValueError::new_err(
-            "real and imaginary coefficient lengths differ",
-        ));
-    }
     if operations.len() != coefficients_re.len() {
         return Err(PyValueError::new_err(
             "operation and coefficient lengths differ",
         ));
     }
-    let coefficients = coefficients_re
-        .into_iter()
-        .zip(coefficients_im)
-        .map(|(real, imaginary)| Complex64::new(real, imaginary))
-        .collect::<Vec<_>>();
+    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
     let operations = operations
         .into_iter()
         .map(|term| {

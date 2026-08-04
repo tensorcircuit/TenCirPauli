@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence, Tuple, Unio
 import numpy as np
 
 from . import _native
+from ._validation import validate_nonnegative_int
 from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
 
 
@@ -45,9 +46,8 @@ class PauliPhase(IntEnum):
         return (1.0, 1.0j, -1.0, -1.0j)[int(self)]
 
 
-def _validate_nonnegative_int(value: int, name: str) -> None:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
+_PAULI_CHAR_TO_CODE = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+_PAULI_CODE_TO_CHAR = "IXYZ"
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class PauliWord:
             for code in normalized
         ):
             raise ValueError(
-                f"Pauli codes must be integers in 0..3, got {normalized!r}"
+                f"Pauli codes must be integers in 0..3 (inclusive), got {normalized!r}"
             )
         x_words, z_words = _native.pauli_from_codes(len(normalized), normalized)
         return cls(len(normalized), tuple(x_words), tuple(z_words))
@@ -121,10 +121,9 @@ class PauliWord:
         """Construct one word from an ``IXYZ`` string in qubit order."""
         if not isinstance(value, str):
             raise TypeError("Pauli string must be a str")
-        lookup = {"I": 0, "X": 1, "Y": 2, "Z": 3}
         try:
             return cls.from_codes(
-                tuple(lookup[character] for character in value.upper())
+                tuple(_PAULI_CHAR_TO_CODE[character] for character in value.upper())
             )
         except KeyError as error:
             raise ValueError(f"invalid Pauli character {error.args[0]!r}") from error
@@ -141,7 +140,7 @@ class PauliWord:
                     f"expected structure length {nqubits}, got {len(structure)}"
                 )
             if any(code not in range(4) for code in structure):
-                raise ValueError("Pauli codes must be integers in 0..3")
+                raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
         word_count, x_flat, z_flat = _native.pauli_batch_from_codes(nqubits, normalized)
         return tuple(
             cls(
@@ -168,7 +167,7 @@ class PauliWord:
 
     def to_string(self) -> str:
         """Return the canonical ``IXYZ`` string representation."""
-        return "".join("IXYZ"[code] for code in self.to_codes())
+        return "".join(_PAULI_CODE_TO_CHAR[code] for code in self.to_codes())
 
     def symplectic_inner_product(self, other: "PauliWord") -> int:
         """Return the binary symplectic inner product in ``{0, 1}``."""
@@ -199,10 +198,16 @@ class PauliWord:
     def multiply(self, other: "PauliWord") -> PauliProduct:
         """Multiply words and return a canonical word plus exact phase."""
         _ensure_compatible(self, other)
-        codes, phase = _native.pauli_multiply(
-            self.nqubits, self.to_codes(), other.to_codes()
+        x_words, z_words, phase = _native.pauli_multiply(
+            self.nqubits,
+            self.x_words,
+            self.z_words,
+            other.x_words,
+            other.z_words,
         )
-        return PauliProduct(PauliWord.from_codes(codes), PauliPhase(phase))
+        return PauliProduct(
+            PauliWord(self.nqubits, tuple(x_words), tuple(z_words)), PauliPhase(phase)
+        )
 
     def adjoint(self) -> "PauliWord":
         """Return the adjoint; every phase-free basis word is Hermitian."""
@@ -638,7 +643,7 @@ class PauliOperator:
         self, mode: str = "general", max_entries: int = 10_000_000
     ) -> np.ndarray[Any, Any]:
         """Return a bounded dense matrix, limited by compatibility entries."""
-        _validate_nonnegative_int(max_entries, "max_entries")
+        validate_nonnegative_int(max_entries, "max_entries")
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
@@ -656,7 +661,7 @@ class PauliOperator:
         self, mode: str = "general", max_edges: int = 10_000_000
     ) -> Tuple[Tuple[int, int], ...]:
         """Return streaming edges, limited by the number of output edges."""
-        _validate_nonnegative_int(max_edges, "max_edges")
+        validate_nonnegative_int(max_edges, "max_edges")
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
@@ -894,16 +899,23 @@ class PauliOperator:
         _validate_max_bytes(max_bytes)
         if not isinstance(other, PauliOperator):
             raise TypeError("tensor_product expects a PauliOperator")
+        left_structures, left_reals, left_imaginaries = self._arrays()
+        right_structures, right_reals, right_imaginaries = other._arrays()
         terms = []
-        for left, right in (
-            (left, right) for left in self.terms for right in other.terms
-        ):
-            terms.append(
-                (
-                    left.word.to_codes() + right.word.to_codes(),
-                    left.coefficient * right.coefficient,
-                )
+        for left_index, left_structure in enumerate(left_structures):
+            left_coefficient = complex(
+                left_reals[left_index], left_imaginaries[left_index]
             )
+            for right_index, right_structure in enumerate(right_structures):
+                right_coefficient = complex(
+                    right_reals[right_index], right_imaginaries[right_index]
+                )
+                terms.append(
+                    (
+                        left_structure + right_structure,
+                        left_coefficient * right_coefficient,
+                    )
+                )
         return PauliOperator.from_terms(self.nqubits + other.nqubits, terms)
 
 
@@ -964,9 +976,9 @@ def _normalize_code_arrays(
     if code_array.ndim != 2:
         raise ValueError("structures must be a rectangular two-dimensional array")
     if code_array.size and code_array.dtype.kind not in ("i", "u"):
-        raise ValueError("Pauli codes must be integers in 0..3")
+        raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
     if code_array.size and (np.any(code_array < 0) or np.any(code_array > 3)):
-        raise ValueError("Pauli codes must be integers in 0..3")
+        raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
     try:
         coefficient_array = np.asarray(coefficients, dtype=np.complex128)
     except (TypeError, ValueError, OverflowError) as error:
@@ -989,9 +1001,10 @@ def _coerce_structure(nqubits: int, value: PauliInput) -> Tuple[int, ...]:
             raise ValueError(f"expected {nqubits} qubits, got {value.nqubits}")
         return _codes_from_word(value)
     if isinstance(value, str):
-        lookup = {"I": 0, "X": 1, "Y": 2, "Z": 3}
         try:
-            structure = tuple(lookup[character] for character in value.upper())
+            structure = tuple(
+                _PAULI_CHAR_TO_CODE[character] for character in value.upper()
+            )
         except KeyError as error:
             raise ValueError(f"invalid Pauli character {error.args[0]!r}") from error
     else:
@@ -1000,7 +1013,9 @@ def _coerce_structure(nqubits: int, value: PauliInput) -> Tuple[int, ...]:
             not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
             for code in structure
         ):
-            raise ValueError(f"Pauli codes must be integers in 0..3, got {structure!r}")
+            raise ValueError(
+                f"Pauli codes must be integers in 0..3 (inclusive), got {structure!r}"
+            )
     if len(structure) != nqubits:
         raise ValueError(f"expected {nqubits} qubits, got {len(structure)}")
     return structure

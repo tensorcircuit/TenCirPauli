@@ -14,6 +14,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 import numpy as np
 
 from . import _native
+from ._validation import validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     _check_allocation,
@@ -35,10 +36,7 @@ _BASIS_ORDERING = "qubit0_msb_matrix"
 _SCHEMA_VERSION = 1
 
 
-def _exact_nonnegative(value: object, name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
-    return int(value)
+_exact_nonnegative = validate_nonnegative_int
 
 
 def _mapping_plan_upper_bound(n_modes: int) -> int:
@@ -347,7 +345,9 @@ class FermionQubitMapping:
             not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
             for code in values
         ):
-            raise ValueError("Pauli codes must have length n_modes and lie in 0..3")
+            raise ValueError(
+                "Pauli codes must have length n_modes and lie in 0..3 (inclusive)"
+            )
         result = list(values)
         phase = 1.0 + 0j
         control_images = ((0, 0), (1, 1), (2, 1), (3, 0))
@@ -396,21 +396,23 @@ class FermionQubitMapping:
             "mapped Pauli operator",
         )
         if self._native_plan is not None:
+            structures, coefficients_re, coefficients_im = operator._arrays()
             result = self._native_plan.transform(
-                [list(term.word.to_codes()) for term in operator.terms],
-                [term.coefficient.real for term in operator.terms],
-                [term.coefficient.imag for term in operator.terms],
+                structures,
+                coefficients_re,
+                coefficients_im,
                 _effective_max_bytes(max_bytes),
             )
             return PauliOperator._from_native(self.n_modes, result)
+        structures, coefficients_re, coefficients_im = operator._arrays()
         return PauliOperator.from_terms(
             self.n_modes,
             (
-                (transformed, term.coefficient * phase)
-                for term in operator.terms
-                for transformed, phase in (
-                    self._transform_codes_with_phase(term.word.to_codes()),
+                (transformed, complex(real, imaginary) * phase)
+                for structure, real, imaginary in zip(
+                    structures, coefficients_re, coefficients_im
                 )
+                for transformed, phase in (self._transform_codes_with_phase(structure),)
             ),
         )
 

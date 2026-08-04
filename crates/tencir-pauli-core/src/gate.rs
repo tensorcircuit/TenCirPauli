@@ -109,11 +109,6 @@ impl GateOperation {
                 return Err(PauliError::NonFiniteParameter { index: 0 });
             }
         }
-        if wire1.is_some() && matches!(axis, RotationAxis::X | RotationAxis::Y | RotationAxis::Z) {
-            // The axis itself is shared by both local generators; no further
-            // distinction is needed here, but retaining this check documents
-            // that the two-wire form is intentional.
-        }
         Ok(Self {
             kind: GateKind::Rotation {
                 axis,

@@ -322,7 +322,7 @@ impl MappingPlan {
                     context: "hybrid mapping expects Jordan-Wigner-expanded fermion terms",
                 });
             }
-            if batch.qubit_codes[index].len() != layout.n_qubits
+            if batch.qubit_codes[index].len() != layout.nqubits
                 || batch.mapped_codes[index].len() != layout.n_modes
             {
                 return Err(PauliError::InvalidStructureLength {
