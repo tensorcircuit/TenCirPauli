@@ -865,7 +865,8 @@ def test_phase75_restricted_apply(benchmark: BenchmarkFixture) -> None:
         benchmark,
         n_modes=8,
         sector_dimension=sector.dimension,
-        transitions=plan.transition_count,
+        storage=plan.storage,
+        strategy=plan.strategy,
         plan_bytes=plan.estimated_bytes,
         workspace_bytes=sector.dimension * max(len(sector.local_dimensions), 1) * 8,
         output_bytes=sector.dimension * 16,
@@ -897,8 +898,9 @@ def test_phase75_restricted_first_apply(benchmark: BenchmarkFixture) -> None:
 def test_phase75_restricted_materialization(
     benchmark: BenchmarkFixture, target: str
 ) -> None:
-    sector, restricted = _charge_workload()
-    plan = restricted.mvp_plan()
+    sector, _ = _charge_workload()
+    operator = _fermion_workload()
+    plan = operator.restrict_charge(sector).mvp_plan(storage="eager")
     if target == "dense":
         output_bytes = sector.dimension * sector.dimension * 16
     elif target == "coo":
@@ -912,12 +914,13 @@ def test_phase75_restricted_materialization(
         target=target,
         n_modes=8,
         sector_dimension=sector.dimension,
-        transitions=plan.transition_count,
+        storage=plan.storage,
+        strategy=plan.strategy,
         plan_bytes=plan.estimated_bytes,
         output_bytes=output_bytes,
         numerical_error=0.0,
     )
-    benchmark(getattr(restricted, target))
+    benchmark(lambda: getattr(operator.restrict_charge(sector), target)())
 
 
 def test_phase75_restricted_setup_against_u1(benchmark: BenchmarkFixture) -> None:
@@ -958,7 +961,7 @@ def test_phase75_restricted_setup_scaling(
         n_modes=n_modes,
         sector_dimension=sector.dimension,
         input_terms=operator.term_count,
-        transitions=expected.mvp_plan().transition_count,
+        storage=expected.storage,
         plan_bytes=expected.estimated_bytes,
     )
     benchmark(operator.restrict_charge, sector)
@@ -983,7 +986,7 @@ def test_phase75_restricted_domain_workloads(
         workload=workload,
         sector_dimension=sector.dimension,
         input_terms=operator.term_count,
-        transitions=expected.mvp_plan().transition_count,
+        storage=expected.storage,
         plan_bytes=expected.estimated_bytes,
         workspace_bytes=sector.estimated_bytes,
     )

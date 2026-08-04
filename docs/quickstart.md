@@ -58,7 +58,7 @@ For a parameterized circuit, use `tcp.Parameter`, supply a parameter vector, and
 | If you need to... | Start with... |
 | --- | --- |
 | Inspect or transform Pauli terms | `PauliWord`, `PauliOperator` |
-| Materialize or apply a Hamiltonian | `dense()`, `coo()`, `csr()`, `native_mvp_plan()` |
+| Materialize or apply a Hamiltonian | `dense()`, `coo()`, `csr()`, `compile("native_mvp")` |
 | Keep JAX/TensorCircuit active | `backend_mvp_plan()` and `backend_mvp()` |
 | Run a native circuit observable | `PropagationCircuit`, `U1Circuit`, or `SPPSCircuit` |
 | Work with structured fermions or charges | `OperatorSpace`, `FermionQubitMapping`, `AdditiveCharge` |

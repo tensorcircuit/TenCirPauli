@@ -8,6 +8,7 @@ class StructuredMvpPlan:
     @property
     def estimated_bytes(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
 class NativeMappingPlan:
     @property
@@ -110,6 +111,33 @@ class NativeChargeSectorPlan:
         max_bytes: int,
         fast_fermion_particles: int | None,
     ) -> object: ...
+    def compile_mvp(
+        self,
+        dimension: int,
+        local_dimensions: Sequence[int],
+        fermion_positions: Sequence[int],
+        boson_positions: Sequence[int],
+        qubit_positions: Sequence[int],
+        qudit_positions: Sequence[int],
+        fermion_creation: object,
+        fermion_annihilation: object,
+        boson_blocks: object,
+        qubit_codes: object,
+        mapped_present: Sequence[bool],
+        mapped_codes: object,
+        qudit_present: Sequence[bool],
+        qudit_triples: object,
+        coefficients: object,
+        qudit_dimension: int,
+        termwise_conserved: bool,
+        fast_fermion_particles: int | None = ...,
+    ) -> NativeChargeMvpPlan: ...
+
+class NativeChargeMvpPlan:
+    @property
+    def dimension(self) -> int: ...
+    def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
 def charge_sector_plan(
     local_dimensions: Sequence[int],
@@ -261,6 +289,15 @@ def charge_mvp_apply(
     state: object,
     max_bytes: int,
 ) -> object: ...
+def charge_mvp_apply_into(
+    dimension: int,
+    rows: object,
+    columns: object,
+    coefficients: object,
+    state: object,
+    output: object,
+    max_bytes: int,
+) -> None: ...
 def charge_compile_transitions(
     dimension: int,
     basis: object,
@@ -326,6 +363,7 @@ class NativeMvpPlan:
     def term_count(self) -> int: ...
     @property
     def strategy(self) -> str: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
     def apply(
         self,
         state: object,
@@ -361,6 +399,7 @@ class NativeU1RestrictedOperator:
     @property
     def dimension(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
     def mvp_plan(self, max_bytes: int) -> NativeU1MvpPlan: ...
     def dense(self, max_bytes: int) -> tuple[int, object]: ...
     def coo(self, max_bytes: int) -> tuple[int, object, object, object]: ...
@@ -376,6 +415,7 @@ class NativeU1MvpPlan:
     @property
     def transition_count(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
 class NativeU1CircuitPlan:
     @property
@@ -691,6 +731,7 @@ def pauli_mvp_plan(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
+    storage: str = ...,
 ) -> NativeMvpPlan: ...
 def pauli_backend_plan(
     nqubits: int,

@@ -456,6 +456,14 @@ impl U1RestrictedOperator {
         self.plan.apply(state, max_bytes)
     }
 
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
+        self.plan.apply_into(state, output)
+    }
+
     pub fn mvp_plan(&self, max_bytes: u128) -> Result<U1MvpPlan, PauliError> {
         self.plan.clone_with_budget(max_bytes)
     }

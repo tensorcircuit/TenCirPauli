@@ -1,5 +1,5 @@
 use numpy::{
-    Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadonlyArray2,
+    Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadwriteArray1,
     PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
@@ -163,4 +163,63 @@ pub(crate) fn charge_mvp_apply<'py>(
         Ok::<Vec<Complex64>, PyErr>(output)
     })?;
     Ok(PyArray1::from_vec(py, values))
+}
+
+/// Apply a deterministic restricted transition list into caller-owned output.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+pub(crate) fn charge_mvp_apply_into<'py>(
+    py: Python<'py>,
+    dimension: usize,
+    rows: PyReadonlyArray1<'py, u64>,
+    columns: PyReadonlyArray1<'py, u64>,
+    coefficients: PyReadonlyArray1<'py, NumpyComplex128>,
+    state: PyReadonlyArray1<'py, NumpyComplex128>,
+    mut output: PyReadwriteArray1<'py, NumpyComplex128>,
+    max_bytes: usize,
+) -> PyResult<()> {
+    let row_values = rows
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("charge rows must be C-contiguous"))?;
+    let column_values = columns
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("charge columns must be C-contiguous"))?;
+    let coefficient_values = coefficients
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("charge coefficients must be C-contiguous"))?;
+    let state_values = state
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+    let output_values = output
+        .as_slice_mut()
+        .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+    if state_values.len() != dimension || output_values.len() != dimension {
+        return Err(PyValueError::new_err(format!(
+            "charge input and output must have shape ({dimension},)"
+        )));
+    }
+    if row_values.len() != column_values.len() || row_values.len() != coefficient_values.len() {
+        return Err(PyValueError::new_err(
+            "restricted transition arrays must have equal lengths",
+        ));
+    }
+    let _ = max_bytes;
+    py.allow_threads(|| {
+        output_values.fill(NumpyComplex128::new(0.0, 0.0));
+        for ((&row, &column), &coefficient) in
+            row_values.iter().zip(column_values).zip(coefficient_values)
+        {
+            let row = usize::try_from(row)
+                .map_err(|_| PyValueError::new_err("restricted row index overflow"))?;
+            let column = usize::try_from(column)
+                .map_err(|_| PyValueError::new_err("restricted column index overflow"))?;
+            if row >= dimension || column >= dimension {
+                return Err(PyValueError::new_err(
+                    "restricted transition index is outside the sector dimension",
+                ));
+            }
+            output_values[row] += coefficient * state_values[column];
+        }
+        Ok::<(), PyErr>(())
+    })
 }

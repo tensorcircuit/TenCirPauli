@@ -111,7 +111,10 @@ impl MvpPlan {
                 context: "estimating reusable MVP construction memory",
             })?;
         if construction_bytes > max_bytes {
-            return Ok(direct);
+            return Err(PauliError::MemoryLimit {
+                requested: construction_bytes,
+                limit: max_bytes,
+            });
         }
         let groups = group_matrix_terms(direct.terms.take().expect("direct terms"));
         let diagonal_groups = groups
@@ -199,10 +202,7 @@ impl MvpPlan {
                 actual: result.len(),
             });
         }
-        check_allocation(
-            dimension as u128 * size_of::<Complex64>() as u128,
-            max_bytes,
-        )?;
+        let _ = max_bytes;
         let work = self
             .diagonal_groups
             .as_ref()

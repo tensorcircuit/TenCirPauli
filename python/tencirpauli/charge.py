@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import (
@@ -30,6 +31,7 @@ from .hamiltonian import (
     CSRMatrix,
     _check_allocation,
     _effective_max_bytes,
+    _validate_apply_into_buffers,
     _validate_max_bytes,
 )
 from .pauli import PauliOperator
@@ -50,9 +52,11 @@ ChargeStorage = Literal["eager", "lazy"]
 
 
 def _validate_storage(value: object) -> ChargeStorage:
-    if value not in ("eager", "lazy"):
-        raise ValueError("storage must be either 'eager' or 'lazy'")
-    return value
+    if value == "eager":
+        return "eager"
+    if value == "lazy":
+        return "lazy"
+    raise ValueError("storage must be either 'eager' or 'lazy'")
 
 
 def _checked_float(value: Union[int, Fraction], name: str) -> float:
@@ -820,6 +824,7 @@ class ChargeMvpPlan:
         "estimated_bytes",
         "rows",
         "storage",
+        "strategy",
         "target",
         "term_count",
         "transition_count",
@@ -833,6 +838,7 @@ class ChargeMvpPlan:
     estimated_bytes: int
     basis_ordering: str
     storage: ChargeStorage
+    strategy: str
     target: str
     _locked: bool
 
@@ -843,6 +849,8 @@ class ChargeMvpPlan:
         rows: np.ndarray[Any, Any],
         columns: np.ndarray[Any, Any],
         coefficients: np.ndarray[Any, Any],
+        *,
+        storage: ChargeStorage = "eager",
     ) -> None:
         row_values = np.ascontiguousarray(rows, dtype=np.uint64)
         column_values = np.ascontiguousarray(columns, dtype=np.uint64)
@@ -861,7 +869,8 @@ class ChargeMvpPlan:
             int(row_values.nbytes + column_values.nbytes + coefficient_values.nbytes),
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
-        object.__setattr__(self, "storage", "eager")
+        object.__setattr__(self, "storage", _validate_storage(storage))
+        object.__setattr__(self, "strategy", "destination_major_csr")
         object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_locked", True)
 
@@ -901,6 +910,26 @@ class ChargeMvpPlan:
             ),
         )
 
+    def apply_into(
+        self,
+        input_state: np.ndarray[Any, Any],
+        output_state: np.ndarray[Any, Any],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None:
+        """Apply into strict caller-owned buffers without changing the input."""
+        _validate_apply_into_buffers(input_state, output_state, self.dimension)
+        _check_allocation(0, max_bytes, "charge MVP scratch")
+        _native.charge_mvp_apply_into(
+            self.dimension,
+            self.rows,
+            self.columns,
+            self.coefficients,
+            input_state,
+            output_state,
+            _effective_max_bytes(max_bytes),
+        )
+
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         return self.apply(state)
 
@@ -918,11 +947,13 @@ class ChargeLazyMvpPlan:
     __slots__ = (
         "_inputs",
         "_locked",
+        "_native_execution",
         "_native_plan",
         "basis_ordering",
         "dimension",
         "estimated_bytes",
         "storage",
+        "strategy",
         "target",
         "term_count",
     )
@@ -931,10 +962,12 @@ class ChargeLazyMvpPlan:
     estimated_bytes: int
     basis_ordering: str
     storage: ChargeStorage
+    strategy: str
     target: str
     _locked: bool
     _inputs: _RestrictedTransitionInputs
     _native_plan: Any
+    _native_execution: Any
 
     def __init__(
         self,
@@ -948,6 +981,30 @@ class ChargeLazyMvpPlan:
             )
         object.__setattr__(self, "_native_plan", sector._native_plan)
         object.__setattr__(self, "_inputs", inputs)
+        object.__setattr__(
+            self,
+            "_native_execution",
+            sector._native_plan.compile_mvp(
+                sector.dimension,
+                list(inputs.local_dimensions),
+                inputs.fermion_positions,
+                inputs.boson_positions,
+                inputs.qubit_positions,
+                inputs.qudit_positions,
+                inputs.fermion_creation,
+                inputs.fermion_annihilation,
+                inputs.boson_blocks,
+                inputs.qubit_codes,
+                inputs.mapped_present,
+                inputs.mapped_codes,
+                inputs.qudit_present,
+                inputs.qudit_triples,
+                inputs.coefficients,
+                inputs.qudit_dimension,
+                inputs.termwise_conserved,
+                inputs.fast_fermion_particles,
+            ),
+        )
         object.__setattr__(self, "dimension", sector.dimension)
         object.__setattr__(self, "term_count", int(term_count))
         object.__setattr__(
@@ -957,6 +1014,7 @@ class ChargeLazyMvpPlan:
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "storage", "lazy")
+        object.__setattr__(self, "strategy", "term_direct")
         object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_locked", True)
 
@@ -979,35 +1037,30 @@ class ChargeLazyMvpPlan:
                 f"state must have shape ({self.dimension},), got {values.shape}"
             )
         _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
-        inputs = self._inputs
         return cast(
             np.ndarray[Any, Any],
             np.asarray(
-                self._native_plan.apply_lazy(
-                    self.dimension,
-                    list(inputs.local_dimensions),
-                    list(inputs.fermion_positions),
-                    list(inputs.boson_positions),
-                    list(inputs.qubit_positions),
-                    list(inputs.qudit_positions),
-                    inputs.fermion_creation,
-                    inputs.fermion_annihilation,
-                    inputs.boson_blocks,
-                    inputs.qubit_codes,
-                    inputs.mapped_present,
-                    inputs.mapped_codes,
-                    inputs.qudit_present,
-                    inputs.qudit_triples,
-                    inputs.coefficients,
-                    np.ascontiguousarray(values),
-                    inputs.qudit_dimension,
-                    inputs.termwise_conserved,
-                    _effective_max_bytes(max_bytes),
-                    inputs.fast_fermion_particles,
+                self._native_execution.apply(
+                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
                 ),
                 dtype=np.complex128,
                 order="C",
             ),
+        )
+
+    def apply_into(
+        self,
+        input_state: np.ndarray[Any, Any],
+        output_state: np.ndarray[Any, Any],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None:
+        """Apply the lazy native handle into strict caller-owned storage."""
+        _validate_apply_into_buffers(input_state, output_state, self.dimension)
+        self._native_execution.apply_into(
+            input_state,
+            output_state,
+            _effective_max_bytes(max_bytes),
         )
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
@@ -1017,15 +1070,16 @@ class ChargeLazyMvpPlan:
 class ChargeRestrictedOperator:
     """Exact action of a conserved structured or Pauli operator in one sector.
 
-    Construction validates exact charge conservation and exposes either an
-    eager aggregated transition plan or an explicitly lazy native MVP plan.
-    Matrix rows and columns use the deterministic ordering of the associated
-    :class:`ChargeSector`.
+    Construction validates exact charge conservation and retains a compact
+    lazy plan. Explicit sparse/dense materialization or an eager MVP request
+    installs one immutable transition-graph cache on this mathematical facade.
     """
 
     __slots__ = (
+        "_eager_plan",
+        "_lazy_plan",
+        "_lock",
         "_locked",
-        "_plan",
         "dimension",
         "operator",
         "sector",
@@ -1034,7 +1088,9 @@ class ChargeRestrictedOperator:
     operator: Union[_StructuredOperator, PauliOperator]
     sector: ChargeSector
     dimension: int
-    _plan: Union[ChargeMvpPlan, ChargeLazyMvpPlan]
+    _lazy_plan: ChargeLazyMvpPlan
+    _eager_plan: Optional[ChargeMvpPlan]
+    _lock: threading.Lock
     storage: ChargeStorage
     _locked: bool
 
@@ -1043,7 +1099,7 @@ class ChargeRestrictedOperator:
         operator: Union[_StructuredOperator, PauliOperator],
         sector: ChargeSector,
         *,
-        storage: ChargeStorage = "eager",
+        storage: ChargeStorage = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         storage = _validate_storage(storage)
@@ -1069,31 +1125,23 @@ class ChargeRestrictedOperator:
             if isinstance(operator, PauliOperator)
             else operator.term_count
         )
-        if storage == "eager":
-            rows, columns, coefficients = _compile_restricted_transitions(
-                operator, sector, max_bytes
-            )
-            plan: Union[ChargeMvpPlan, ChargeLazyMvpPlan] = ChargeMvpPlan(
-                sector.dimension,
-                term_count,
-                rows,
-                columns,
-                coefficients,
-            )
-        else:
-            inputs = _restricted_transition_inputs(operator, sector)
-            _check_allocation(
-                int(sector.estimated_bytes + inputs.coefficients.nbytes),
-                max_bytes,
-                "lazy charge MVP plan",
-            )
-            plan = ChargeLazyMvpPlan(sector, term_count, inputs)
+        inputs = _restricted_transition_inputs(operator, sector)
+        _check_allocation(
+            int(sector.estimated_bytes + inputs.coefficients.nbytes),
+            max_bytes,
+            "lazy charge MVP plan",
+        )
+        lazy_plan = ChargeLazyMvpPlan(sector, term_count, inputs)
         object.__setattr__(self, "operator", operator)
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", sector.dimension)
         object.__setattr__(self, "storage", storage)
-        object.__setattr__(self, "_plan", plan)
+        object.__setattr__(self, "_lazy_plan", lazy_plan)
+        object.__setattr__(self, "_eager_plan", None)
+        object.__setattr__(self, "_lock", threading.Lock())
         object.__setattr__(self, "_locked", True)
+        if storage == "eager":
+            self._ensure_eager(max_bytes)
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_locked", False):
@@ -1119,15 +1167,34 @@ class ChargeRestrictedOperator:
             ValueError: If ``state`` is not one-dimensional or has the wrong
                 length.
         """
-        return self._plan.apply(state, max_bytes=max_bytes)
+        plan = self._eager_plan or self._lazy_plan
+        return plan.apply(state, max_bytes=max_bytes)
+
+    def apply_into(
+        self,
+        input_state: np.ndarray[Any, Any],
+        output_state: np.ndarray[Any, Any],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None:
+        """Apply into strict caller-owned buffers using the retained strategy."""
+        _validate_apply_into_buffers(input_state, output_state, self.dimension)
+        plan = self._eager_plan or self._lazy_plan
+        plan.apply_into(input_state, output_state, max_bytes=max_bytes)
 
     @property
     def estimated_bytes(self) -> int:
-        """Return the best-effort byte estimate for immutable transition arrays."""
-        return self._plan.estimated_bytes
+        """Return the current best-effort retained-byte estimate."""
+        value = self._lazy_plan.estimated_bytes
+        if self._eager_plan is not None:
+            value += self._eager_plan.estimated_bytes
+        return value
 
     def mvp_plan(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self,
+        *,
+        storage: ChargeStorage = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> Union[ChargeMvpPlan, ChargeLazyMvpPlan]:
         """Return the reusable MVP plan for this restricted operator.
 
@@ -1136,15 +1203,32 @@ class ChargeRestrictedOperator:
         transitions; lazy plans retain only the sector plan and term metadata.
         """
         _validate_max_bytes(max_bytes)
-        _check_allocation(self._plan.estimated_bytes, max_bytes, "charge MVP plan")
-        return self._plan
+        storage = _validate_storage(storage)
+        if storage == "eager":
+            return self._ensure_eager(max_bytes)
+        _check_allocation(self._lazy_plan.estimated_bytes, max_bytes, "charge MVP plan")
+        return self._lazy_plan
 
-    def _require_eager(self) -> ChargeMvpPlan:
-        if not isinstance(self._plan, ChargeMvpPlan):
-            raise NotImplementedError(
-                "dense and sparse targets require storage='eager'"
+    def _ensure_eager(self, max_bytes: Optional[int]) -> ChargeMvpPlan:
+        cached = self._eager_plan
+        if cached is not None:
+            return cached
+        with self._lock:
+            cached = self._eager_plan
+            if cached is not None:
+                return cached
+            rows, columns, coefficients = _compile_restricted_transitions(
+                self.operator, self.sector, max_bytes
             )
-        return self._plan
+            cached = ChargeMvpPlan(
+                self.sector.dimension,
+                self._lazy_plan.term_count,
+                rows,
+                columns,
+                coefficients,
+            )
+            object.__setattr__(self, "_eager_plan", cached)
+            return cached
 
     def dense(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -1156,7 +1240,7 @@ class ChargeRestrictedOperator:
         is not required.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._require_eager()
+        plan = self._ensure_eager(max_bytes)
         _check_allocation(
             self.dimension * self.dimension * 16, max_bytes, "charge dense matrix"
         )
@@ -1173,7 +1257,7 @@ class ChargeRestrictedOperator:
         indices and can be converted to SciPy with ``to_scipy()``.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._require_eager()
+        plan = self._ensure_eager(max_bytes)
         _check_allocation(plan.estimated_bytes, max_bytes, "charge COO matrix")
         return COOMatrix(
             plan.rows,
@@ -1190,7 +1274,7 @@ class ChargeRestrictedOperator:
         arrays and is guarded by ``max_bytes``.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._require_eager()
+        plan = self._ensure_eager(max_bytes)
         row_indices = np.asarray(plan.rows, dtype=np.intp)
         indptr = np.bincount(row_indices + 1, minlength=self.dimension + 1).astype(
             np.intp, copy=False
@@ -1630,16 +1714,14 @@ def restrict_charge(
     operator: Union[_StructuredOperator, PauliOperator],
     sector: ChargeSector,
     *,
-    storage: ChargeStorage = "eager",
+    storage: ChargeStorage = "lazy",
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> ChargeRestrictedOperator:
     """Validate exact conservation and build a restricted MVP plan.
 
-    ``storage="eager"`` retains the aggregated transition graph and is the
-    default. ``storage="lazy"`` retains only the native charge-sector plan
-    and applies one matrix-vector product at a time without storing all
-    transitions. Lazy plans currently support MVP application only; dense and
-    sparse materialization require the eager strategy.
+    ``storage="lazy"`` is the compact default. ``storage="eager"`` is an
+    explicit prewarm request; dense and sparse materialization also populate
+    the eager transition cache on demand.
     """
     if not isinstance(sector, ChargeSector):
         raise TypeError("sector must be a ChargeSector")

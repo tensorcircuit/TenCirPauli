@@ -112,7 +112,8 @@ def test_native_mvp_plan_reuses_compiled_masks() -> None:
     assert isinstance(plan, NativeMVPPlan)
     assert plan.nqubits == 4
     assert plan.term_count == len(operator.terms)
-    assert plan.strategy == "x_mask_diagonal"
+    assert plan.storage == "lazy"
+    assert plan.strategy == "term_direct"
     assert plan.estimated_bytes > 0
     state = np.random.default_rng(20260801).normal(
         size=16
@@ -148,8 +149,8 @@ def test_native_mvp_plan_random_complex_differential() -> None:
 
 def test_native_mvp_plan_reports_explicit_memory_strategy() -> None:
     operator = PauliOperator.from_terms(4, (((1, 0, 0, 0), 1.0),))
-    plan = operator.native_mvp_plan(max_bytes=32)
-    assert plan.strategy == "term_direct"
+    with pytest.raises(MemoryError):
+        operator.native_mvp_plan(storage="eager", max_bytes=32)
 
 
 def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:

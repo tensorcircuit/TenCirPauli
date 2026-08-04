@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Iterable,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 
@@ -646,12 +657,31 @@ class PauliOperator:
 
     def restrict_charge(
         self,
-        sector: "ChargeSector",
+        sector: Union["ChargeSector", "U1Sector"],
         *,
-        storage: "ChargeStorage" = "eager",
+        storage: "ChargeStorage" = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> "ChargeRestrictedOperator":
-        """Restrict an exactly conserved Pauli operator to a charge-sector MVP."""
+    ) -> Union["ChargeRestrictedOperator", "U1RestrictedOperator"]:
+        """Restrict an exactly conserved Pauli operator to a charge-sector MVP.
+
+        ``U1Sector`` and equivalent canonical qubit-number charge sectors use
+        the packed U(1) backend. The default CPU-native storage is lazy.
+        """
+        from .symmetry import U1Sector, _canonical_u1_sector, _restrict_u1
+
+        if isinstance(sector, U1Sector):
+            return _restrict_u1(
+                self, sector, max_bytes, term_count=self.term_count, storage=storage
+            )
+        canonical_u1 = _canonical_u1_sector(sector)
+        if canonical_u1 is not None:
+            return _restrict_u1(
+                self,
+                canonical_u1,
+                max_bytes,
+                term_count=self.term_count,
+                storage=storage,
+            )
         from .charge import restrict_charge
 
         return restrict_charge(self, sector, storage=storage, max_bytes=max_bytes)
@@ -710,11 +740,18 @@ class PauliOperator:
         self,
         sector: "U1Sector",
         *,
+        storage: "ChargeStorage" = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1RestrictedOperator":
-        """Validate and restrict this operator to an explicit U1 sector."""
+        """Deprecated alias for :meth:`restrict_charge` with a ``U1Sector``."""
         from .symmetry import U1Sector, _restrict_u1
 
+        warnings.warn(
+            "PauliOperator.restrict_u1() is deprecated; use "
+            "restrict_charge(U1Sector(...)) instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         _validate_max_bytes(max_bytes)
         if not isinstance(sector, U1Sector):
             raise TypeError(f"expected U1Sector, got {type(sector).__name__}")
@@ -722,7 +759,9 @@ class PauliOperator:
             raise ValueError(
                 f"expected sector for {self.nqubits} qubits, got {sector.nqubits}"
             )
-        return _restrict_u1(self, sector, max_bytes, term_count=self.term_count)
+        return _restrict_u1(
+            self, sector, max_bytes, term_count=self.term_count, storage=storage
+        )
 
     def compatibility_matrix(
         self, mode: str = "qubit_wise", max_entries: int = 10_000_000
@@ -882,7 +921,10 @@ class PauliOperator:
         )
 
     def native_mvp_plan(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self,
+        *,
+        storage: "Literal['lazy', 'eager']" = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "NativeMVPPlan":
         """Compile a reusable Rust-native matrix-free MVP plan."""
         from . import _native
@@ -896,6 +938,7 @@ class PauliOperator:
             coefficients_re,
             coefficients_im,
             _effective_max_bytes(max_bytes),
+            storage,
         )
         if native_plan.nqubits != self.nqubits:
             raise RuntimeError("native MVP plan has incompatible qubit count")
@@ -913,6 +956,7 @@ class PauliOperator:
             len(self.terms),
             native_plan.strategy,
             native_plan,
+            storage=storage,
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
             estimated_bytes=estimated_bytes,
@@ -920,7 +964,11 @@ class PauliOperator:
         )
 
     def compile(
-        self, target: str, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self,
+        target: str,
+        *,
+        storage: "Literal['lazy', 'eager']" = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "CompileResult":
         """Compile one named Hamiltonian target.
 
@@ -937,7 +985,7 @@ class PauliOperator:
         if target == "backend_mvp":
             return self.backend_mvp_plan(max_bytes=max_bytes)
         if target == "native_mvp":
-            return self.native_mvp_plan(max_bytes=max_bytes)
+            return self.native_mvp_plan(storage=storage, max_bytes=max_bytes)
         raise ValueError(
             "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
         )
@@ -1059,7 +1107,10 @@ def _normalize_code_array_inputs(
         )
     if all(isinstance(value, (tuple, list)) and len(value) == 0 for value, _ in terms):
         return _normalize_code_arrays(
-            np.empty((len(terms), 0), dtype=np.uint8),
+            cast(
+                Sequence[Sequence[int]],
+                np.empty((len(terms), 0), dtype=np.uint8),
+            ),
             [coefficient for _, coefficient in terms],
         )
     try:

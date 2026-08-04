@@ -38,6 +38,12 @@ class MVPPlan(Protocol):
     def basis_ordering(self) -> str: ...
 
     @property
+    def storage(self) -> Literal["lazy", "eager"]: ...
+
+    @property
+    def strategy(self) -> str: ...
+
+    @property
     def target(self) -> Literal["native_mvp", "backend_mvp"]: ...
 
     def apply(
@@ -46,6 +52,14 @@ class MVPPlan(Protocol):
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]: ...
+
+    def apply_into(
+        self,
+        input_state: np.ndarray[Any, Any],
+        output_state: np.ndarray[Any, Any],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None: ...
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]: ...
 
@@ -129,6 +143,7 @@ class NativeMVPPlan:
     nqubits: int
     term_count: int
     strategy: str
+    storage: Literal["lazy", "eager"]
     _native_plan: Any
     local_dimensions: Tuple[int, ...]
     basis_ordering: str
@@ -152,6 +167,7 @@ class NativeMVPPlan:
         strategy: str,
         native_plan: Any,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         local_dimensions: Tuple[int, ...] = (),
         basis_ordering: str = "qubit0_msb_matrix",
         estimated_bytes: int = 0,
@@ -184,6 +200,8 @@ class NativeMVPPlan:
             raise ValueError("schema_version must be positive")
         if target != "native_mvp":
             raise ValueError("native MVP plans must have target='native_mvp'")
+        if storage not in {"lazy", "eager"}:
+            raise ValueError("storage must be either 'eager' or 'lazy'")
         if mapping not in {None, "jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError(
                 "mapping must be None, 'jordan_wigner', 'parity', or 'bravyi_kitaev'"
@@ -191,6 +209,7 @@ class NativeMVPPlan:
         object.__setattr__(self, "nqubits", nqubits)
         object.__setattr__(self, "term_count", term_count)
         object.__setattr__(self, "strategy", strategy)
+        object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(self, "local_dimensions", dimensions)
         object.__setattr__(self, "basis_ordering", basis_ordering)
@@ -264,6 +283,25 @@ class NativeMVPPlan:
                 copy=True,
                 order="C",
             ),
+        )
+
+    def apply_into(
+        self,
+        input_state: np.ndarray[Any, Any],
+        output_state: np.ndarray[Any, Any],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> None:
+        """Write the complete MVP result into a caller-owned output array."""
+        _validate_apply_into_buffers(input_state, output_state, self.dimension)
+        if self._generic_entries is not None:
+            result = _apply_generic_entries(
+                self._generic_entries, input_state, max_bytes
+            )
+            np.copyto(output_state, result)
+            return
+        self._native_plan.apply_into(
+            input_state, output_state, _effective_max_bytes(max_bytes)
         )
 
     @property
@@ -588,8 +626,33 @@ def _check_allocation(requested: int, limit: Optional[int], context: str) -> Non
         )
 
 
+def _validate_apply_into_buffers(
+    input_state: object, output_state: object, dimension: int
+) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Validate the strict zero-copy MVP buffer protocol."""
+    if not isinstance(input_state, np.ndarray) or not isinstance(
+        output_state, np.ndarray
+    ):
+        raise TypeError("apply_into input and output must be NumPy arrays")
+    expected: np.dtype[Any] = np.dtype(np.complex128)
+    if input_state.dtype != expected or output_state.dtype != expected:
+        raise TypeError("apply_into input and output must have dtype complex128")
+    for name, value in (("input", input_state), ("output", output_state)):
+        if value.ndim != 1 or value.shape != (dimension,):
+            raise ValueError(f"apply_into {name} must have shape ({dimension},)")
+        if not value.flags.c_contiguous:
+            raise ValueError(f"apply_into {name} must be C-contiguous")
+    if not output_state.flags.writeable:
+        raise ValueError("apply_into output must be writable")
+    if np.shares_memory(input_state, output_state):
+        raise ValueError("apply_into input and output must not overlap")
+    return input_state, output_state
+
+
 def _apply_generic_entries(
-    generic_entries: Any, state: Sequence[complex], max_bytes: Optional[int]
+    generic_entries: Any,
+    state: Union[Sequence[complex], np.ndarray[Any, Any]],
+    max_bytes: Optional[int],
 ) -> np.ndarray[Any, Any]:
     dimensions, rows, columns, coefficients = generic_entries
     dimension = _checked_dimension(tuple(int(value) for value in dimensions), 0)

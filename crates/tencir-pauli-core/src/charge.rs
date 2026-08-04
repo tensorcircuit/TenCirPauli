@@ -1017,6 +1017,40 @@ pub fn apply_charge_mvp_from_plan(
     termwise_conserved: bool,
     fast_fermion_particles: Option<usize>,
 ) -> Result<Vec<Complex64>, PauliError> {
+    let dimension = layout.dimension;
+    let output_bytes = dimension
+        .checked_mul(std::mem::size_of::<Complex64>())
+        .ok_or(PauliError::Overflow {
+            context: "estimating charge MVP output",
+        })?;
+    if output_bytes as u128 > layout.max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: output_bytes as u128,
+            limit: layout.max_bytes,
+        });
+    }
+    let mut output = vec![Complex64::new(0.0, 0.0); dimension];
+    apply_charge_mvp_from_plan_into(
+        plan,
+        layout,
+        terms,
+        state,
+        &mut output,
+        termwise_conserved,
+        fast_fermion_particles,
+    )?;
+    Ok(output)
+}
+
+pub fn apply_charge_mvp_from_plan_into(
+    plan: &ChargeSectorPlan,
+    layout: ChargeTransitionPlanLayout<'_>,
+    terms: &[ChargeTransitionTerm],
+    state: &[Complex64],
+    output: &mut [Complex64],
+    termwise_conserved: bool,
+    fast_fermion_particles: Option<usize>,
+) -> Result<(), PauliError> {
     let ChargeTransitionPlanLayout {
         dimension,
         local_dimensions,
@@ -1029,6 +1063,7 @@ pub fn apply_charge_mvp_from_plan(
     } = layout;
     if dimension != plan.dimension()
         || state.len() != dimension
+        || output.len() != dimension
         || plan.local_dimensions().len() != local_dimensions.len()
         || plan
             .local_dimensions()
@@ -1087,7 +1122,7 @@ pub fn apply_charge_mvp_from_plan(
 
     if termwise_conserved {
         if let Some(particles) = fast_fermion_particles {
-            if let Some(output) = try_apply_fast_fermion_mvp(
+            if let Some(fast_output) = try_apply_fast_fermion_mvp(
                 plan,
                 local_dimensions,
                 &fermion_positions,
@@ -1099,7 +1134,8 @@ pub fn apply_charge_mvp_from_plan(
                 particles,
                 scratch_limit - scratch_bytes as u128,
             )? {
-                return Ok(output);
+                output.copy_from_slice(&fast_output);
+                return Ok(());
             }
         }
     }
@@ -1113,7 +1149,7 @@ pub fn apply_charge_mvp_from_plan(
         .ok_or(PauliError::Overflow {
             context: "estimating charge MVP destination storage",
         })?;
-    let mut output = vec![Complex64::new(0.0, 0.0); dimension];
+    output.fill(Complex64::new(0.0, 0.0));
     let mut source = vec![0_u64; axis_count];
     let mut destination = vec![0_u64; axis_count];
     let mut remaining = vec![0_i128; plan.constraint_count()];
@@ -1199,5 +1235,5 @@ pub fn apply_charge_mvp_from_plan(
             output[row] += value * *state_value;
         }
     }
-    Ok(output)
+    Ok(())
 }

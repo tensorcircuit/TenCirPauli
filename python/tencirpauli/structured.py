@@ -21,6 +21,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -1156,15 +1157,31 @@ class _StructuredOperator:
         self,
         sector: "ChargeSector",
         *,
-        storage: "ChargeStorage" = "eager",
+        storage: "ChargeStorage" = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "ChargeRestrictedOperator":
         """Restrict an exactly conserved operator to a charge-sector MVP.
 
-        ``storage="eager"`` is the default transition-table strategy;
-        ``storage="lazy"`` keeps only native sector metadata and supports
-        matrix-vector application without retaining all transitions.
+        CPU-native restricted plans default to ``storage="lazy"``. An explicit
+        eager request or later materialization may populate a retained cache.
         """
+        from .symmetry import _canonical_u1_sector, _restrict_u1
+
+        canonical_u1 = _canonical_u1_sector(sector)
+        if canonical_u1 is not None and all(
+            axis.domain == "qubit" for axis in self.space._axes
+        ):
+            as_pauli = PauliOperator.from_terms(
+                len(self.space._axes),
+                ((term.qubit, term.coefficient) for term in self._terms),
+            )
+            return _restrict_u1(
+                as_pauli,
+                canonical_u1,
+                max_bytes,
+                term_count=self.term_count,
+                storage=storage,
+            )  # type: ignore[return-value]
         from .charge import restrict_charge
 
         return restrict_charge(self, sector, storage=storage, max_bytes=max_bytes)
@@ -1303,6 +1320,7 @@ class _StructuredOperator:
         self,
         target: str,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
@@ -1314,7 +1332,9 @@ class _StructuredOperator:
             )
         mapped = self.map_fermions(mapping, max_bytes=max_bytes)
         if isinstance(mapped, PauliOperator):
-            result: CompileResult = mapped.compile(target, max_bytes=max_bytes)
+            result: CompileResult = mapped.compile(
+                target, storage=storage, max_bytes=max_bytes
+            )
             if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
                 return _with_plan_metadata(
                     result,
@@ -1350,6 +1370,7 @@ class _StructuredOperator:
             target,
             normalized_cutoffs,
             max_bytes,
+            storage=storage,
             mapping=(_mapping_name(mapping) if self.space.fermions else None),
         )
 
@@ -1410,6 +1431,7 @@ def _with_plan_metadata(
             plan.term_count,
             plan.strategy,
             plan._native_plan,
+            storage=plan.storage,
             local_dimensions=plan.local_dimensions,
             basis_ordering=plan.basis_ordering,
             estimated_bytes=plan.estimated_bytes,
@@ -2189,12 +2211,13 @@ class FermionOperator(_StructuredOperator):
         self,
         target: str,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Map to qubits and compile to a dense, sparse, or MVP target."""
         result: CompileResult = self.map_fermions(mapping, max_bytes=max_bytes).compile(
-            target, max_bytes=max_bytes
+            target, storage=storage, max_bytes=max_bytes
         )
         if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
             return _with_plan_metadata(
@@ -2295,11 +2318,17 @@ class BosonOperator(_StructuredOperator):
         self,
         target: str,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         boson_cutoffs: Mapping[object, object],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Compile a boson operator with its required finite cutoffs."""
-        return super().compile(target, boson_cutoffs=boson_cutoffs, max_bytes=max_bytes)
+        return super().compile(
+            target,
+            storage=storage,
+            boson_cutoffs=boson_cutoffs,
+            max_bytes=max_bytes,
+        )
 
 
 class QuditWeylOperator(_StructuredOperator):
@@ -2381,10 +2410,14 @@ class QuditWeylOperator(_StructuredOperator):
         return instance
 
     def compile(  # type: ignore[override]
-        self, target: str, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self,
+        target: str,
+        *,
+        storage: Literal["lazy", "eager"] = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Compile a uniform-dimension Weyl operator."""
-        return super().compile(target, max_bytes=max_bytes)
+        return super().compile(target, storage=storage, max_bytes=max_bytes)
 
 
 class HybridOperator(_StructuredOperator):
@@ -2413,6 +2446,7 @@ class HybridOperator(_StructuredOperator):
         self,
         target: str,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
@@ -2420,6 +2454,7 @@ class HybridOperator(_StructuredOperator):
         """Compile a hybrid operator after optional Jordan-Wigner mapping."""
         return super().compile(
             target,
+            storage=storage,
             mapping=mapping,
             boson_cutoffs=boson_cutoffs,
             max_bytes=max_bytes,
@@ -2579,6 +2614,7 @@ def _compile_finite(
     target: str,
     cutoffs: Mapping[int, int],
     max_bytes: Optional[int],
+    storage: Literal["lazy", "eager"] = "lazy",
     mapping: Optional[str] = None,
 ) -> CompileResult:
     dimensions = tuple(
@@ -2602,6 +2638,7 @@ def _compile_finite(
             len(operator._terms),
             "structured_mvp_native",
             native_plan,
+            storage=storage,
             local_dimensions=dimensions,
             basis_ordering=MIXED_RADIX_BASIS_ORDERING,
             estimated_bytes=int(native_plan.estimated_bytes),

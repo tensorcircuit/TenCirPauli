@@ -1,4 +1,4 @@
-use numpy::PyArray1;
+use numpy::{PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{find_z2_symmetries, CliffordOperation, U1Sector, Z2TaperingPlan};
@@ -171,6 +171,24 @@ impl NativeU1RestrictedOperator {
         Ok(PyArray1::from_vec(py, values))
     }
 
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        mut output: PyReadwriteArray1<'py, numpy::Complex64>,
+        max_bytes: usize,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let _ = max_bytes;
+        py.allow_threads(|| self.operator.apply_into(state_slice, output_slice))
+            .map_err(map_error)
+    }
+
     fn mvp_plan(&self, py: Python<'_>, max_bytes: usize) -> PyResult<NativeU1MvpPlan> {
         let plan = py
             .allow_threads(|| self.operator.mvp_plan(max_bytes as u128))
@@ -250,6 +268,24 @@ impl NativeU1MvpPlan {
             .allow_threads(|| self.plan.apply(state_slice, max_bytes as u128))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, values))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        mut output: PyReadwriteArray1<'py, numpy::Complex64>,
+        max_bytes: usize,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let _ = max_bytes;
+        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice))
+            .map_err(map_error)
     }
 }
 

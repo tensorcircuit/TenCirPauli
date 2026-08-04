@@ -1,18 +1,63 @@
-use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
+use std::sync::Arc;
+
+use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    apply_charge_mvp_from_plan, build_charge_sector_plan, build_compact_charge_sector_plan,
-    compile_charge_transitions_from_plan, ChargeSectorPlan, ChargeTransitionPlanLayout,
-    ChargeTransitionTerm, Complex64,
+    apply_charge_mvp_from_plan, apply_charge_mvp_from_plan_into, build_charge_sector_plan,
+    build_compact_charge_sector_plan, compile_charge_transitions_from_plan, ChargeSectorPlan,
+    ChargeTransitionPlanLayout, ChargeTransitionTerm, Complex64,
 };
 
 use crate::convert::{map_error, split_complex};
 
 type ChargeTransitionOutput = (Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 
+#[allow(clippy::too_many_arguments)]
+fn charge_terms_from_inputs(
+    coefficients: &[NumpyComplex128],
+    fermion_creation: &[Vec<u32>],
+    fermion_annihilation: &[Vec<u32>],
+    boson_blocks: &[Vec<(u32, u32, u32)>],
+    qubit_codes: &[Vec<u8>],
+    mapped_present: &[bool],
+    mapped_codes: &[Vec<u8>],
+    qudit_present: &[bool],
+    qudit_triples: &[Vec<(u32, u32, u32)>],
+) -> PyResult<Vec<ChargeTransitionTerm>> {
+    let term_count = coefficients.len();
+    if fermion_creation.len() != term_count
+        || fermion_annihilation.len() != term_count
+        || boson_blocks.len() != term_count
+        || qubit_codes.len() != term_count
+        || mapped_present.len() != term_count
+        || mapped_codes.len() != term_count
+        || qudit_present.len() != term_count
+        || qudit_triples.len() != term_count
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "charge transition term arrays have inconsistent lengths",
+        ));
+    }
+    Ok(coefficients
+        .iter()
+        .enumerate()
+        .map(|(index, coefficient)| ChargeTransitionTerm {
+            fermion_creation: fermion_creation[index].clone(),
+            fermion_annihilation: fermion_annihilation[index].clone(),
+            boson_blocks: boson_blocks[index].clone(),
+            qubit_codes: qubit_codes[index].clone(),
+            mapped_present: mapped_present[index],
+            mapped_codes: mapped_codes[index].clone(),
+            qudit_present: qudit_present[index],
+            qudit_triples: qudit_triples[index].clone(),
+            coefficient: Complex64::new(coefficient.re, coefficient.im),
+        })
+        .collect())
+}
+
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeSectorPlan {
-    plan: ChargeSectorPlan,
+    plan: Arc<ChargeSectorPlan>,
 }
 
 #[pymethods]
@@ -236,6 +281,185 @@ impl NativeChargeSectorPlan {
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, result))
     }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        dimension,
+        local_dimensions,
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        fermion_creation,
+        fermion_annihilation,
+        boson_blocks,
+        qubit_codes,
+        mapped_present,
+        mapped_codes,
+        qudit_present,
+        qudit_triples,
+        coefficients,
+        qudit_dimension,
+        termwise_conserved,
+        fast_fermion_particles=None
+    ))]
+    fn compile_mvp<'py>(
+        &self,
+        dimension: usize,
+        local_dimensions: Vec<u64>,
+        fermion_positions: Vec<u64>,
+        boson_positions: Vec<u64>,
+        qubit_positions: Vec<u64>,
+        qudit_positions: Vec<u64>,
+        fermion_creation: Vec<Vec<u32>>,
+        fermion_annihilation: Vec<Vec<u32>>,
+        boson_blocks: Vec<Vec<(u32, u32, u32)>>,
+        qubit_codes: Vec<Vec<u8>>,
+        mapped_present: Vec<bool>,
+        mapped_codes: Vec<Vec<u8>>,
+        qudit_present: Vec<bool>,
+        qudit_triples: Vec<Vec<(u32, u32, u32)>>,
+        coefficients: numpy::PyReadonlyArray1<'py, NumpyComplex128>,
+        qudit_dimension: u64,
+        termwise_conserved: bool,
+        fast_fermion_particles: Option<usize>,
+    ) -> PyResult<NativeChargeMvpPlan> {
+        let coefficient_values = coefficients.as_slice().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("charge coefficients must be C-contiguous")
+        })?;
+        let terms = charge_terms_from_inputs(
+            coefficient_values,
+            &fermion_creation,
+            &fermion_annihilation,
+            &boson_blocks,
+            &qubit_codes,
+            &mapped_present,
+            &mapped_codes,
+            &qudit_present,
+            &qudit_triples,
+        )?;
+        if dimension != self.dimension() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "charge MVP dimension does not match its sector plan",
+            ));
+        }
+        Ok(NativeChargeMvpPlan {
+            plan: Arc::clone(&self.plan),
+            local_dimensions,
+            fermion_positions,
+            boson_positions,
+            qubit_positions,
+            qudit_positions,
+            qudit_dimension,
+            terms,
+            termwise_conserved,
+            fast_fermion_particles,
+        })
+    }
+}
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativeChargeMvpPlan {
+    plan: Arc<ChargeSectorPlan>,
+    local_dimensions: Vec<u64>,
+    fermion_positions: Vec<u64>,
+    boson_positions: Vec<u64>,
+    qubit_positions: Vec<u64>,
+    qudit_positions: Vec<u64>,
+    qudit_dimension: u64,
+    terms: Vec<ChargeTransitionTerm>,
+    termwise_conserved: bool,
+    fast_fermion_particles: Option<usize>,
+}
+
+#[pymethods]
+impl NativeChargeMvpPlan {
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.plan.dimension()
+    }
+
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_values = state.as_slice().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("charge state must be C-contiguous")
+        })?;
+        if state_values.len() != self.dimension() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "charge state must have shape ({},), got ({},)",
+                self.dimension(),
+                state_values.len()
+            )));
+        }
+        let result = py
+            .allow_threads(|| {
+                apply_charge_mvp_from_plan(
+                    &self.plan,
+                    ChargeTransitionPlanLayout {
+                        dimension: self.dimension(),
+                        local_dimensions: &self.local_dimensions,
+                        fermion_positions: &self.fermion_positions,
+                        boson_positions: &self.boson_positions,
+                        qubit_positions: &self.qubit_positions,
+                        qudit_positions: &self.qudit_positions,
+                        qudit_dimension: self.qudit_dimension,
+                        max_bytes,
+                    },
+                    &self.terms,
+                    state_values,
+                    self.termwise_conserved,
+                    self.fast_fermion_particles,
+                )
+            })
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, result))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        mut output: PyReadwriteArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<()> {
+        let state_values = state.as_slice().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("charge state must be C-contiguous")
+        })?;
+        let output_values = output.as_slice_mut().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("charge output must be C-contiguous")
+        })?;
+        let output_bytes = (self.dimension() as u128)
+            .checked_mul(std::mem::size_of::<NumpyComplex128>() as u128)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyMemoryError::new_err("charge MVP output size overflow")
+            })?;
+        let effective_max = max_bytes.saturating_add(output_bytes);
+        py.allow_threads(|| {
+            apply_charge_mvp_from_plan_into(
+                &self.plan,
+                ChargeTransitionPlanLayout {
+                    dimension: self.dimension(),
+                    local_dimensions: &self.local_dimensions,
+                    fermion_positions: &self.fermion_positions,
+                    boson_positions: &self.boson_positions,
+                    qubit_positions: &self.qubit_positions,
+                    qudit_positions: &self.qudit_positions,
+                    qudit_dimension: self.qudit_dimension,
+                    max_bytes: effective_max,
+                },
+                &self.terms,
+                state_values,
+                output_values,
+                self.termwise_conserved,
+                self.fast_fermion_particles,
+            )
+        })
+        .map_err(map_error)
+    }
 }
 
 #[pyfunction]
@@ -251,7 +475,9 @@ pub(crate) fn charge_sector_plan(
             build_charge_sector_plan(local_dimensions, contributions, target, max_bytes)
         })
         .map_err(crate::convert::map_error)?;
-    Ok(NativeChargeSectorPlan { plan })
+    Ok(NativeChargeSectorPlan {
+        plan: Arc::new(plan),
+    })
 }
 
 #[pyfunction]
@@ -281,5 +507,7 @@ pub(crate) fn charge_sector_plan_compact(
             )
         })
         .map_err(crate::convert::map_error)?;
-    Ok(NativeChargeSectorPlan { plan })
+    Ok(NativeChargeSectorPlan {
+        plan: Arc::new(plan),
+    })
 }

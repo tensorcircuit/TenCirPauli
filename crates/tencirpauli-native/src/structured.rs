@@ -1,4 +1,4 @@
-use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
+use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
@@ -92,6 +92,23 @@ impl StructuredMvpPlan {
             .allow_threads(|| self.plan.apply(state_slice, max_bytes))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, output))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        mut output: PyReadwriteArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice, max_bytes))
+            .map_err(map_error)
     }
 }
 

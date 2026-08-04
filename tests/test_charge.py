@@ -237,8 +237,9 @@ def test_restricted_qubit_targets_match_independent_projector() -> None:
     np.testing.assert_array_equal(csr_reconstructed, independent)
     state = np.asarray([0.5 - 0.2j, -0.3 + 0.7j])
     np.testing.assert_allclose(restricted.apply(state), independent @ state)
-    assert restricted.mvp_plan().transition_count == 2
-    assert restricted.estimated_bytes == restricted.mvp_plan().estimated_bytes
+    eager_plan = restricted.mvp_plan(storage="eager")
+    assert eager_plan.transition_count == 2
+    assert restricted.estimated_bytes >= eager_plan.estimated_bytes
 
 
 def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> None:
@@ -250,14 +251,13 @@ def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> N
     sector = number.sector(0)
     restricted = parity_cancellation.restrict_charge(sector)
     np.testing.assert_array_equal(restricted.dense(), np.zeros((1, 1)))
-    assert restricted.mvp_plan().transition_count == 0
+    assert restricted.mvp_plan(storage="eager").transition_count == 0
 
     lazy = parity_cancellation.restrict_charge(sector, storage="lazy")
     assert lazy.storage == "lazy"
     assert lazy.mvp_plan().storage == "lazy"
     np.testing.assert_array_equal(lazy.apply(np.asarray([1.0 + 0j])), np.zeros(1))
-    with pytest.raises(NotImplementedError, match="storage='eager'"):
-        lazy.dense()
+    np.testing.assert_array_equal(lazy.dense(), np.zeros((1, 1)))
 
 
 def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
@@ -419,4 +419,4 @@ def test_native_restricted_compiler_uses_plan_rank_unrank_without_basis_table(
     monkeypatch.setattr(tcp.ChargeSector, "basis_states", forbidden_basis)
     restricted = operator.restrict_charge(sector)
     assert restricted.dimension == 6
-    assert restricted.mvp_plan().transition_count == 4
+    assert restricted.mvp_plan(storage="eager").transition_count == 4

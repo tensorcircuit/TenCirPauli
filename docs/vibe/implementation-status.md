@@ -4,7 +4,7 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5 和 Phase 8 的实现均已完成；当前 active milestone 是 owner-approved Phase 8.5 explicit MVP storage and reusable execution。工作区已经实现 generic charge eager/lazy 的首个纵向切片和 spinful Hubbard 原型，但 frozen contract 仍要求 uniform lazy defaults、immutable native handles、on-demand restricted eager caches、packed U1 lazy dispatch、`apply_into`、完整 differentials 和性能验收。Phase 6.5 仍 deferred，项目继续保持 Alpha 定位。
+Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5 和 Phase 8 的实现均已完成；当前 active milestone 是 owner-approved Phase 8.5 explicit MVP storage and reusable execution。8.5 的 uniform lazy defaults、immutable native handles、on-demand restricted eager caches、packed U1 lazy dispatch、`apply_into` 和主要 differential tests 已在当前工作区落地；剩余验收是 release benchmark matrix 与可选独立 QuSpin A/B 结果。Phase 6.5 仍 deferred，项目继续保持 Alpha 定位。
 
 ## Active status
 
@@ -16,7 +16,7 @@ Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5 和 Phase 8 的实�
 | Phase 7 structured Hamiltonian algebra | implemented; acceptance closed 2026-08-04 | Correctness, structured targets, metadata, and TensorCircuit differentials are covered; local benchmark records remain informational. |
 | Phase 7.5 Majorana, mappings, and additive-charge sectors | implemented; acceptance closed 2026-08-04 | Wide-sector, budget, coarse-FFI, mapping, charge, and SPPS regressions are complete; no separate release benchmark record is required. |
 | Phase 8 API coherence | implemented; remediation closed 2026-08-04 | R1–R7 are addressed in `35f9adc`; the full local quality gate and strict documentation build pass. |
-| Phase 8.5 explicit MVP storage | frozen contract; implementation partial | Generic charge lazy execution and a spinful prototype are present in the worktree. Next gate is the uniform lazy API/default and immutable native-plan/cache architecture; completion also requires packed U1 dispatch, on-demand materialization caches, `apply_into`, representative benchmarks, and a separate matched QuSpin Hubbard A/B. |
+| Phase 8.5 explicit MVP storage | implementation checkpoint complete; performance acceptance pending | CPU-native Pauli/structured/generic-charge/U1 plans default to lazy; eager Pauli is strict-budgeted; restricted facades cache eager graphs only after explicit requests; native reusable handles expose strict `apply_into`; `restrict_u1()` warns and `restrict_charge(U1Sector(...))` is supported. Focused Phase 8.5 tests, Rust tests, and release integration checks pass. Representative benchmark recording and the separate optional QuSpin A/B remain the final evidence gate. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 

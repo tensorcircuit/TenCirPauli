@@ -1,4 +1,4 @@
-use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
+use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{MvpPlan, MvpStrategy};
@@ -46,6 +46,26 @@ impl NativeMvpPlan {
             .allow_threads(|| self.plan.apply(state_slice, max_bytes as u128))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, values))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        mut output: PyReadwriteArray1<'py, NumpyComplex128>,
+        max_bytes: usize,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        py.allow_threads(|| {
+            self.plan
+                .apply_into(state_slice, output_slice, max_bytes as u128)
+        })
+        .map_err(map_error)
     }
 }
 
@@ -199,6 +219,7 @@ pub(crate) fn pauli_mvp_array<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (nqubits, structures, coefficients_re, coefficients_im, max_bytes, storage="lazy"))]
 pub(crate) fn pauli_mvp_plan(
     py: Python<'_>,
     nqubits: usize,
@@ -206,11 +227,19 @@ pub(crate) fn pauli_mvp_plan(
     coefficients_re: Vec<f64>,
     coefficients_im: Vec<f64>,
     max_bytes: usize,
+    storage: &str,
 ) -> PyResult<NativeMvpPlan> {
     let plan = py.allow_threads(|| {
         let operator =
             build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.mvp_plan(max_bytes as u128).map_err(map_error)
+        match storage {
+            "lazy" => tencir_pauli_core::MvpPlan::from_operator(&operator),
+            "eager" => operator.mvp_plan(max_bytes as u128),
+            _ => Err(tencir_pauli_core::PauliError::InvalidSector {
+                context: "storage must be either 'eager' or 'lazy'",
+            }),
+        }
+        .map_err(map_error)
     })?;
     Ok(NativeMvpPlan { plan })
 }

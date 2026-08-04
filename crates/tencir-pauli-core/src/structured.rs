@@ -1496,6 +1496,42 @@ impl StructuredMvpPlan {
             });
         }
         let mut output = vec![Complex64::default(); self.dimension];
+        self.apply_into(state, &mut output, max_bytes)?;
+        Ok(output)
+    }
+
+    /// Apply the compact plan into caller-owned output storage.
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        if output.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: output.len(),
+            });
+        }
+        let scratch_bytes = (self.local_dimensions.len() as u128)
+            .checked_mul(size_of::<usize>() as u128)
+            .and_then(|value| value.checked_mul(2))
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured MVP scratch",
+            })?;
+        if scratch_bytes > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: scratch_bytes,
+                limit: max_bytes,
+            });
+        }
+        output.fill(Complex64::default());
         let mut digits = vec![0usize; self.local_dimensions.len()];
         let mut output_digits = vec![0usize; self.local_dimensions.len()];
         for (column, state_value) in state.iter().enumerate() {
@@ -1530,7 +1566,7 @@ impl StructuredMvpPlan {
                 }
             }
         }
-        Ok(output)
+        Ok(())
     }
 }
 

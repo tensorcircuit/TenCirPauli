@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from . import _native
 from ._validation import validate_nonnegative_int
@@ -468,6 +479,7 @@ class MajoranaOperator:
         self,
         target: str,
         *,
+        storage: Literal["lazy", "eager"] = "lazy",
         mapping: Union[str, Any] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> Any:
@@ -489,7 +501,7 @@ class MajoranaOperator:
         if not isinstance(plan, FermionQubitMapping):
             raise TypeError("mapping must be a supported name or FermionQubitMapping")
         result = plan.map_majorana_operator(self, max_bytes=max_bytes).compile(
-            target, max_bytes=max_bytes
+            target, storage=storage, max_bytes=max_bytes
         )
         if target in {"native_mvp", "backend_mvp"} and isinstance(
             result, (NativeMVPPlan, BackendMVPPlan)
