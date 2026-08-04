@@ -32,12 +32,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r docs/requirements.txt maturin numpy "tensorcircuit-ng>=1.8,<2"
 
-      - name: Build the native extension for API inspection
-        run: maturin develop --release --locked --skip-install
+      - name: Build the wheel for API inspection
+        run: maturin build --release --locked --out dist
+
+      - name: Install the built wheel
+        run: >-
+          python -c "import glob, subprocess, sys; wheels = glob.glob('dist/*.whl'); assert len(wheels) == 1, wheels; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', wheels[0]])"
 
       - name: Build the site
-        env:
-          PYTHONPATH: ${{ github.workspace }}/python
         run: mkdocs build --strict
 
       - name: Upload Pages artifact

@@ -25,7 +25,6 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [python]
           options:
             docstring_style: google
             docstring_section_style: table
