@@ -10,6 +10,10 @@ Scope: final triage of the concerns in `phase-7-second-round-review-2026-08-03.m
 
 The Phase 7 computational core has no reproduced release-blocking algebra, mapping, finite-target, or dimension-overflow defect. C1, M1, M2, M4, and N1 from the second-round review are accepted as addressed. Two acceptance items remain: one missing independent Holstein/spin-boson correctness differential, and one actual public-plan metadata defect. Phase 7 should remain under acceptance review until these two items are fixed and verified.
 
+## Closure note (2026-08-04)
+
+The subsequent remediation and Phase 8 contract pass closed the two remaining Phase 7 items. This archived review records the earlier checkpoint; current status is acceptance-closed for the 0.2 release.
+
 ## Compliance checklist
 
 | Second-round concern | Result | Disposition |

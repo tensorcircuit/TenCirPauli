@@ -17,7 +17,7 @@ GitHub Actions 的 publish job 只有 `id-token: write` 权限，`pypa/gh-action
 ## 正式发布步骤
 
 1. 确认 `Cargo.toml` 与 `pyproject.toml` 的版本相同，并更新 `CHANGELOG.md`。
-2. 等待 push 后的日常 CI 通过，再创建并推送与版本完全一致的 tag，例如 `v0.1.0`。
+2. 等待 push 后的日常 CI 通过，再创建并推送与版本完全一致的 tag，例如 `v0.2.0`。
 3. 在 GitHub 中基于该 tag 创建 Release；点击 Publish release 后才触发发行工作流。手动运行 `workflow_dispatch` 只构建 artifacts，不会上传 PyPI。
 4. 工作流分别构建 Linux x86_64/aarch64、macOS x86_64/aarch64、Windows x64 wheel 和一个 sdist，并在上传前检查版本、metadata 和许可证文件；全部成功后才发布到 PyPI。
 5. 发布后检查 PyPI 文件列表，并做一次简单的 `pip install tencirpauli` 与 `import tencirpauli` 验证。

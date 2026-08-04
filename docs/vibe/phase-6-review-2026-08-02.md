@@ -8,6 +8,10 @@
 
 建议状态：可以保留并继续迭代，不建议回滚；在 M1–M5 修复并补齐验收证据前，不应把 Phase 6 标记为 complete。
 
+## Closure note（2026-08-04）
+
+后续 Phase 6 remediation 已覆盖 M1–M5 的实现与本地验证；本报告保留为历史审查记录，Phase 6 的历史 acceptance scope 已为 0.2 release 收口，机器相关 benchmark handoff 不作为发布门禁。
+
 ## Compliance checklist
 
 | Check | Status | Evidence |

@@ -4,17 +4,18 @@
 
 ## Current objective
 
-Phase 1–5.5、Phase Alpha、Phase 6、Phase 7 和 Phase 7.5 的实现均已完成；当前 checkpoint 是 Phase 7.5 second-round remediation after the 2026-08-04 follow-up review。第一轮 C1–M5 数值与主要性能修复保持有效，SR1–SR6 的代码与回归修复已完成，剩余工作是将本次 512-mode/1,024-term release 记录归档。Phase 6 保持 under acceptance review，剩余 gate 是完整的 concurrency、memory、matched-backend 和 release benchmark handoff matrix；Phase 6.5 仍 deferred，Phase 7 的第三轮 acceptance gates 已关闭。项目当前保持 public API 与发布基础稳定，暂不增加 MSRV 1.85 CI job。
+Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5 和 Phase 8 的实现均已完成；当前 checkpoint 是 `0.2.0` release preparation after Phase 8 remediation commit `35f9adc`。历史阶段的 acceptance review 已收口为 archived record；本项目不把机器相关 benchmark record 作为发布门禁，性能数据继续留在本地记录。Phase 6.5 仍 deferred，项目继续保持 Alpha 定位。
 
 ## Active status
 
 | Area | Status | Evidence and next gate |
 | --- | --- | --- |
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
-| Phase 6 U1 circuit | implemented; under acceptance review | Rust/PyO3/Python implementation and A/B evidence are present；remaining acceptance matrix and matched native/JAX handoff are still required. |
+| Phase 6 U1 circuit | implemented; historical acceptance closed | Rust/PyO3/Python implementation and local correctness/A-B evidence are archived；machine-specific benchmark handoff is informational, not a release gate. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
-| Phase 7 structured Hamiltonian algebra | implemented; accepted 2026-08-03 | Third-round Holstein/spin-boson independent differential and exact structured-plan basis/domain metadata regressions are complete; the full local quality/smoke gate passes and the clean release benchmark handoff remains recorded. |
-| Phase 7.5 Majorana, mappings, and additive-charge sectors | implemented; second-round code remediation complete; release record pending | SR1–SR5 are covered by wide-sector, budget, coarse-FFI, and 512-mode/1,024-term regressions. The user-approved SR6 SPPS estimator change also uses the `N-1` sample variance in fixed and adaptive paths. |
+| Phase 7 structured Hamiltonian algebra | implemented; acceptance closed 2026-08-04 | Correctness, structured targets, metadata, and TensorCircuit differentials are covered; local benchmark records remain informational. |
+| Phase 7.5 Majorana, mappings, and additive-charge sectors | implemented; acceptance closed 2026-08-04 | Wide-sector, budget, coarse-FFI, mapping, charge, and SPPS regressions are complete; no separate release benchmark record is required. |
+| Phase 8 API coherence | implemented; remediation closed 2026-08-04 | R1–R7 are addressed in `35f9adc`; the full local quality gate and strict documentation build pass. |
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
@@ -60,7 +61,7 @@ Correctness evidence includes dense reconstruction for COO and CSR, matrix-free 
 
 The second-round algebra fix resolves the only accepted partially mapped representation by eagerly mapping both operands whenever raw and mapped fermion factors meet, preserving original multiplication order; `tensor_product()` uses global Jordan–Wigner mode indices and inserts the left parity string for a mapped right factor. CAR expansion now selects a cheap canonical/no-contraction fast path and checks actual recursive result growth rather than charging every word `2**len`; the selected owner decision is to retain this low-overhead guard and not add an exact symbolic dry run or allocator accounting. Reusable plans cache checked Python-int dimensions and expose schema/target, source and plan term counts, mapping, cutoffs/boundary, Weyl convention, and backend operation metadata; the dead Python finite-transition implementation and obsolete adaptive labels were removed.
 
-Release Phase 7 record `phase7-second-round-remediation-v5-20260803` is complete through the phase-specific benchmark harness on the local arm64/macOS release environment at clean commit `b5bcc0c`: 32 focused Python cases cover sparse native scales, construction/first-apply/steady-apply boundaries, duplicate-heavy fermion canonicalization, explicit Hubbard quartic Jordan–Wigner mapping, Holstein mixed native MVP, uniform Weyl `d=3/4/5/6`, expansion guards, and all required workload metadata (`input_terms`, `canonical_terms`, `generated_contributions`, dimension, nonzeros/transitions, plan/output bytes, thread count, throughput, numerical error). The manifest records `git_dirty=false`; the previous all-Python manifest remains failed because pytest-benchmark attempted to serialize an empty sample for an unrelated skipped large benchmark. Phase 7 remains under acceptance review for the remaining full P0–P5 handoff evidence, not because the second-round remediation lacks a clean release record.
+Release Phase 7 records are historical local evidence. The previous all-Python manifest remains a benchmark-harness artifact and is not treated as a release blocker; acceptance is closed at the contract/correctness boundary.
 
 The M1 owner decision is now backed by a scoped release A/B on the same local arm64/macOS machine and the same public Python/PyO3 workloads (five process repeats, fifteen inner samples per case). The selected structure-aware variant retains checked arithmetic, the canonical/no-contraction fast path, and running result-size guards; it does not perform a symbolic dry run or allocator accounting. The old blanket `2**len` preflight, the selected variant, and the same recursion with the symbolic fast path disabled measured as follows:
 
@@ -234,7 +235,7 @@ Known boundary remains intentional: Phase 5.5 does not batch propagated-operator
 
 ## Next actions
 
-Phase 4 handoff, the Phase 5 review remediation, and Phase 5.5 are complete. Phase 6 implementation and its remediation checkpoint are complete: M1 same-pair blocks, M2 diagonal lookup/static folding, M3 projected reducers and final-state cache, M4 in-place reverse, N1/N2 validation, N3 pair-map scratch reuse, and a release A/B workload are present. Phase 6 remains under acceptance review until the complete P0–P4 concurrency, memory, matched-backend, and benchmark handoff matrix is recorded; future performance work should keep the current correctness and benchmark gates and only introduce further optimization when a representative release profile identifies a bottleneck.
+Phase 4 handoff, the Phase 5 review remediation, Phase 5.5, and the Phase 6 implementation/remediation are complete. M1–M4 and N1–N3 are retained as historical evidence; the remaining machine-specific concurrency, memory, matched native/JAX, and performance records are informational and are not active release gates.
 
 ## Phase Alpha completion checkpoint
 
@@ -259,7 +260,7 @@ The reproducible local A/B driver is `benchmarks/manual/u1_execution_ab.py`. Aft
 
 ## Deferred future phases
 - **Phase 6.5 — generic Rust-native matrix-free time evolution (deferred)**：inactive research proposal in `phase-6.5-spec.md`, not the automatic next milestone after Phase 6. It requires a real workload, matched baseline, dependency/accuracy spike and a new owner decision before activation; no preparatory general-linear-algebra abstraction or numerical dependency should enter Phase 6.
-- **Phase 7 — structured Hamiltonian algebra and compilation**：the contract is frozen and its first vertical slice is implemented. Remaining acceptance work is the full P0–P5 evidence matrix, including TensorCircuit uniform-qudit backend differentials and any additional native sparse/plan optimization justified by release profiling。
+- **Phase 7 — structured Hamiltonian algebra and compilation**：implemented and acceptance-closed; future optimization is benchmark-led and not part of the 0.2 release gate。
 
 ## Phase 1 completion record
 

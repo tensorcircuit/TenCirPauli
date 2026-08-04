@@ -12,6 +12,10 @@ Phase 8 is substantially implemented and the complete correctness and quality ga
 
 The recommended outcome is a short API-focused remediation followed by a second review. A redesign of the Rust kernels or executor architecture is not required.
 
+## Closure note (2026-08-04)
+
+R1–R7 were remediated in commit `35f9adc`; the full local quality gate, strict documentation build, and benchmark smoke passed. This report is now an archived historical review, and no machine-specific benchmark record is required for the 0.2 release.
+
 ## Review and validation performed
 
 - Inspected the complete `origin/main..fe8a283` diff and the current public Python modules against every normative section of `phase-8-api-coherence-spec.md`.

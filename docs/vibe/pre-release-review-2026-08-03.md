@@ -6,6 +6,10 @@
 
 当前源码已经达到“Alpha 版本可以继续发布准备”的功能质量水平，但还没有达到“可以不经人工复核直接作为正式 GitHub/PyPI 发布链放行”的水平。最重要的两个问题是：本地没有 GitHub remote 或版本 tag，公开 PyPI 与 TestPyPI 查询不到 `tencirpauli`，因此无法确认用户所说的发布已经发生；从当前源码生成的 sdist 不包含 `LICENSE`，从该 sdist 再构建的 wheel 也不包含许可证文件。
 
+## Closure status（2026-08-04）
+
+本报告保留为历史发行审计记录。当前源码的 sdist 已包含 `LICENSE`；版本、Changelog 和当前状态将在 0.2 release-prep 中同步。按当前 owner 决策，机器相关 benchmark record 和额外 artifact QA 不作为本次发布门禁。
+
 ## 已验证通过
 
 - 工作区源码与测试：`scripts/check.py --benchmark smoke` 通过；Rust 27 tests、Python 187 passed/1 skipped、benchmark harness 133 passed/77 deselected；Rust fmt/Clippy、Black、Ruff 和 strict mypy 通过。

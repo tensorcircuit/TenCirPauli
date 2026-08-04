@@ -1,6 +1,6 @@
 # Phase 7 Spec: structured Hamiltonian algebra and compilation
 
-Status: frozen implementation contract; the first vertical slice is implemented and under acceptance review. The owner approved the Python construction direction on 2026-08-03 and approved the remaining algebra, finite-basis, memory, compilation, and delivery decisions later the same day. The remaining acceptance work is tracked in `docs/vibe/implementation-status.md`.
+Status: frozen implementation contract; implemented and acceptance-closed for the 0.2 release on 2026-08-04. Machine-specific benchmark records remain local and informational.
 
 > API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
 
