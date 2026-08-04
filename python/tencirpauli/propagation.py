@@ -603,7 +603,7 @@ def _state_payload(
     state: ZeroState | ComputationalBasisState | ProductBlochState | str,
     nqubits: int,
 ) -> tuple[int, list[int], list[float]]:
-    if state == "zero" or isinstance(state, ZeroState):
+    if isinstance(state, ZeroState) or (isinstance(state, str) and state == "zero"):
         return 0, [], []
     if isinstance(state, ComputationalBasisState):
         if len(state.bits) != nqubits:

@@ -14,6 +14,7 @@ from .circuit import (
     ParameterExpr,
     _coerce_parameters,
     _evaluate_angle,
+    _evaluate_angle_value,
     _slot_set,
 )
 from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
@@ -166,6 +167,18 @@ class PropagationCircuitPlan:
             )
         return native, jacobian
 
+    def _native_values(
+        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
+    ) -> np.ndarray[Any, Any]:
+        """Evaluate dynamic angles without allocating discarded Jacobians."""
+        values = _coerce_parameters(parameters, self.nparameters)
+        native: np.ndarray[Any, Any] = np.empty(
+            len(self._dynamic_angles), dtype=np.float64
+        )
+        for index, angle in enumerate(self._dynamic_angles):
+            native[index] = _evaluate_angle_value(angle, values, self.nparameters)
+        return native
+
     def expectation(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> float:
@@ -174,7 +187,7 @@ class PropagationCircuitPlan:
         Raises ``ValueError`` when the compiled observable is not exactly
         Hermitian.
         """
-        native, _ = self._native_parameters(parameters)
+        native = self._native_values(parameters)
         return self._engine.expectation(native)
 
     def value_and_grad(
@@ -200,7 +213,7 @@ class PropagationCircuitPlan:
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> PauliOperator:
         """Return the canonical propagated operator for the supplied parameters."""
-        native, _ = self._native_parameters(parameters)
+        native = self._native_values(parameters)
         return self._engine.propagate_operator(native)
 
     def profile(
@@ -211,7 +224,7 @@ class PropagationCircuitPlan:
         Raises ``ValueError`` when the compiled observable is not exactly
         Hermitian.
         """
-        native, _ = self._native_parameters(parameters)
+        native = self._native_values(parameters)
         return self._engine.profile(native)
 
 

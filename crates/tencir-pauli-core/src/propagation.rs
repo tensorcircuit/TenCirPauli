@@ -569,7 +569,8 @@ impl PropagationBatch {
             .map(|observable| observable.terms().len())
             .max()
             .unwrap_or(0);
-        let per_worker_bytes = estimate_batch_worker_bytes(&program, maximum_terms, None)?;
+        let per_worker_bytes =
+            estimate_batch_worker_bytes(&program, maximum_terms, None).unwrap_or(usize::MAX);
         let base_bytes = observable_bytes
             .checked_add(program.transition_bytes)
             .and_then(|bytes| bytes.checked_add(output_bytes))

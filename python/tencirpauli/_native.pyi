@@ -23,14 +23,14 @@ class NativeMappingPlan:
     def estimated_bytes(self) -> int: ...
     def transform(
         self,
-        structures: object,
+        structures: Sequence[Sequence[int]],
         coefficients_re: Sequence[float],
         coefficients_im: Sequence[float],
         max_bytes: int,
     ) -> tuple[object, Sequence[float], Sequence[float]]: ...
     def transform_majorana(
         self,
-        indices: object,
+        indices: Sequence[Sequence[int]],
         coefficients_re: Sequence[float],
         coefficients_im: Sequence[float],
         max_bytes: int,
@@ -109,7 +109,7 @@ class NativeChargeSectorPlan:
         qudit_dimension: int,
         termwise_conserved: bool,
         max_bytes: int,
-        fast_fermion_particles: int | None,
+        fast_fermion_particles: int | None = ...,
     ) -> object: ...
     def compile_mvp(
         self,
@@ -130,13 +130,33 @@ class NativeChargeSectorPlan:
         coefficients: object,
         qudit_dimension: int,
         termwise_conserved: bool,
+        max_bytes: int,
         fast_fermion_particles: int | None = ...,
     ) -> NativeChargeMvpPlan: ...
 
 class NativeChargeMvpPlan:
     @property
     def dimension(self) -> int: ...
+    @property
+    def estimated_bytes(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
+    def compile_eager(self, max_bytes: int) -> NativeChargeEagerMvpPlan: ...
+
+class NativeChargeEagerMvpPlan:
+    @property
+    def dimension(self) -> int: ...
+    @property
+    def transition_count(self) -> int: ...
+    @property
+    def estimated_bytes(self) -> int: ...
+    def csr(self) -> tuple[object, object, object]: ...
+    def coo(self, max_bytes: int) -> tuple[object, object, object]: ...
+    def dense(self, max_bytes: int) -> object: ...
+    def apply(self, state: object, max_bytes: int) -> object: ...
+    def apply_with_parallelism(
+        self, state: object, max_bytes: int, parallel: bool
+    ) -> object: ...
     def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
 def charge_sector_plan(
@@ -157,28 +177,28 @@ def charge_sector_plan_compact(
 ) -> NativeChargeSectorPlan: ...
 def structured_dense(
     local_dimensions: Sequence[int],
-    operations: object,
+    operations: Sequence[Sequence[tuple[int, int, int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, object]: ...
 def structured_sparse(
     local_dimensions: Sequence[int],
-    operations: object,
+    operations: Sequence[Sequence[tuple[int, int, int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def structured_sparse_plan(
     local_dimensions: Sequence[int],
-    operations: object,
+    operations: Sequence[Sequence[tuple[int, int, int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> StructuredMvpPlan: ...
 def structured_fermion_canonicalize(
     n_modes: int,
-    factors: object,
+    factors: Sequence[Sequence[tuple[int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
@@ -195,15 +215,15 @@ def structured_fermion_multiply(
 ]: ...
 def structured_fermion_jordan_wigner(
     n_modes: int,
-    creation: object,
-    annihilation: object,
+    creation: Sequence[Sequence[int]],
+    annihilation: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 def structured_boson_canonicalize(
     n_modes: int,
-    factors: object,
+    factors: Sequence[Sequence[tuple[int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
@@ -320,24 +340,24 @@ def charge_compile_transitions(
 ) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def majorana_canonicalize(
     n_modes: int,
-    indices: object,
+    indices: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[object, Sequence[float], Sequence[float]]: ...
 def majorana_multiply(
     n_modes: int,
-    left_indices: object,
+    left_indices: Sequence[Sequence[int]],
     left_coefficients_re: Sequence[float],
     left_coefficients_im: Sequence[float],
-    right_indices: object,
+    right_indices: Sequence[Sequence[int]],
     right_coefficients_re: Sequence[float],
     right_coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[object, Sequence[float], Sequence[float]]: ...
 def majorana_to_fermion(
     n_modes: int,
-    indices: object,
+    indices: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
@@ -349,8 +369,8 @@ def majorana_to_fermion(
 ]: ...
 def fermion_to_majorana(
     n_modes: int,
-    creation: object,
-    annihilation: object,
+    creation: Sequence[Sequence[int]],
+    annihilation: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,

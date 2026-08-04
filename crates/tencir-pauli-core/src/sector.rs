@@ -585,7 +585,13 @@ impl U1LazyMvpPlan {
             })?;
         check_allocation(bytes, max_bytes)?;
         let mut output = vec![Complex64::default(); dimension];
-        self.apply_into(state, &mut output)?;
+        let scratch_budget = max_bytes
+            .checked_sub(bytes)
+            .ok_or(PauliError::MemoryLimit {
+                requested: bytes,
+                limit: max_bytes,
+            })?;
+        self.apply_into(state, &mut output, scratch_budget)?;
         Ok(output)
     }
 
@@ -593,6 +599,7 @@ impl U1LazyMvpPlan {
         &self,
         state: &[Complex64],
         output: &mut [Complex64],
+        max_bytes: u128,
     ) -> Result<(), PauliError> {
         let dimension = self.dimension();
         if state.len() != dimension {
@@ -607,6 +614,26 @@ impl U1LazyMvpPlan {
                 actual: output.len(),
             });
         }
+        let scratch_bytes = (self.sector.active_number as u128)
+            .checked_mul(size_of::<usize>() as u128)
+            .and_then(|value| {
+                value.checked_add(
+                    (self.sector.word_count() as u128)
+                        .checked_mul((size_of::<u64>() * 2) as u128)?,
+                )
+            })
+            .and_then(|value| {
+                value.checked_add((self.terms.groups.len() as u128).checked_mul(size_of::<(
+                    usize,
+                    Complex64,
+                )>(
+                )
+                    as u128)?)
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating lazy U1 MVP scratch",
+            })?;
+        check_allocation(scratch_bytes, max_bytes)?;
         output.fill(Complex64::default());
         let mut source_iterator = U1BasisIterator::new(&self.sector);
         let mut source_active = Vec::with_capacity(self.sector.active_number);

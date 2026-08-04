@@ -245,7 +245,15 @@ class U1RestrictedOperator:
         object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_operator", operator)
         object.__setattr__(self, "_lock", threading.Lock())
-        object.__setattr__(self, "_terms", _u1_terms(operator))
+        object.__setattr__(
+            self,
+            "_terms",
+            (
+                ()
+                if native_operator is not None or native_lazy_plan is not None
+                else _u1_terms(operator)
+            ),
+        )
         object.__setattr__(
             self,
             "_lazy_estimate",
@@ -338,11 +346,15 @@ class U1RestrictedOperator:
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
         if storage == "lazy":
+            _check_allocation(
+                int(self._native_lazy_plan.estimated_bytes),
+                max_bytes,
+                "U1 MVP plan",
+            )
             return U1MvpPlan(
                 self.sector,
                 self._native_lazy_plan,
                 self.term_count,
-                operator=self._operator,
                 storage="lazy",
             )
         native = self._ensure_eager(max_bytes)
@@ -363,19 +375,74 @@ class U1RestrictedOperator:
         return self._lazy_estimate
 
     def _ensure_eager(self, max_bytes: Optional[int]) -> Any:
+        return self._ensure_eager_for_target(max_bytes, None)
+
+    def _ensure_eager_for_target(
+        self, max_bytes: Optional[int], target: Optional[str]
+    ) -> Any:
         native = self._native_operator
         if native is not None:
+            if target is not None:
+                fixed = native.mvp_plan(_effective_max_bytes(max_bytes))
+                _check_allocation(
+                    _u1_materialization_bytes(
+                        self.dimension, fixed.transition_count, target
+                    ),
+                    max_bytes,
+                    f"U1 {target} materialization",
+                )
             return native
         if self._operator is None:
             raise RuntimeError("U1 eager cache has no source operator")
         with self._lock:
             native = self._native_operator
             if native is None:
+                if max_bytes is None:
+                    remaining = None
+                else:
+                    _check_allocation(
+                        self._lazy_estimate,
+                        max_bytes,
+                        "U1 lazy MVP plan",
+                    )
+                    remaining = max_bytes - self._lazy_estimate
+                target_floor = (
+                    0
+                    if target is None
+                    else _u1_materialization_bytes(self.dimension, 0, target)
+                )
+                if remaining is not None:
+                    _check_allocation(
+                        target_floor,
+                        remaining,
+                        (
+                            f"U1 {target} materialization preflight"
+                            if target is not None
+                            else "U1 eager MVP plan"
+                        ),
+                    )
+                    construction_budget = remaining - target_floor
+                else:
+                    construction_budget = None
                 native = _native.pauli_restrict_u1(
                     self._operator.nqubits,
                     *self._operator._arrays(),
                     self.sector.particle_number,
-                    _effective_max_bytes(max_bytes),
+                    _effective_max_bytes(construction_budget),
+                )
+                fixed = native.mvp_plan(_effective_max_bytes(construction_budget))
+                retained_bytes = self._lazy_estimate + fixed.transition_count * 32
+                target_bytes = (
+                    0
+                    if target is None
+                    else _u1_materialization_bytes(
+                        self.dimension, fixed.transition_count, target
+                    )
+                )
+                _check_allocation(
+                    retained_bytes + target_bytes,
+                    max_bytes,
+                    "U1 eager cache and materialization",
                 )
                 object.__setattr__(self, "_native_operator", native)
             return native
@@ -385,7 +452,7 @@ class U1RestrictedOperator:
     ) -> np.ndarray[Any, Any]:
         """Materialize the bounded dense matrix in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, values = self._ensure_eager(max_bytes).dense(
+        dimension, values = self._ensure_eager_for_target(max_bytes, "dense").dense(
             _effective_max_bytes(max_bytes)
         )
         return cast(
@@ -396,9 +463,9 @@ class U1RestrictedOperator:
     def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
         """Materialize deterministic COO arrays in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, rows, columns, values = self._ensure_eager(max_bytes).coo(
-            _effective_max_bytes(max_bytes)
-        )
+        dimension, rows, columns, values = self._ensure_eager_for_target(
+            max_bytes, "coo"
+        ).coo(_effective_max_bytes(max_bytes))
         return COOMatrix(
             np.asarray(rows, dtype=np.uint64),
             np.asarray(columns, dtype=np.uint64),
@@ -409,9 +476,9 @@ class U1RestrictedOperator:
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
         """Materialize bounded CSR arrays in restricted-space ordering."""
         _validate_max_bytes(max_bytes)
-        dimension, indptr, indices, values = self._ensure_eager(max_bytes).csr(
-            _effective_max_bytes(max_bytes)
-        )
+        dimension, indptr, indices, values = self._ensure_eager_for_target(
+            max_bytes, "csr"
+        ).csr(_effective_max_bytes(max_bytes))
         return CSRMatrix(
             np.asarray(indptr, dtype=np.uint64),
             np.asarray(indices, dtype=np.uint64),
@@ -490,8 +557,12 @@ class U1MvpPlan:
         object.__setattr__(
             self, "strategy", "u1_lazy" if storage == "lazy" else "u1_destination_major"
         )
-        object.__setattr__(self, "_operator", operator)
-        object.__setattr__(self, "_terms", _u1_terms(operator))
+        object.__setattr__(
+            self, "_operator", None if native_plan is not None else operator
+        )
+        object.__setattr__(
+            self, "_terms", () if native_plan is not None else _u1_terms(operator)
+        )
 
     def apply(
         self,
@@ -512,12 +583,11 @@ class U1MvpPlan:
             )
         return cast(
             np.ndarray[Any, Any],
-            np.array(
+            np.asarray(
                 self._native_plan.apply(
                     np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
                 ),
                 dtype=np.complex128,
-                copy=True,
                 order="C",
             ),
         )
@@ -669,6 +739,18 @@ def _u1_terms(operator: Optional[PauliOperator]) -> Any:
         (tuple(int(code) for code in structure), complex(re, im))
         for structure, re, im in zip(structures, real, imaginary)
     )
+
+
+def _u1_materialization_bytes(
+    dimension: int, transition_count: int, target: str
+) -> int:
+    if target == "dense":
+        return dimension * dimension * 16
+    if target == "coo":
+        return transition_count * 32
+    if target == "csr":
+        return (dimension + 1) * 8 + transition_count * 24
+    raise ValueError(f"unsupported U1 materialization target: {target}")
 
 
 def _restrict_u1(

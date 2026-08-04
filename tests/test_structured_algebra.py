@@ -629,7 +629,7 @@ def test_structured_mapping_replay_is_deterministic() -> None:
 
 def test_builder_multiplies_repeated_qubit_factors() -> None:
     space = tcp.OperatorSpace(qubits=1)
-    actual = space.builder().add_product(qubits=((0, "X"), (0, "Y"))).finish()
+    actual = space.builder().add_product(qubits=((0, "x"), (0, "y"))).finish()
     expected = 1j * space.qubit.z(0)
     np.testing.assert_allclose(actual.compile("dense"), expected.compile("dense"))
 

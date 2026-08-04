@@ -5,12 +5,21 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import resource
+import sys
 import time
 from typing import Any
 
 import numpy as np
 from quspin.basis import spinful_fermion_basis_general
 from quspin.operators import quantum_LinearOperator
+
+
+def peak_rss_bytes() -> int:
+    """Return process peak RSS in bytes on supported local platforms."""
+    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
 
 
 def lattice_bonds(rows: int, cols: int) -> tuple[tuple[int, int], ...]:
@@ -135,9 +144,22 @@ def main() -> None:
         "u": args.u,
         "dimension": operator.Ns,
         "build_seconds": build_seconds,
+        "state_bytes": operator.Ns * np.dtype(np.complex128).itemsize,
+        "output_bytes": operator.Ns * np.dtype(np.complex128).itemsize,
         "mvp_seconds": mvp_seconds,
         "mvp_seconds_median": float(np.median(mvp_seconds)),
         "output_norm": float(np.linalg.norm(result)),
+        "peak_rss_bytes": peak_rss_bytes(),
+        "thread_environment": {
+            name: os.environ.get(name, "unset")
+            for name in (
+                "RAYON_NUM_THREADS",
+                "OMP_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "VECLIB_MAXIMUM_THREADS",
+            )
+        },
     }
     if args.eigsh:
         start = time.perf_counter()

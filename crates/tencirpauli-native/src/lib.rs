@@ -19,7 +19,8 @@ use pyo3::prelude::*;
 
 use charge::{charge_compile_transitions, charge_mvp_apply, charge_mvp_apply_into};
 use charge_sector::{
-    charge_sector_plan, charge_sector_plan_compact, NativeChargeMvpPlan, NativeChargeSectorPlan,
+    charge_sector_plan, charge_sector_plan_compact, NativeChargeEagerMvpPlan, NativeChargeMvpPlan,
+    NativeChargeSectorPlan,
 };
 use grouping::{pauli_compatibility_matrix, pauli_group, pauli_incompatibility_edges};
 use hamiltonian::{
@@ -64,6 +65,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeMvpPlan>()?;
     module.add_class::<NativeChargeSectorPlan>()?;
     module.add_class::<NativeChargeMvpPlan>()?;
+    module.add_class::<NativeChargeEagerMvpPlan>()?;
     module.add_class::<NativeZ2TaperingPlan>()?;
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;

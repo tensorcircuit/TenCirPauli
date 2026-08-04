@@ -33,6 +33,12 @@ def test_propagation_facade_unifies_expectation_and_gradient() -> None:
     assert circuit.compile(observable) is circuit.compile(observable)
 
 
+def test_propagation_rejects_raw_initial_state_with_typed_error() -> None:
+    circuit = tcp.PropagationCircuit(nqubits=2, initial_state=np.zeros(4))
+    with pytest.raises(TypeError, match="typed state descriptor"):
+        circuit.compile(_z_observable(2))
+
+
 def test_propagation_expression_and_concrete_jax_array() -> None:
     jax = pytest.importorskip("jax")
     parameter = tcp.Parameter(0)

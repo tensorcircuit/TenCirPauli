@@ -110,7 +110,11 @@ class SPPSCircuitPlan:
         """Estimate value and gradient for an exactly Hermitian observable.
 
         The result is an :class:`SPPSEstimate`, not an exact scalar, and
-        non-Hermitian observables raise ``ValueError`` at compilation.
+        non-Hermitian observables raise ``ValueError`` at compilation. The
+        returned gradient is chained into public-parameter space, while
+        ``gradient_error_proxy``, per-term proxies, and ``converged`` describe
+        the native angle-parameter space; these spaces coincide for direct
+        ``Parameter`` angles.
         """
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad(
@@ -132,7 +136,11 @@ class SPPSCircuitPlan:
         """Estimate value and gradient with adaptive sampling.
 
         The result is an :class:`SPPSEstimate`, not an exact scalar, and
-        non-Hermitian observables raise ``ValueError`` at compilation.
+        non-Hermitian observables raise ``ValueError`` at compilation. The
+        returned gradient is chained into public-parameter space, while
+        ``gradient_error_proxy``, per-term proxies, and ``converged`` describe
+        the native angle-parameter space; these spaces coincide for direct
+        ``Parameter`` angles.
         """
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad_adaptive(

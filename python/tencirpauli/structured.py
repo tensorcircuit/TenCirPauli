@@ -2544,6 +2544,7 @@ class OperatorBuilder:
             qphase = 1.0 + 0j
             for index, code in product_spec["qubits"]:
                 if isinstance(code, str):
+                    code = code.upper()
                     if code not in _IDENTITY_CODES:
                         raise ValueError("Pauli code must be one of I, X, Y, Z")
                     code_value = _IDENTITY_CODES[code]

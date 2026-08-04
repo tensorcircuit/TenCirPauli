@@ -324,7 +324,7 @@ def test_phase5_wide_u1_steady_mvp(
 
 @pytest.mark.performance_large
 @pytest.mark.parametrize(("nqubits", "particle_number"), [(16, 8), (18, 9), (20, 10)])
-def test_phase85_u1_medium_csr(
+def test_u1_medium_csr(
     benchmark: BenchmarkFixture, nqubits: int, particle_number: int
 ) -> None:
     """Measure full eager CSR construction at representative medium sizes."""

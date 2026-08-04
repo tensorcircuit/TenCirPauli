@@ -272,15 +272,9 @@ class NativeMVPPlan:
         contiguous = np.ascontiguousarray(values)
         return cast(
             np.ndarray[Any, Any],
-            np.array(
-                np.asarray(
-                    self._native_plan.apply(
-                        contiguous, _effective_max_bytes(max_bytes)
-                    ),
-                    dtype=np.complex128,
-                ),
+            np.asarray(
+                self._native_plan.apply(contiguous, _effective_max_bytes(max_bytes)),
                 dtype=np.complex128,
-                copy=True,
                 order="C",
             ),
         )

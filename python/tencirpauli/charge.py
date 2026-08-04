@@ -59,6 +59,18 @@ def _validate_storage(value: object) -> ChargeStorage:
     raise ValueError("storage must be either 'eager' or 'lazy'")
 
 
+def _charge_materialization_bytes(
+    dimension: int, transition_count: int, target: str
+) -> int:
+    if target == "dense":
+        return dimension * dimension * 16
+    if target == "coo":
+        return transition_count * 32
+    if target == "csr":
+        return (dimension + 1) * 8 + transition_count * 24
+    raise ValueError(f"unsupported charge materialization target: {target}")
+
+
 def _checked_float(value: Union[int, Fraction], name: str) -> float:
     """Convert an exact scalar only when binary64 preserves it exactly."""
     exact = value if isinstance(value, Fraction) else Fraction(value, 1)
@@ -810,19 +822,18 @@ class _RestrictedTransitionInputs:
 class ChargeMvpPlan:
     """Reusable matrix-free transition plan in a finite charge-sector basis.
 
-    The plan stores aggregated transition rows, columns, and coefficients and
-    can apply the same restricted operator to many state vectors without
-    materializing a dense matrix.
+    The native handle owns validated destination-major CSR storage and can
+    apply the same restricted operator to many state vectors without
+    materializing a dense matrix. Public COO row indices are derived only when
+    requested.
     """
 
     __slots__ = (
         "_locked",
+        "_native_plan",
         "basis_ordering",
-        "coefficients",
-        "columns",
         "dimension",
         "estimated_bytes",
-        "rows",
         "storage",
         "strategy",
         "target",
@@ -832,47 +843,90 @@ class ChargeMvpPlan:
     dimension: int
     term_count: int
     transition_count: int
-    rows: np.ndarray[Any, Any]
-    columns: np.ndarray[Any, Any]
-    coefficients: np.ndarray[Any, Any]
     estimated_bytes: int
     basis_ordering: str
     storage: ChargeStorage
     strategy: str
     target: str
+    _native_plan: Any
     _locked: bool
 
     def __init__(
         self,
         dimension: int,
         term_count: int,
-        rows: np.ndarray[Any, Any],
-        columns: np.ndarray[Any, Any],
-        coefficients: np.ndarray[Any, Any],
         *,
+        native_plan: Any,
         storage: ChargeStorage = "eager",
     ) -> None:
-        row_values = np.ascontiguousarray(rows, dtype=np.uint64)
-        column_values = np.ascontiguousarray(columns, dtype=np.uint64)
-        coefficient_values = np.ascontiguousarray(coefficients, dtype=np.complex128)
-        for value in (row_values, column_values, coefficient_values):
-            value.setflags(write=False)
         object.__setattr__(self, "dimension", int(dimension))
         object.__setattr__(self, "term_count", int(term_count))
-        object.__setattr__(self, "transition_count", len(row_values))
-        object.__setattr__(self, "rows", row_values)
-        object.__setattr__(self, "columns", column_values)
-        object.__setattr__(self, "coefficients", coefficient_values)
+        object.__setattr__(self, "transition_count", int(native_plan.transition_count))
+        object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(
             self,
             "estimated_bytes",
-            int(row_values.nbytes + column_values.nbytes + coefficient_values.nbytes),
+            int(native_plan.estimated_bytes),
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "storage", _validate_storage(storage))
         object.__setattr__(self, "strategy", "destination_major_csr")
         object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_locked", True)
+
+    def _csr_arrays(
+        self,
+    ) -> Tuple[
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+    ]:
+        native_indptr, native_columns, native_coefficients = self._native_plan.csr()
+        indptr = np.asarray(native_indptr, dtype=np.uint64)
+        columns = np.asarray(native_columns, dtype=np.uint64)
+        coefficients = np.asarray(native_coefficients, dtype=np.complex128)
+        for value in (indptr, columns, coefficients):
+            value.setflags(write=False)
+        return indptr, columns, coefficients
+
+    def _coo_arrays(
+        self,
+        *,
+        max_bytes: Optional[int] = None,
+    ) -> Tuple[
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+    ]:
+        native_rows, native_columns, native_coefficients = self._native_plan.coo(
+            _effective_max_bytes(max_bytes)
+        )
+        rows = np.asarray(native_rows, dtype=np.uint64)
+        columns = np.asarray(native_columns, dtype=np.uint64)
+        coefficients = np.asarray(native_coefficients, dtype=np.complex128)
+        for value in (rows, columns, coefficients):
+            value.setflags(write=False)
+        return rows, columns, coefficients
+
+    @property
+    def indptr(self) -> np.ndarray[Any, Any]:
+        """Return a read-only CSR pointer array generated from the native handle."""
+        return self._csr_arrays()[0]
+
+    @property
+    def columns(self) -> np.ndarray[Any, Any]:
+        """Return read-only CSR column indices generated from the native handle."""
+        return self._csr_arrays()[1]
+
+    @property
+    def coefficients(self) -> np.ndarray[Any, Any]:
+        """Return read-only CSR values generated from the native handle."""
+        return self._csr_arrays()[2]
+
+    @property
+    def rows(self) -> np.ndarray[Any, Any]:
+        """Return read-only COO row indices generated from the native handle."""
+        return self._coo_arrays()[0]
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_locked", False):
@@ -895,17 +949,11 @@ class ChargeMvpPlan:
         _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
         return cast(
             np.ndarray[Any, Any],
-            np.array(
-                _native.charge_mvp_apply(
-                    self.dimension,
-                    self.rows,
-                    self.columns,
-                    self.coefficients,
-                    np.ascontiguousarray(values),
-                    _effective_max_bytes(max_bytes),
+            np.asarray(
+                self._native_plan.apply(
+                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
                 ),
                 dtype=np.complex128,
-                copy=True,
                 order="C",
             ),
         )
@@ -919,12 +967,7 @@ class ChargeMvpPlan:
     ) -> None:
         """Apply into strict caller-owned buffers without changing the input."""
         _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        _check_allocation(0, max_bytes, "charge MVP scratch")
-        _native.charge_mvp_apply_into(
-            self.dimension,
-            self.rows,
-            self.columns,
-            self.coefficients,
+        self._native_plan.apply_into(
             input_state,
             output_state,
             _effective_max_bytes(max_bytes),
@@ -945,7 +988,6 @@ class ChargeLazyMvpPlan:
     """
 
     __slots__ = (
-        "_inputs",
         "_locked",
         "_native_execution",
         "_native_plan",
@@ -965,7 +1007,6 @@ class ChargeLazyMvpPlan:
     strategy: str
     target: str
     _locked: bool
-    _inputs: _RestrictedTransitionInputs
     _native_plan: Any
     _native_execution: Any
 
@@ -974,13 +1015,13 @@ class ChargeLazyMvpPlan:
         sector: ChargeSector,
         term_count: int,
         inputs: "_RestrictedTransitionInputs",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         if sector._native_plan is None:
             raise NotImplementedError(
                 "storage='lazy' requires a native compact ChargeSector plan"
             )
         object.__setattr__(self, "_native_plan", sector._native_plan)
-        object.__setattr__(self, "_inputs", inputs)
         object.__setattr__(
             self,
             "_native_execution",
@@ -1002,6 +1043,7 @@ class ChargeLazyMvpPlan:
                 inputs.coefficients,
                 inputs.qudit_dimension,
                 inputs.termwise_conserved,
+                _effective_max_bytes(max_bytes),
                 inputs.fast_fermion_particles,
             ),
         )
@@ -1010,7 +1052,7 @@ class ChargeLazyMvpPlan:
         object.__setattr__(
             self,
             "estimated_bytes",
-            int(sector.estimated_bytes + inputs.coefficients.nbytes),
+            int(self._native_execution.estimated_bytes),
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "storage", "lazy")
@@ -1131,7 +1173,7 @@ class ChargeRestrictedOperator:
             max_bytes,
             "lazy charge MVP plan",
         )
-        lazy_plan = ChargeLazyMvpPlan(sector, term_count, inputs)
+        lazy_plan = ChargeLazyMvpPlan(sector, term_count, inputs, max_bytes)
         object.__setattr__(self, "operator", operator)
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", sector.dimension)
@@ -1210,22 +1252,86 @@ class ChargeRestrictedOperator:
         return self._lazy_plan
 
     def _ensure_eager(self, max_bytes: Optional[int]) -> ChargeMvpPlan:
+        return self._ensure_eager_for_target(max_bytes, None)
+
+    def _ensure_eager_for_target(
+        self, max_bytes: Optional[int], target: Optional[str]
+    ) -> ChargeMvpPlan:
         cached = self._eager_plan
         if cached is not None:
+            if target is None:
+                _check_allocation(cached.estimated_bytes, max_bytes, "charge MVP plan")
+            else:
+                _check_allocation(
+                    _charge_materialization_bytes(
+                        self.dimension, cached.transition_count, target
+                    ),
+                    max_bytes,
+                    f"charge {target} materialization",
+                )
             return cached
         with self._lock:
             cached = self._eager_plan
             if cached is not None:
+                if target is None:
+                    _check_allocation(
+                        cached.estimated_bytes, max_bytes, "charge MVP plan"
+                    )
+                else:
+                    _check_allocation(
+                        _charge_materialization_bytes(
+                            self.dimension, cached.transition_count, target
+                        ),
+                        max_bytes,
+                        f"charge {target} materialization",
+                    )
                 return cached
-            rows, columns, coefficients = _compile_restricted_transitions(
-                self.operator, self.sector, max_bytes
+            _check_allocation(
+                self._lazy_plan.estimated_bytes,
+                max_bytes,
+                "charge lazy MVP plan",
+            )
+            if max_bytes is None:
+                remaining = None
+            else:
+                remaining = max_bytes - self._lazy_plan.estimated_bytes
+            target_floor = (
+                0
+                if target is None
+                else _charge_materialization_bytes(self.dimension, 0, target)
+            )
+            if remaining is not None:
+                _check_allocation(
+                    target_floor,
+                    remaining,
+                    (
+                        f"charge {target} materialization preflight"
+                        if target is not None
+                        else "charge eager MVP plan"
+                    ),
+                )
+                construction_budget = remaining - target_floor
+            else:
+                construction_budget = None
+            native = self._lazy_plan._native_execution.compile_eager(
+                _effective_max_bytes(construction_budget)
+            )
+            target_bytes = (
+                0
+                if target is None
+                else _charge_materialization_bytes(
+                    self.dimension, native.transition_count, target
+                )
+            )
+            _check_allocation(
+                native.estimated_bytes + target_bytes,
+                remaining,
+                "charge eager cache and materialization",
             )
             cached = ChargeMvpPlan(
                 self.sector.dimension,
                 self._lazy_plan.term_count,
-                rows,
-                columns,
-                coefficients,
+                native_plan=native,
             )
             object.__setattr__(self, "_eager_plan", cached)
             return cached
@@ -1240,15 +1346,14 @@ class ChargeRestrictedOperator:
         is not required.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._ensure_eager(max_bytes)
-        _check_allocation(
-            self.dimension * self.dimension * 16, max_bytes, "charge dense matrix"
+        plan = self._ensure_eager_for_target(max_bytes, "dense")
+        values = plan._native_plan.dense(_effective_max_bytes(max_bytes))
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(values, dtype=np.complex128).reshape(
+                (self.dimension, self.dimension)
+            ),
         )
-        result: np.ndarray[Any, Any] = np.zeros(
-            (self.dimension, self.dimension), dtype=np.complex128
-        )
-        result[plan.rows, plan.columns] = plan.coefficients
-        return result
 
     def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
         """Materialize deterministic duplicate-aggregated COO arrays.
@@ -1257,12 +1362,17 @@ class ChargeRestrictedOperator:
         indices and can be converted to SciPy with ``to_scipy()``.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._ensure_eager(max_bytes)
-        _check_allocation(plan.estimated_bytes, max_bytes, "charge COO matrix")
+        plan = self._ensure_eager_for_target(max_bytes, "coo")
+        rows, columns, coefficients = plan._coo_arrays(max_bytes=max_bytes)
+        _check_allocation(
+            int(rows.nbytes + columns.nbytes + coefficients.nbytes),
+            max_bytes,
+            "charge COO matrix",
+        )
         return COOMatrix(
-            plan.rows,
-            plan.columns,
-            plan.coefficients,
+            rows,
+            columns,
+            coefficients,
             (self.dimension, self.dimension),
         )
 
@@ -1274,21 +1384,17 @@ class ChargeRestrictedOperator:
         arrays and is guarded by ``max_bytes``.
         """
         _validate_max_bytes(max_bytes)
-        plan = self._ensure_eager(max_bytes)
-        row_indices = np.asarray(plan.rows, dtype=np.intp)
-        indptr = np.bincount(row_indices + 1, minlength=self.dimension + 1).astype(
-            np.intp, copy=False
-        )
-        np.cumsum(indptr, out=indptr)
+        plan = self._ensure_eager_for_target(max_bytes, "csr")
+        indptr, columns, coefficients = plan._csr_arrays()
         _check_allocation(
-            int(indptr.nbytes + plan.columns.nbytes + plan.coefficients.nbytes),
+            int(indptr.nbytes + columns.nbytes + coefficients.nbytes),
             max_bytes,
             "charge CSR matrix",
         )
         return CSRMatrix(
             indptr,
-            plan.columns,
-            plan.coefficients,
+            columns,
+            coefficients,
             (self.dimension, self.dimension),
         )
 
@@ -1462,103 +1568,6 @@ def _restricted_transition_inputs(
         sector.space.qudits[0] if sector.space.qudits else 0,
         termwise_conserved,
         _fast_fermion_particles(operator, sector) if termwise_conserved else None,
-    )
-
-
-def _compile_restricted_transitions(
-    operator: Union[_StructuredOperator, PauliOperator],
-    sector: ChargeSector,
-    max_bytes: Optional[int],
-) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
-    _validate_max_bytes(max_bytes)
-    basis: Optional[np.ndarray[Any, Any]] = None
-    if sector._native_plan is not None:
-        _check_allocation(
-            sector.estimated_bytes,
-            max_bytes,
-            "charge-sector rank/unrank plan",
-        )
-        if max_bytes is None:
-            remaining = None
-        else:
-            remaining = max_bytes - sector.estimated_bytes
-    else:
-        basis = sector.basis_states(max_bytes=max_bytes)
-        _check_allocation(
-            int(basis.nbytes), max_bytes, "charge restricted basis workspace"
-        )
-        if max_bytes is None:
-            remaining = None
-        else:
-            if basis.nbytes > max_bytes:
-                raise MemoryError("charge restricted basis workspace exceeds max_bytes")
-            remaining = max_bytes - int(basis.nbytes)
-
-    inputs = _restricted_transition_inputs(operator, sector)
-    term_count = (
-        len(operator.terms)
-        if isinstance(operator, PauliOperator)
-        else operator.term_count
-    )
-    if len(inputs.coefficients) != term_count:
-        raise RuntimeError("restricted transition term serialization is inconsistent")
-    _check_allocation(
-        int(inputs.coefficients.nbytes),
-        remaining,
-        "charge restricted coefficient workspace",
-    )
-    if remaining is None:
-        native_limit: Optional[int] = None
-    else:
-        native_limit = remaining - int(inputs.coefficients.nbytes)
-    if sector._native_plan is not None:
-        rows, columns, real, imaginary = sector._native_plan.compile_transitions(
-            sector.dimension,
-            list(inputs.local_dimensions),
-            inputs.fermion_positions,
-            inputs.boson_positions,
-            inputs.qubit_positions,
-            inputs.qudit_positions,
-            inputs.fermion_creation,
-            inputs.fermion_annihilation,
-            inputs.boson_blocks,
-            inputs.qubit_codes,
-            inputs.mapped_present,
-            inputs.mapped_codes,
-            inputs.qudit_present,
-            inputs.qudit_triples,
-            inputs.coefficients,
-            inputs.qudit_dimension,
-            _effective_max_bytes(native_limit),
-        )
-    else:
-        assert basis is not None
-        basis_array = np.ascontiguousarray(basis, dtype=np.uint64)
-        rows, columns, real, imaginary = _native.charge_compile_transitions(
-            sector.dimension,
-            basis_array,
-            list(inputs.local_dimensions),
-            inputs.fermion_positions,
-            inputs.boson_positions,
-            inputs.qubit_positions,
-            inputs.qudit_positions,
-            inputs.fermion_creation,
-            inputs.fermion_annihilation,
-            inputs.boson_blocks,
-            inputs.qubit_codes,
-            inputs.mapped_present,
-            inputs.mapped_codes,
-            inputs.qudit_present,
-            inputs.qudit_triples,
-            inputs.coefficients,
-            inputs.qudit_dimension,
-            _effective_max_bytes(native_limit),
-        )
-    return (
-        np.asarray(rows, dtype=np.intp),
-        np.asarray(columns, dtype=np.intp),
-        np.asarray(real, dtype=np.float64)
-        + 1j * np.asarray(imaginary, dtype=np.float64),
     )
 
 

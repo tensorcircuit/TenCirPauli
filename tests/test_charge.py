@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import replace
 
 import numpy as np
 import pytest
 
 import tencirpauli as tcp
 import tencirpauli.pauli as pauli_module
-from tencirpauli.charge import ChargeLazyMvpPlan
 
 
 def _selected_basis(sector: tcp.ChargeSector) -> list[tuple[int, ...]]:
@@ -304,11 +302,46 @@ def test_spinful_fermion_lazy_fast_path_matches_generic_and_eager() -> None:
     total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
     balance = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: -1, 3: -1})
     sector = tcp.ChargeSector(((total, 2), (balance, 0)))
-    eager = operator.restrict_charge(sector)
+    eager = operator.restrict_charge(sector, storage="eager")
     fast = operator.restrict_charge(sector, storage="lazy")
-    generic_inputs = replace(fast.mvp_plan()._inputs, fast_fermion_particles=None)
-    generic = ChargeLazyMvpPlan(sector, operator.term_count, generic_inputs)
+    mixed_space = tcp.OperatorSpace(fermions=4, bosons=1)
+    # The boson spectator makes the generic native backend ineligible for the
+    # spinful shortcut without retaining a duplicate Python descriptor graph.
+    mixed_operator = (
+        mixed_space.fermion.create(0)
+        * mixed_space.fermion.annihilate(0)
+        * mixed_space.fermion.create(2)
+        * mixed_space.fermion.annihilate(2)
+        * 3.0
+    )
+    mixed_operator = (
+        mixed_operator
+        + (
+            mixed_space.fermion.create(0) * mixed_space.fermion.annihilate(1)
+            + mixed_space.fermion.create(1) * mixed_space.fermion.annihilate(0)
+            + mixed_space.fermion.create(2) * mixed_space.fermion.annihilate(3)
+            + mixed_space.fermion.create(3) * mixed_space.fermion.annihilate(2)
+        )
+        * -1.0
+    )
+    mixed_sector = tcp.ChargeSector(
+        (
+            (
+                tcp.AdditiveCharge(
+                    mixed_space, fermions={index: 1 for index in range(4)}
+                ),
+                2,
+            ),
+            (
+                tcp.AdditiveCharge(mixed_space, fermions={0: 1, 1: 1, 2: -1, 3: -1}),
+                0,
+            ),
+        ),
+        boson_cutoffs={0: 0},
+    )
+    generic = mixed_operator.restrict_charge(mixed_sector)
     state = np.asarray([0.3 - 0.2j, -0.4 + 0.1j, 0.7 + 0.5j, -0.2 - 0.6j])
+    fast.mvp_plan().apply_into(state, np.empty_like(state), max_bytes=0)
     np.testing.assert_allclose(fast.apply(state), generic.apply(state))
     np.testing.assert_allclose(fast.apply(state), eager.apply(state))
 

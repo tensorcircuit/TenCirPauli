@@ -4,7 +4,13 @@ use std::collections::BTreeMap;
 
 use crate::charge_sector::ChargeSectorPlan;
 use crate::{Complex64, PauliError};
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+
+// Release profiling keeps the serial gather for medium graphs (where Rayon
+// scheduling dominates) and activates disjoint-row parallelism only for the
+// large all-to-all graphs that showed a material end-to-end benefit.
+const CSR_PARALLEL_TRANSITION_THRESHOLD: usize = 1 << 19;
 
 /// One canonical structured term in a finite charge-sector layout.
 #[derive(Clone, Debug)]
@@ -20,8 +26,106 @@ pub struct ChargeTransitionTerm {
     pub coefficient: Complex64,
 }
 
+/// Estimate the logical native storage for a batch of term descriptors.
+///
+/// Vec headers are counted together with their logical payloads; allocator
+/// capacity and Python object overhead remain outside this best-effort policy.
+pub fn estimate_charge_transition_terms_bytes(
+    terms: &[ChargeTransitionTerm],
+) -> Result<u128, PauliError> {
+    terms.iter().try_fold(0_u128, |total, term| {
+        let payload = (term.fermion_creation.len() as u128)
+            .checked_mul(std::mem::size_of::<u32>() as u128)
+            .and_then(|value| {
+                value.checked_add(
+                    (term.fermion_annihilation.len() as u128)
+                        .checked_mul(std::mem::size_of::<u32>() as u128)?,
+                )
+            })
+            .and_then(|value| {
+                value.checked_add(
+                    (term.boson_blocks.len() as u128).checked_mul(std::mem::size_of::<(
+                        u32,
+                        u32,
+                        u32,
+                    )>()
+                        as u128)?,
+                )
+            })
+            .and_then(|value| value.checked_add(term.qubit_codes.len() as u128))
+            .and_then(|value| value.checked_add(term.mapped_codes.len() as u128))
+            .and_then(|value| {
+                value.checked_add(
+                    (term.qudit_triples.len() as u128).checked_mul(std::mem::size_of::<(
+                        u32,
+                        u32,
+                        u32,
+                    )>()
+                        as u128)?,
+                )
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating charge transition descriptors",
+            })?;
+        total
+            .checked_add(std::mem::size_of::<ChargeTransitionTerm>() as u128)
+            .and_then(|value| value.checked_add(payload))
+            .ok_or(PauliError::Overflow {
+                context: "estimating charge transition descriptors",
+            })
+    })
+}
+
 /// Deterministic restricted transition arrays.
 pub type ChargeTransitionResult = (Vec<u64>, Vec<u64>, Vec<Complex64>);
+
+/// Apply a validated destination-major CSR graph without allocating
+/// state-sized worker buffers. Parallel rows have deterministic per-row
+/// accumulation order because each worker owns one complete output row.
+pub fn apply_charge_csr_into(
+    indptr: &[usize],
+    columns: &[usize],
+    values: &[Complex64],
+    state: &[Complex64],
+    output: &mut [Complex64],
+    parallel: bool,
+) -> Result<(), PauliError> {
+    if indptr.len()
+        != output.len().checked_add(1).ok_or(PauliError::Overflow {
+            context: "validating charge CSR output length",
+        })?
+        || columns.len() != values.len()
+        || indptr.last().copied() != Some(columns.len())
+        || columns.iter().any(|&column| column >= state.len())
+    {
+        return Err(PauliError::InvalidSector {
+            context: "invalid charge CSR execution graph",
+        });
+    }
+    output.fill(Complex64::default());
+    let use_parallel = parallel && values.len() >= CSR_PARALLEL_TRANSITION_THRESHOLD;
+    if use_parallel {
+        indptr
+            .par_windows(2)
+            .zip(output.par_iter_mut())
+            .for_each(|(window, result)| {
+                let mut value = Complex64::default();
+                for index in window[0]..window[1] {
+                    value += values[index] * state[columns[index]];
+                }
+                *result = value;
+            });
+    } else {
+        for (window, result) in indptr.windows(2).zip(output.iter_mut()) {
+            let mut value = Complex64::default();
+            for index in window[0]..window[1] {
+                value += values[index] * state[columns[index]];
+            }
+            *result = value;
+        }
+    }
+    Ok(())
+}
 
 /// Immutable layout and memory policy for one restricted compilation.
 pub struct ChargeTransitionLayout<'a> {
@@ -395,6 +499,9 @@ struct FastFermionSectorIndex {
     rank_table: Option<Vec<u32>>,
 }
 
+const FAST_COMBINATION_CACHE_LIMIT: u128 = 64 * 1024 * 1024;
+const FAST_RANK_CACHE_LIMIT: u128 = 4 * 1024 * 1024;
+
 impl FastFermionSectorIndex {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -432,7 +539,9 @@ impl FastFermionSectorIndex {
         // These tables are optional. The direct combinatorial routines remain
         // the bounded-memory fallback for larger sectors.
         let mut remaining_budget = scratch_budget;
-        let combination_masks = if combination_count <= 1 << 22
+        let combination_masks = if (combination_count as u128)
+            .checked_mul(std::mem::size_of::<u128>() as u128)?
+            <= FAST_COMBINATION_CACHE_LIMIT
             && (combination_count as u128).checked_mul(16)? <= remaining_budget
         {
             let mut masks = Vec::with_capacity(combination_count);
@@ -450,7 +559,7 @@ impl FastFermionSectorIndex {
         {
             let table_len = 1_usize << sites;
             let table_bytes = (table_len as u128).checked_mul(4)?;
-            if table_bytes <= remaining_budget {
+            if table_bytes <= FAST_RANK_CACHE_LIMIT && table_bytes <= remaining_budget {
                 let mut table = vec![u32::MAX; table_len];
                 for rank in 0..combination_count {
                     let mask = if let Some(masks) = &combination_masks {
@@ -495,6 +604,261 @@ impl FastFermionSectorIndex {
             usize::try_from(rank_combination(self.sites, self.particles, mask)?).ok()
         }
     }
+
+    fn estimated_bytes(&self) -> u128 {
+        let combinations = self
+            .combination_masks
+            .as_ref()
+            .map_or(0, |values| values.len() * std::mem::size_of::<u128>());
+        let ranks = self
+            .rank_table
+            .as_ref()
+            .map_or(0, |values| values.len() * std::mem::size_of::<u32>());
+        (combinations + ranks) as u128
+    }
+}
+
+/// Cached specialized execution for a balanced pure spinful fermion sector.
+///
+/// The index and validated term descriptors are constructed once and shared by
+/// all applications. The kernel writes directly into caller-owned output and
+/// never allocates a state-sized temporary.
+pub struct FastFermionMvpPlan {
+    index: FastFermionSectorIndex,
+    terms: Vec<FastFermionTerm>,
+    estimated_bytes: u128,
+}
+
+#[derive(Clone, Debug)]
+enum FastFermionTerm {
+    Diagonal {
+        modes: Box<[u8]>,
+        coefficient: Complex64,
+    },
+    Hopping {
+        creation: u8,
+        annihilation: u8,
+        coefficient: Complex64,
+    },
+    Generic {
+        creation: Box<[u8]>,
+        annihilation: Box<[u8]>,
+        coefficient: Complex64,
+    },
+}
+
+impl FastFermionMvpPlan {
+    pub fn estimated_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
+        if state.len() != output.len() {
+            return Err(invalid_sector());
+        }
+        let combinations = self.index.combination_count;
+        if state.len()
+            != combinations
+                .checked_mul(combinations)
+                .ok_or(PauliError::Overflow {
+                    context: "sizing fast fermion MVP",
+                })?
+        {
+            return Err(invalid_sector());
+        }
+        let mode_count = self.index.sites * 2;
+        let group_mask = (1_u128 << self.index.sites) - 1;
+        output.fill(Complex64::default());
+        for (column, state_value) in state.iter().enumerate() {
+            let up_rank = column / combinations;
+            let down_rank = column % combinations;
+            let source = self
+                .index
+                .unrank(up_rank)
+                .ok_or(PauliError::InvalidSector {
+                    context: "fast fermion sector unrank failed",
+                })?
+                | (self
+                    .index
+                    .unrank(down_rank)
+                    .ok_or(PauliError::InvalidSector {
+                        context: "fast fermion sector unrank failed",
+                    })?
+                    << self.index.sites);
+            for term in &self.terms {
+                let Some((destination, value)) = apply_fast_fermion_term(source, term, mode_count)?
+                else {
+                    continue;
+                };
+                let row = if destination == source {
+                    column
+                } else {
+                    let destination_up = destination & group_mask;
+                    let destination_down = (destination >> self.index.sites) & group_mask;
+                    let up_index = if destination_up == (source & group_mask) {
+                        up_rank
+                    } else {
+                        self.index
+                            .rank(destination_up)
+                            .ok_or(PauliError::InvalidSector {
+                                context: "fast fermion sector rank failed",
+                            })?
+                    };
+                    let down_index = if destination_down == (source >> self.index.sites) {
+                        down_rank
+                    } else {
+                        self.index
+                            .rank(destination_down)
+                            .ok_or(PauliError::InvalidSector {
+                                context: "fast fermion sector rank failed",
+                            })?
+                    };
+                    up_index * combinations + down_index
+                };
+                output[row] += value * *state_value;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Build the cached spinful fast path when the native descriptors are eligible.
+#[allow(clippy::too_many_arguments)]
+pub fn build_fast_fermion_mvp_plan(
+    plan: &ChargeSectorPlan,
+    local_dimensions: &[u64],
+    fermion_positions: &[u64],
+    boson_positions: &[u64],
+    qubit_positions: &[u64],
+    qudit_positions: &[u64],
+    terms: &[ChargeTransitionTerm],
+    particles: Option<usize>,
+    max_bytes: u128,
+) -> Result<Option<FastFermionMvpPlan>, PauliError> {
+    let Some(particles) = particles else {
+        return Ok(None);
+    };
+    if terms.iter().any(|term| {
+        !term.boson_blocks.is_empty()
+            || !term.qubit_codes.is_empty()
+            || term.mapped_present
+            // The Python descriptor keeps a fixed-width zero code row for
+            // terms without a mapped-fermion Pauli.  It is semantically
+            // absent unless the corresponding presence bit is set.
+            || (term.mapped_present && !term.mapped_codes.is_empty())
+            || !term.qudit_triples.is_empty()
+            || term.qudit_present
+    }) {
+        return Ok(None);
+    }
+    let fermion_positions = positions(fermion_positions, local_dimensions.len(), max_bytes)?;
+    let boson_positions = positions(boson_positions, local_dimensions.len(), max_bytes)?;
+    let qubit_positions = positions(qubit_positions, local_dimensions.len(), max_bytes)?;
+    let qudit_positions = positions(qudit_positions, local_dimensions.len(), max_bytes)?;
+    let Some(index) = FastFermionSectorIndex::new(
+        plan.dimension(),
+        local_dimensions,
+        &fermion_positions,
+        &boson_positions,
+        &qubit_positions,
+        &qudit_positions,
+        particles,
+        max_bytes,
+    ) else {
+        return Ok(None);
+    };
+    let mode_count = index.sites * 2;
+    let mut compact_terms = Vec::with_capacity(terms.len());
+    for (index, term) in terms.iter().enumerate() {
+        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+        if term
+            .fermion_creation
+            .iter()
+            .chain(&term.fermion_annihilation)
+            .any(|&mode| usize::try_from(mode).map_or(true, |mode| mode >= mode_count))
+        {
+            return Err(PauliError::InvalidSector {
+                context: "fast fermion term mode is outside the sector layout",
+            });
+        }
+        let to_compact = |modes: &[u32]| -> Result<Box<[u8]>, PauliError> {
+            modes
+                .iter()
+                .map(|&mode| {
+                    u8::try_from(mode).map_err(|_| PauliError::InvalidSector {
+                        context: "fast fermion term mode does not fit compact descriptor",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Vec::into_boxed_slice)
+        };
+        if !term.fermion_creation.is_empty() && term.fermion_creation == term.fermion_annihilation {
+            compact_terms.push(FastFermionTerm::Diagonal {
+                modes: to_compact(&term.fermion_creation)?,
+                coefficient: term.coefficient,
+            });
+        } else if term.fermion_creation.len() == 1 && term.fermion_annihilation.len() == 1 {
+            compact_terms.push(FastFermionTerm::Hopping {
+                creation: u8::try_from(term.fermion_creation[0]).map_err(|_| {
+                    PauliError::InvalidSector {
+                        context: "fast fermion hopping mode does not fit descriptor",
+                    }
+                })?,
+                annihilation: u8::try_from(term.fermion_annihilation[0]).map_err(|_| {
+                    PauliError::InvalidSector {
+                        context: "fast fermion hopping mode does not fit descriptor",
+                    }
+                })?,
+                coefficient: term.coefficient,
+            });
+        } else {
+            compact_terms.push(FastFermionTerm::Generic {
+                creation: to_compact(&term.fermion_creation)?,
+                annihilation: to_compact(&term.fermion_annihilation)?,
+                coefficient: term.coefficient,
+            });
+        }
+    }
+    let descriptor_bytes = compact_terms.iter().try_fold(0_u128, |total, term| {
+        let payload = match term {
+            FastFermionTerm::Diagonal { modes, .. } => modes.len(),
+            FastFermionTerm::Hopping { .. } => 0,
+            FastFermionTerm::Generic {
+                creation,
+                annihilation,
+                ..
+            } => creation.len() + annihilation.len(),
+        };
+        total
+            .checked_add(std::mem::size_of::<FastFermionTerm>() as u128)
+            .and_then(|value| value.checked_add(payload as u128))
+            .ok_or(PauliError::Overflow {
+                context: "estimating fast fermion descriptors",
+            })
+    })?;
+    let estimated_bytes = index
+        .estimated_bytes()
+        .checked_add(descriptor_bytes)
+        .ok_or(PauliError::Overflow {
+            context: "estimating fast fermion plan",
+        })?;
+    if estimated_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: estimated_bytes,
+            limit: max_bytes,
+        });
+    }
+    Ok(Some(FastFermionMvpPlan {
+        index,
+        terms: compact_terms,
+        estimated_bytes,
+    }))
 }
 
 fn fast_fermion_lower_mask(mode: usize) -> u128 {
@@ -507,21 +871,34 @@ fn fast_fermion_lower_mask(mode: usize) -> u128 {
 
 fn apply_fast_fermion_term(
     source: u128,
-    term: &ChargeTransitionTerm,
+    term: &FastFermionTerm,
     mode_count: usize,
 ) -> Result<Option<(u128, Complex64)>, PauliError> {
-    if !term.boson_blocks.is_empty()
-        || !term.qubit_codes.is_empty()
-        || term.mapped_present
-        || !term.qudit_triples.is_empty()
-        || term.qudit_present
-    {
-        return Ok(None);
-    }
+    let (creation, annihilation, mut value) = match term {
+        FastFermionTerm::Diagonal { modes, coefficient } => {
+            if modes.iter().any(|&mode| source & (1_u128 << mode) == 0) {
+                return Ok(None);
+            }
+            return Ok(Some((source, *coefficient)));
+        }
+        FastFermionTerm::Hopping {
+            creation,
+            annihilation,
+            coefficient,
+        } => (
+            std::slice::from_ref(creation),
+            std::slice::from_ref(annihilation),
+            *coefficient,
+        ),
+        FastFermionTerm::Generic {
+            creation,
+            annihilation,
+            coefficient,
+        } => (creation.as_ref(), annihilation.as_ref(), *coefficient),
+    };
     let mut destination = source;
-    let mut value = term.coefficient;
-    let mut apply = |raw_mode: u32, create: bool| -> Result<bool, PauliError> {
-        let mode = usize::try_from(raw_mode).map_err(|_| invalid_sector())?;
+    let mut apply = |raw_mode: u8, create: bool| -> Result<bool, PauliError> {
+        let mode = usize::from(raw_mode);
         if mode >= mode_count {
             return Err(invalid_sector());
         }
@@ -542,12 +919,12 @@ fn apply_fast_fermion_term(
         }
         Ok(true)
     };
-    for &mode in term.fermion_annihilation.iter().rev() {
+    for &mode in annihilation.iter().rev() {
         if !apply(mode, false)? {
             return Ok(None);
         }
     }
-    for &mode in term.fermion_creation.iter().rev() {
+    for &mode in creation.iter().rev() {
         if !apply(mode, true)? {
             return Ok(None);
         }
@@ -556,89 +933,6 @@ fn apply_fast_fermion_term(
         return Ok(None);
     }
     Ok(Some((destination, value)))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn try_apply_fast_fermion_mvp(
-    plan: &ChargeSectorPlan,
-    local_dimensions: &[u64],
-    fermion_positions: &[usize],
-    boson_positions: &[usize],
-    qubit_positions: &[usize],
-    qudit_positions: &[usize],
-    terms: &[ChargeTransitionTerm],
-    state: &[Complex64],
-    particles: usize,
-    scratch_budget: u128,
-) -> Result<Option<Vec<Complex64>>, PauliError> {
-    if terms.iter().any(|term| {
-        !term.boson_blocks.is_empty()
-            || !term.qubit_codes.is_empty()
-            || term.mapped_present
-            || !term.qudit_triples.is_empty()
-            || term.qudit_present
-    }) {
-        return Ok(None);
-    }
-    let Some(index) = FastFermionSectorIndex::new(
-        plan.dimension(),
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        particles,
-        scratch_budget,
-    ) else {
-        return Ok(None);
-    };
-    let mode_count = index.sites * 2;
-    let group_mask = (1_u128 << index.sites) - 1;
-    let mut output = vec![Complex64::new(0.0, 0.0); state.len()];
-    let combinations = index.combination_count;
-    for (column, state_value) in state.iter().enumerate() {
-        let up_rank = column / combinations;
-        let down_rank = column % combinations;
-        let source = index.unrank(up_rank).ok_or(PauliError::InvalidSector {
-            context: "fast fermion sector unrank failed",
-        })? | (index.unrank(down_rank).ok_or(PauliError::InvalidSector {
-            context: "fast fermion sector unrank failed",
-        })? << index.sites);
-        for term in terms {
-            let Some((destination, value)) = apply_fast_fermion_term(source, term, mode_count)?
-            else {
-                continue;
-            };
-            let row = if destination == source {
-                column
-            } else {
-                let destination_up = destination & group_mask;
-                let destination_down = (destination >> index.sites) & group_mask;
-                let up_index = if destination_up == (source & group_mask) {
-                    up_rank
-                } else {
-                    index
-                        .rank(destination_up)
-                        .ok_or(PauliError::InvalidSector {
-                            context: "fast fermion sector rank failed",
-                        })?
-                };
-                let down_index = if destination_down == (source >> index.sites) {
-                    down_rank
-                } else {
-                    index
-                        .rank(destination_down)
-                        .ok_or(PauliError::InvalidSector {
-                            context: "fast fermion sector rank failed",
-                        })?
-                };
-                up_index * combinations + down_index
-            };
-            let contribution = value * *state_value;
-            output[row] += contribution;
-        }
-    }
-    Ok(Some(output))
 }
 
 /// Compile a structured operator directly in a finite selected basis.
@@ -1015,7 +1309,7 @@ pub fn apply_charge_mvp_from_plan(
     terms: &[ChargeTransitionTerm],
     state: &[Complex64],
     termwise_conserved: bool,
-    fast_fermion_particles: Option<usize>,
+    fast_fermion_plan: Option<&FastFermionMvpPlan>,
 ) -> Result<Vec<Complex64>, PauliError> {
     let dimension = layout.dimension;
     let output_bytes = dimension
@@ -1037,7 +1331,7 @@ pub fn apply_charge_mvp_from_plan(
         state,
         &mut output,
         termwise_conserved,
-        fast_fermion_particles,
+        fast_fermion_plan,
     )?;
     Ok(output)
 }
@@ -1049,7 +1343,7 @@ pub fn apply_charge_mvp_from_plan_into(
     state: &[Complex64],
     output: &mut [Complex64],
     termwise_conserved: bool,
-    fast_fermion_particles: Option<usize>,
+    fast_fermion_plan: Option<&FastFermionMvpPlan>,
 ) -> Result<(), PauliError> {
     let ChargeTransitionPlanLayout {
         dimension,
@@ -1076,6 +1370,16 @@ pub fn apply_charge_mvp_from_plan_into(
     for &local_dimension in local_dimensions {
         if local_dimension == 0 {
             return Err(invalid_sector());
+        }
+    }
+
+    // The cached spinful kernel has no execution-time major allocation. Run it
+    // before the generic workspace preflight so apply_into(max_bytes=0) remains
+    // valid for a caller-owned output buffer.
+    if termwise_conserved {
+        if let Some(fast_plan) = fast_fermion_plan {
+            fast_plan.apply_into(state, output)?;
+            return Ok(());
         }
     }
 
@@ -1117,26 +1421,6 @@ pub fn apply_charge_mvp_from_plan_into(
         validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
         if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
             return Err(PauliError::NonFiniteCoefficient { index });
-        }
-    }
-
-    if termwise_conserved {
-        if let Some(particles) = fast_fermion_particles {
-            if let Some(fast_output) = try_apply_fast_fermion_mvp(
-                plan,
-                local_dimensions,
-                &fermion_positions,
-                &boson_positions,
-                &qubit_positions,
-                &qudit_positions,
-                terms,
-                state,
-                particles,
-                scratch_limit - scratch_bytes as u128,
-            )? {
-                output.copy_from_slice(&fast_output);
-                return Ok(());
-            }
         }
     }
 

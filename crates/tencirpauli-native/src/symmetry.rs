@@ -176,7 +176,7 @@ impl NativeU1RestrictedOperator {
         py: Python<'py>,
         state: PyReadonlyArray1<'py, numpy::Complex64>,
         mut output: PyReadwriteArray1<'py, numpy::Complex64>,
-        max_bytes: usize,
+        _max_bytes: usize,
     ) -> PyResult<()> {
         let state_slice = state
             .as_slice()
@@ -184,7 +184,6 @@ impl NativeU1RestrictedOperator {
         let output_slice = output
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
-        let _ = max_bytes;
         py.allow_threads(|| self.operator.apply_into(state_slice, output_slice))
             .map_err(map_error)
     }
@@ -275,7 +274,7 @@ impl NativeU1MvpPlan {
         py: Python<'py>,
         state: PyReadonlyArray1<'py, numpy::Complex64>,
         mut output: PyReadwriteArray1<'py, numpy::Complex64>,
-        max_bytes: usize,
+        _max_bytes: usize,
     ) -> PyResult<()> {
         let state_slice = state
             .as_slice()
@@ -283,7 +282,6 @@ impl NativeU1MvpPlan {
         let output_slice = output
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
-        let _ = max_bytes;
         py.allow_threads(|| self.plan.apply_into(state_slice, output_slice))
             .map_err(map_error)
     }
@@ -344,8 +342,7 @@ impl NativeU1LazyMvpPlan {
         let output_slice = output
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
-        let _ = max_bytes;
-        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice))
+        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice, max_bytes))
             .map_err(map_error)
     }
 }

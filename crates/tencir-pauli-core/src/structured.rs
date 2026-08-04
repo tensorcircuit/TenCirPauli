@@ -372,12 +372,17 @@ fn hybrid_qudit_product(
             by_site.insert(site, (aa as u32, bb as u32));
         }
     }
-    let triples = by_site
+    let triples: Vec<(u32, u32, u32)> = by_site
         .into_iter()
         .map(|(site, (a, b))| (site, a, b))
         .collect();
     let angle = 2.0 * std::f64::consts::PI * phase_exponent as f64 / dimension as f64;
-    (Some(triples), Complex64::new(angle.cos(), angle.sin()))
+    let triples = if triples.is_empty() {
+        None
+    } else {
+        Some(triples)
+    };
+    (triples, Complex64::new(angle.cos(), angle.sin()))
 }
 
 fn validate_hybrid_batch(layout: HybridLayout, batch: &HybridBatch<'_>) -> Result<(), PauliError> {
@@ -1922,7 +1927,7 @@ fn apply_structured_operation(
         }
         2 => {
             let a = (operation.p as usize) % local_dimension;
-            let b_digit = u128::from(operation.q) * digit as u128;
+            let b_digit = (u128::from(operation.q) * digit as u128) % local_dimension as u128;
             output_digits[operation.axis] = (digit + a) % local_dimension;
             let angle = 2.0 * std::f64::consts::PI * b_digit as f64 / local_dimension as f64;
             *amplitude *= Complex64::new(angle.cos(), angle.sin());
@@ -1956,8 +1961,9 @@ fn encode_index(digits: &[usize], dimensions: &[usize]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_boson_terms, canonicalize_fermion_terms, jordan_wigner_terms,
-        structured_dense_matrix, structured_sparse_matrix, StructuredOperation,
+        canonicalize_boson_terms, canonicalize_fermion_terms, hybrid_qudit_product,
+        jordan_wigner_terms, structured_dense_matrix, structured_sparse_matrix, HybridBatch,
+        StructuredOperation,
     };
     use crate::Complex64;
 
@@ -2082,5 +2088,67 @@ mod tests {
             reconstructed[row as usize * dimension + column as usize] = value;
         }
         assert_eq!(reconstructed, dense);
+    }
+
+    #[test]
+    fn hybrid_qudit_identity_product_is_absent_not_empty_present() {
+        let left_triples = vec![vec![(0, 1, 0)]];
+        let right_triples = vec![vec![(0, 2, 0)]];
+        let empty_bool = vec![false];
+        let empty_fermion = vec![Vec::new()];
+        let empty_boson = vec![Vec::new()];
+        let empty_qubit = vec![vec![0]];
+        let present = vec![true];
+        let left = HybridBatch {
+            fermion_present: &empty_bool,
+            fermion_creation: &empty_fermion,
+            fermion_annihilation: &empty_fermion,
+            boson_present: &empty_bool,
+            boson_blocks: &empty_boson,
+            qubit_codes: &empty_qubit,
+            mapped_present: &empty_bool,
+            mapped_codes: &empty_qubit,
+            qudit_present: &present,
+            qudit_triples: &left_triples,
+            coefficients: &[Complex64::new(1.0, 0.0)],
+        };
+        let right = HybridBatch {
+            fermion_present: &empty_bool,
+            fermion_creation: &empty_fermion,
+            fermion_annihilation: &empty_fermion,
+            boson_present: &empty_bool,
+            boson_blocks: &empty_boson,
+            qubit_codes: &empty_qubit,
+            mapped_present: &empty_bool,
+            mapped_codes: &empty_qubit,
+            qudit_present: &present,
+            qudit_triples: &right_triples,
+            coefficients: &[Complex64::new(1.0, 0.0)],
+        };
+        let (triples, phase) = hybrid_qudit_product(3, &left, 0, &right, 0);
+        assert_eq!(triples, None);
+        assert!((phase - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+    }
+
+    #[test]
+    fn direct_weyl_phase_reduces_before_float_conversion() {
+        let dimension = 1usize << 28;
+        let operation = StructuredOperation {
+            axis: 0,
+            kind: 2,
+            p: 0,
+            q: (dimension - 1) as u32,
+        };
+        let mut digits = vec![dimension - 1];
+        let mut amplitude = Complex64::new(1.0, 0.0);
+        assert!(super::apply_structured_operation(
+            &operation,
+            &[dimension],
+            &mut digits,
+            &mut amplitude,
+        )
+        .unwrap());
+        let expected = Complex64::from_polar(1.0, 2.0 * std::f64::consts::PI / dimension as f64);
+        assert!((amplitude - expected).norm() < 1e-15);
     }
 }
