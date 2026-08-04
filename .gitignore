@@ -26,6 +26,7 @@ htmlcov/
 target/
 dist/
 build/
+site/
 *.so
 *.dylib
 *.pyd

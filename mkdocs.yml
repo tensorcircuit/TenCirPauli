@@ -1,0 +1,63 @@
+site_name: TenCirPauli
+site_description: Fast Pauli algebra and quantum-circuit primitives for TensorCircuit.
+site_url: https://tensorcircuit.github.io/TenCirPauli/
+repo_name: tensorcircuit/TenCirPauli
+repo_url: https://github.com/tensorcircuit/TenCirPauli
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/tencirpauli-logo.png
+  favicon: assets/tencirpauli-logo.png
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [python]
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            filters:
+              - "!^_"
+            inherited_members: false
+            members: true
+            members_order: source
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_source: false
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css
+
+exclude_docs: |
+  vibe/
+  requirements.txt
+
+nav:
+  - Home: index.md
+  - Concepts: concepts.md
+  - Quickstart: quickstart.md
+  - API reference: api.md

@@ -4,6 +4,7 @@
   <p><strong>Fast, Rust-native Pauli algebra and quantum-circuit primitives for TensorCircuit.</strong></p>
   <p>
     <a href="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml"><img src="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+    <a href="https://tensorcircuit.github.io/TenCirPauli/">Documentation</a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/v/tencirpauli.svg" alt="PyPI version"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/pyversions/tencirpauli.svg" alt="Python versions"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/dm/tencirpauli.svg" alt="PyPI downloads"></a>
