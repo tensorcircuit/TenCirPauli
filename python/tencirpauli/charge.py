@@ -853,7 +853,7 @@ class ChargeMvpPlan:
         _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
         return cast(
             np.ndarray[Any, Any],
-            np.asarray(
+            np.array(
                 _native.charge_mvp_apply(
                     self.dimension,
                     self.rows,
@@ -863,6 +863,8 @@ class ChargeMvpPlan:
                     _effective_max_bytes(max_bytes),
                 ),
                 dtype=np.complex128,
+                copy=True,
+                order="C",
             ),
         )
 

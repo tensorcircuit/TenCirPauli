@@ -12,7 +12,6 @@ from pytest_benchmark.fixture import BenchmarkFixture
 import tencirpauli as tcp
 from tencirpauli import charge as charge_module
 from tencirpauli.majorana import _guard_expansion
-from tencirpauli.mapping import _mapping_matrix
 
 
 def _majorana_to_fermion_python_reference(
@@ -46,7 +45,7 @@ def _majorana_to_fermion_python_reference(
 def _mapping_plan_python_reference(
     mapping: str, n_modes: int
 ) -> tcp.FermionQubitMapping:
-    return tcp.FermionQubitMapping(mapping, n_modes, _mapping_matrix(mapping, n_modes))
+    return tcp.FermionQubitMapping.from_name(mapping, n_modes)
 
 
 def _mapping_ab_workload(n_modes: int, term_count: int) -> tcp.PauliOperator:

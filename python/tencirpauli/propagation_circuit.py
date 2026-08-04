@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence, Union, cast
+from typing import Any, Mapping, Optional, Sequence, Type, TypeVar, Union, cast
 
 import numpy as np
 
@@ -32,6 +32,7 @@ from .propagation import (
 PropagationState = Union[ZeroState, ComputationalBasisState, ProductBlochState, str]
 _WIRE_SENTINEL = 2 * sys.maxsize + 1
 _USE_DEFAULT_MAX_BYTES = object()
+_CircuitT = TypeVar("_CircuitT", bound="_CircuitBuilder")
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,11 @@ class PropagationCircuitPlan:
     def expectation(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> float:
-        """Evaluate the compiled circuit and return one real expectation."""
+        """Evaluate and return one real expectation.
+
+        Raises ``ValueError`` when the compiled observable is not exactly
+        Hermitian.
+        """
         native, _ = self._native_parameters(parameters)
         return self._engine.expectation(native)
 
@@ -178,7 +183,11 @@ class PropagationCircuitPlan:
         *,
         checkpoint_interval: Optional[int] = None,
     ) -> PropagationValueAndGradient:
-        """Return the expectation and gradient with respect to circuit parameters."""
+        """Return the value and gradient for an exactly Hermitian observable.
+
+        Raises ``ValueError`` when the compiled observable is not exactly
+        Hermitian.
+        """
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad(
             native, checkpoint_interval=checkpoint_interval
@@ -197,13 +206,17 @@ class PropagationCircuitPlan:
     def profile(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> ProfiledExpectation:
-        """Evaluate the circuit and return the expectation plus profile metadata."""
+        """Return a profiled real expectation for an exactly Hermitian observable.
+
+        Raises ``ValueError`` when the compiled observable is not exactly
+        Hermitian.
+        """
         native, _ = self._native_parameters(parameters)
         return self._engine.profile(native)
 
 
 class _CircuitBuilder:
-    """TensorCircuit-style builder for deterministic Pauli propagation.
+    """Shared TensorCircuit-style circuit builder mechanics.
 
     Gates are appended in execution order with zero-based wires. Rotation
     angles may be constants, :class:`Parameter` objects, or arithmetic
@@ -237,20 +250,7 @@ class _CircuitBuilder:
         self._generation = 0
         self._cached_plan: Optional[tuple[Any, ...]] = None
 
-    _SPPS_HIDDEN = frozenset({"ptm", "propagate_operator", "profile"})
-
-    def __getattribute__(self, name: str) -> Any:
-        if name in _CircuitBuilder._SPPS_HIDDEN:
-            cls = object.__getattribute__(self, "__class__")
-            if getattr(cls, "_stochastic_facade", False):
-                raise AttributeError(f"SPPSCircuit does not expose {name}()")
-        return super().__getattribute__(name)
-
-    def __dir__(self) -> list[str]:
-        names = list(super().__dir__())
-        if getattr(type(self), "_stochastic_facade", False):
-            return [name for name in names if name not in self._SPPS_HIDDEN]
-        return names
+    _supports_ptm = False
 
     def __len__(self) -> int:
         return len(self._operations)
@@ -276,6 +276,8 @@ class _CircuitBuilder:
         normalized_name = name.lower()
         if normalized_name not in _FIXED_GATES | _ROTATION_GATES | {"ptm"}:
             raise ValueError(f"unsupported propagation gate {name!r}")
+        if normalized_name == "ptm" and not self._supports_ptm:
+            raise ValueError("SPPSCircuit does not support PTM gates")
         arity = 1 if normalized_name in _ONE_QUBIT_GATES else 2
         if normalized_name == "ptm":
             normalized_wires = tuple(wires)
@@ -385,23 +387,14 @@ class _CircuitBuilder:
         """Append a Z-Z rotation; ``theta`` is in radians or symbolic form."""
         self._append("rzz", (wire0, wire1), theta)
 
-    def ptm(
-        self,
-        wires: Sequence[int],
-        matrix: np.ndarray[Any, Any],
-        *,
-        name: str | None = None,
-    ) -> None:
-        """Append a finite one- or two-qubit real Pauli-transfer matrix."""
-        del name
-        self._append("ptm", wires, payload=np.asarray(matrix, dtype=np.float64))
-
     def _native_tape(self) -> tuple[GateTape, tuple[Angle, ...]]:
         tape = GateTape(self.nqubits)
         dynamic: list[Angle] = []
         for operation in self._operations:
             name = operation.name
             if name == "ptm":
+                if not self._supports_ptm:
+                    raise ValueError("SPPSCircuit does not support PTM gates")
                 assert operation.payload is not None
                 dimension = 4 if len(operation.wires) == 1 else 16
                 tape.ptm(
@@ -441,123 +434,6 @@ class _CircuitBuilder:
             max_bytes,
         )
 
-    def compile(
-        self,
-        observable: PauliOperator,
-        *,
-        initial_state: Optional[PropagationState] = None,
-        max_weight: Optional[int] = None,
-        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
-    ) -> PropagationCircuitPlan:
-        """Compile an observable and circuit into a reusable propagation plan.
-
-        Args:
-            observable: Pauli observable with the same qubit count as the
-                circuit.
-            initial_state: Optional override for the circuit's initial state.
-            max_weight: Optional post-aggregation Pauli-weight projection.
-            max_bytes: Optional best-effort memory bound; the sentinel uses
-                the circuit default.
-
-        Returns:
-            A cached :class:`PropagationCircuitPlan` when the inputs are
-            unchanged, otherwise a newly compiled plan.
-        """
-        if not isinstance(observable, PauliOperator):
-            raise TypeError("observable must be a PauliOperator")
-        state = self.initial_state if initial_state is None else initial_state
-        budget = (
-            self.max_bytes
-            if max_bytes is _USE_DEFAULT_MAX_BYTES
-            else cast(Optional[int], max_bytes)
-        )
-        _validate_max_bytes(budget)
-        key = self._plan_key(observable, state, max_weight, budget)
-        if self._cached_plan is not None and self._cached_plan[:5] == key:
-            return cast(PropagationCircuitPlan, self._cached_plan[5])
-        tape, dynamic = self._native_tape()
-        engine = PropagationEngine(
-            tape,
-            observable,
-            initial_state=state,
-            max_weight=max_weight,
-            max_bytes=budget,
-        )
-        plan = PropagationCircuitPlan(engine, dynamic, self.nparameters)
-        # Retain the key objects as well as their ids; otherwise CPython may
-        # reuse an id after garbage collection and return a stale native plan.
-        self._cached_plan = (*key, plan, observable, state)
-        return plan
-
-    def expectation(
-        self,
-        observable: PauliOperator,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-        *,
-        initial_state: Optional[PropagationState] = None,
-        max_weight: Optional[int] = None,
-        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
-    ) -> float:
-        """Compile if needed and return one real observable expectation."""
-        return self.compile(
-            observable,
-            initial_state=initial_state,
-            max_weight=max_weight,
-            max_bytes=max_bytes,
-        ).expectation(parameters)
-
-    def value_and_grad(
-        self,
-        observable: PauliOperator,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-        *,
-        initial_state: Optional[PropagationState] = None,
-        max_weight: Optional[int] = None,
-        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
-        checkpoint_interval: Optional[int] = None,
-    ) -> PropagationValueAndGradient:
-        """Compile if needed and return the value plus parameter gradient."""
-        return self.compile(
-            observable,
-            initial_state=initial_state,
-            max_weight=max_weight,
-            max_bytes=max_bytes,
-        ).value_and_grad(parameters, checkpoint_interval=checkpoint_interval)
-
-    def propagate_operator(
-        self,
-        observable: PauliOperator,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-        *,
-        initial_state: Optional[PropagationState] = None,
-        max_weight: Optional[int] = None,
-        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
-    ) -> PauliOperator:
-        """Compile if needed and return the canonical propagated operator."""
-        return self.compile(
-            observable,
-            initial_state=initial_state,
-            max_weight=max_weight,
-            max_bytes=max_bytes,
-        ).propagate_operator(parameters)
-
-    def profile(
-        self,
-        observable: PauliOperator,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-        *,
-        initial_state: Optional[PropagationState] = None,
-        max_weight: Optional[int] = None,
-        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
-    ) -> ProfiledExpectation:
-        """Compile if needed and return the expectation plus profile metadata."""
-        return self.compile(
-            observable,
-            initial_state=initial_state,
-            max_weight=max_weight,
-            max_bytes=max_bytes,
-        ).profile(parameters)
-
     def to_qir(self) -> list[dict[str, object]]:
         """Serialize the circuit to deterministic JSON-like gate records."""
         result: list[dict[str, object]] = []
@@ -579,13 +455,13 @@ class _CircuitBuilder:
 
     @classmethod
     def from_circuit(
-        cls,
+        cls: Type[_CircuitT],
         circuit: Any,
         *,
         parameter_order: Optional[Sequence[Any]] = None,
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> "_CircuitBuilder":
+    ) -> _CircuitT:
         """Convert a supported TensorCircuit circuit into this facade.
 
         ``tensorcircuit-ng`` must be installed. ``parameter_order`` fixes the
@@ -595,7 +471,7 @@ class _CircuitBuilder:
         from .integrations.tensorcircuit import gate_tape_from_circuit
 
         converted = gate_tape_from_circuit(circuit, parameter_order=parameter_order)
-        if getattr(cls, "_stochastic_facade", False) and any(
+        if not getattr(cls, "_supports_ptm", False) and any(
             operation[0] == 15 for operation in converted.tape._operations
         ):
             raise ValueError("SPPSCircuit conversion does not support PTM gates")
@@ -613,14 +489,14 @@ class _CircuitBuilder:
 
     @classmethod
     def from_qir(
-        cls,
+        cls: Type[_CircuitT],
         qir: Sequence[Mapping[str, object]],
         circuit_params: Mapping[str, object],
         *,
         parameter_order: Optional[Sequence[Any]] = None,
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> "_CircuitBuilder":
+    ) -> _CircuitT:
         """Restore a propagation circuit from QIR gate records.
 
         ``circuit_params`` must contain ``nqubits`` and may contain a
@@ -705,7 +581,7 @@ class _CircuitBuilder:
                 raise ValueError("QIR item must contain an index sequence")
             arity = 1 if name in _ONE_QUBIT_GATES else 2
             if name == "ptm":
-                if getattr(cls, "_stochastic_facade", False):
+                if not getattr(cls, "_supports_ptm", False):
                     raise ValueError(
                         "SPPSCircuit QIR conversion does not support PTM gates"
                     )
@@ -776,6 +652,138 @@ class _CircuitBuilder:
 
 class PropagationCircuit(_CircuitBuilder):
     """Deterministic Pauli-propagation circuit facade."""
+
+    _supports_ptm = True
+
+    def ptm(
+        self,
+        wires: Sequence[int],
+        matrix: np.ndarray[Any, Any],
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Append a finite one- or two-qubit real Pauli-transfer matrix."""
+        del name
+        self._append("ptm", wires, payload=np.asarray(matrix, dtype=np.float64))
+
+    def compile(
+        self,
+        observable: PauliOperator,
+        *,
+        initial_state: Optional[PropagationState] = None,
+        max_weight: Optional[int] = None,
+        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
+    ) -> PropagationCircuitPlan:
+        """Compile a reusable deterministic plan.
+
+        Construction accepts non-Hermitian observables so that
+        :meth:`PropagationCircuitPlan.propagate_operator` remains available.
+        Scalar expectation, gradient, and profile terminals require an exactly
+        Hermitian observable and raise ``ValueError`` otherwise.
+        """
+        if not isinstance(observable, PauliOperator):
+            raise TypeError("observable must be a PauliOperator")
+        state = self.initial_state if initial_state is None else initial_state
+        budget = (
+            self.max_bytes
+            if max_bytes is _USE_DEFAULT_MAX_BYTES
+            else cast(Optional[int], max_bytes)
+        )
+        _validate_max_bytes(budget)
+        key = self._plan_key(observable, state, max_weight, budget)
+        if self._cached_plan is not None and self._cached_plan[:5] == key:
+            return cast(PropagationCircuitPlan, self._cached_plan[5])
+        tape, dynamic = self._native_tape()
+        engine = PropagationEngine(
+            tape,
+            observable,
+            initial_state=state,
+            max_weight=max_weight,
+            max_bytes=budget,
+        )
+        plan = PropagationCircuitPlan(engine, dynamic, self.nparameters)
+        # Retain the key objects as well as their ids; otherwise CPython may
+        # reuse an id after garbage collection and return a stale native plan.
+        self._cached_plan = (*key, plan, observable, state)
+        return plan
+
+    def expectation(
+        self,
+        observable: PauliOperator,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+        *,
+        initial_state: Optional[PropagationState] = None,
+        max_weight: Optional[int] = None,
+        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
+    ) -> float:
+        """Return a real expectation; the observable must be exactly Hermitian.
+
+        Raises ``ValueError`` for a non-Hermitian observable.
+        """
+        return self.compile(
+            observable,
+            initial_state=initial_state,
+            max_weight=max_weight,
+            max_bytes=max_bytes,
+        ).expectation(parameters)
+
+    def value_and_grad(
+        self,
+        observable: PauliOperator,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+        *,
+        initial_state: Optional[PropagationState] = None,
+        max_weight: Optional[int] = None,
+        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
+        checkpoint_interval: Optional[int] = None,
+    ) -> PropagationValueAndGradient:
+        """Return a real value and gradient for an exactly Hermitian observable.
+
+        Raises ``ValueError`` for a non-Hermitian observable.
+        """
+        return self.compile(
+            observable,
+            initial_state=initial_state,
+            max_weight=max_weight,
+            max_bytes=max_bytes,
+        ).value_and_grad(parameters, checkpoint_interval=checkpoint_interval)
+
+    def propagate_operator(
+        self,
+        observable: PauliOperator,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+        *,
+        initial_state: Optional[PropagationState] = None,
+        max_weight: Optional[int] = None,
+        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
+    ) -> PauliOperator:
+        """Return the canonical propagated operator without a Hermiticity requirement."""
+        return self.compile(
+            observable,
+            initial_state=initial_state,
+            max_weight=max_weight,
+            max_bytes=max_bytes,
+        ).propagate_operator(parameters)
+
+    def profile(
+        self,
+        observable: PauliOperator,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+        *,
+        initial_state: Optional[PropagationState] = None,
+        max_weight: Optional[int] = None,
+        max_bytes: object = _USE_DEFAULT_MAX_BYTES,
+    ) -> ProfiledExpectation:
+        """Return a profiled real expectation for an exactly Hermitian observable.
+
+        Raises ``ValueError`` for a non-Hermitian observable.
+        """
+        return self.compile(
+            observable,
+            initial_state=initial_state,
+            max_weight=max_weight,
+            max_bytes=max_bytes,
+        ).profile(parameters)
 
 
 __all__ = ["PropagationCircuit", "PropagationCircuitPlan"]

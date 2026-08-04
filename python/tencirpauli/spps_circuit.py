@@ -90,7 +90,11 @@ class SPPSCircuitPlan:
         samples_per_term: int,
         seed: int,
     ) -> SPPSValueEstimate:
-        """Estimate one observable expectation with a fixed path budget."""
+        """Estimate one real observable expectation with a fixed path budget.
+
+        The result is an :class:`SPPSValueEstimate`, not an exact scalar, and
+        non-Hermitian observables raise ``ValueError`` at compilation.
+        """
         native = self._native_values(parameters)
         return self._engine.expectation(
             native, samples_per_term=samples_per_term, seed=seed
@@ -103,7 +107,11 @@ class SPPSCircuitPlan:
         samples_per_term: int,
         seed: int,
     ) -> SPPSEstimate:
-        """Estimate the observable value and circuit-parameter gradient."""
+        """Estimate value and gradient for an exactly Hermitian observable.
+
+        The result is an :class:`SPPSEstimate`, not an exact scalar, and
+        non-Hermitian observables raise ``ValueError`` at compilation.
+        """
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad(
             native, samples_per_term=samples_per_term, seed=seed
@@ -121,7 +129,11 @@ class SPPSCircuitPlan:
         gradient_tolerance: float,
         seed: int,
     ) -> SPPSEstimate:
-        """Estimate value and gradient using the adaptive path budget."""
+        """Estimate value and gradient with adaptive sampling.
+
+        The result is an :class:`SPPSEstimate`, not an exact scalar, and
+        non-Hermitian observables raise ``ValueError`` at compilation.
+        """
         native, jacobian = self._native_parameters(parameters)
         result = self._engine.value_and_grad_adaptive(
             native,
@@ -150,9 +162,7 @@ class SPPSCircuit(_CircuitBuilder):
         1
     """
 
-    _stochastic_facade = True
-
-    def compile(  # type: ignore[override]
+    def compile(
         self,
         observable: PauliOperator,
         *,
@@ -164,7 +174,8 @@ class SPPSCircuit(_CircuitBuilder):
 
         ``smoothing`` must be a finite positive value. The plan is invalidated
         whenever the circuit is mutated or its observable/state configuration
-        changes.
+        changes. Non-Hermitian observables raise ``ValueError`` at this
+        boundary because every SPPS terminal is a scalar estimator.
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
@@ -198,7 +209,7 @@ class SPPSCircuit(_CircuitBuilder):
         self._cached_plan = (*key, plan, observable, state)
         return plan
 
-    def expectation(  # type: ignore[override]
+    def expectation(
         self,
         observable: PauliOperator,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
@@ -217,7 +228,7 @@ class SPPSCircuit(_CircuitBuilder):
             max_bytes=max_bytes,
         ).expectation(parameters, samples_per_term=samples_per_term, seed=seed)
 
-    def value_and_grad(  # type: ignore[override]
+    def value_and_grad(
         self,
         observable: PauliOperator,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,

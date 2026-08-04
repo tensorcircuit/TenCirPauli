@@ -262,7 +262,11 @@ class U1CircuitPlan:
         initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
-        """Return probabilities in the restricted-sector basis ordering."""
+        """Return a read-only ``float64`` vector of restricted-sector probabilities.
+
+        The shape is ``(dimension,)`` and rows follow the sector's
+        qubit-zero-is-MSB ordering.
+        """
         result = self._native.probability(
             self._state(initial_state),
             self._params(parameters),
@@ -274,7 +278,11 @@ class U1CircuitPlan:
         initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
-        """Return the final restricted-sector state as a dense vector."""
+        """Return an owned read-only full computational-basis ``complex128`` vector.
+
+        The result has shape ``(2**nqubits,)`` in qubit-zero-is-MSB ordering;
+        amplitudes outside the selected particle-number sector are zero.
+        """
         result = self._native.to_dense(
             self._state(initial_state),
             self._params(parameters),
@@ -286,10 +294,11 @@ class U1CircuitPlan:
         initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
-        """Return the full computational-basis probability vector.
+        """Return a read-only full computational-basis ``float64`` vector.
 
-        This expands the restricted result to length ``2**nqubits`` and is
-        therefore potentially much larger than :meth:`probability`.
+        The shape is ``(2**nqubits,)`` in qubit-zero-is-MSB ordering. This
+        expands the restricted result and can therefore be much larger than
+        :meth:`probability`.
         """
         result = self._native.probability_full(
             self._state(initial_state),
@@ -324,10 +333,14 @@ class U1CircuitPlan:
         observable: PauliOperator,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> U1CircuitValueAndGradient:
-        """Return an observable expectation and its exact parameter gradient."""
+        """Return a real value and exact gradient for an exactly Hermitian observable.
+
+        The result is a read-only ``float64`` vector in parameter-slot order.
+        ``ValueError`` is raised for a non-Hermitian observable.
+        """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
-        if not observable.is_hermitian(tolerance=0.0):
+        if not observable._exact_hermitian_value():
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
         selected_state = self._initial_state if initial_state is None else initial_state
         if selected_state is None:
@@ -588,7 +601,7 @@ class U1Circuit:
         observable: PauliOperator,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> complex:
-        """Return one observable expectation without computing a gradient."""
+        """Return a complex expectation for an arbitrary Pauli observable."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         real, imaginary = self._cached_final(parameters).native.expectation(
@@ -602,10 +615,14 @@ class U1Circuit:
         *,
         parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> U1CircuitValueAndGradient:
-        """Return an observable expectation and exact native gradient."""
+        """Return a real value and exact gradient for an exactly Hermitian observable.
+
+        The returned owned array is read-only ``float64`` with one entry per
+        parameter slot. ``ValueError`` is raised for a non-Hermitian observable.
+        """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
-        if not observable.is_hermitian(tolerance=0.0):
+        if not observable._exact_hermitian_value():
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
         value, gradient = self._cached_final(parameters).native.value_and_grad(
             *observable._arrays()

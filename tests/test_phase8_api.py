@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,19 +13,78 @@ from tencirpauli import advanced
 
 
 def test_top_level_and_advanced_manifests_are_separated() -> None:
-    advanced_names = {
-        "NativeMVPPlan",
+    assert tuple(tcp.__all__) == (
+        "DEFAULT_MAX_BYTES",
+        "AdditiveCharge",
+        "AdditiveSymmetryAnalysis",
+        "BosonOperator",
+        "BosonTerm",
+        "BosonWord",
+        "COOMatrix",
+        "CSRMatrix",
+        "CanonicalizationResult",
+        "ChargeSector",
+        "ComputationalBasisState",
+        "FermionOperator",
+        "FermionQubitMapping",
+        "FermionTerm",
+        "FermionWord",
+        "GeneralCommutingGroupingResult",
+        "HybridOperator",
+        "HybridTerm",
+        "MVPPlan",
+        "MajoranaOperator",
+        "MajoranaProduct",
+        "MajoranaTerm",
+        "MajoranaWord",
+        "OperatorSpace",
+        "Parameter",
+        "ParameterExpr",
+        "PauliOperator",
+        "PauliPhase",
+        "PauliProduct",
+        "PauliTerm",
+        "PauliWord",
+        "ProductBlochState",
+        "ProfiledExpectation",
+        "PropagationBatch",
+        "PropagationBatchValueAndGradient",
+        "PropagationCircuit",
+        "PropagationProfile",
+        "PropagationValueAndGradient",
+        "QWCGroupingResult",
+        "QuditProduct",
+        "QuditWeylOperator",
+        "QuditWeylTerm",
+        "QuditWeylWord",
+        "SPPSCircuit",
+        "SPPSEstimate",
+        "SPPSValueEstimate",
+        "U1Circuit",
+        "U1CircuitValueAndGradient",
+        "U1Sector",
+        "Z2SymmetryAnalysis",
+        "ZeroState",
+        "__version__",
+        "backend_mvp",
+    )
+    assert tuple(advanced.__all__) == (
         "BackendMVPPlan",
-        "U1MvpPlan",
+        "CanonicalizationArrayResult",
         "ChargeMvpPlan",
-        "PropagationEngine",
-        "SPPSEngine",
+        "ChargeRestrictedOperator",
         "GateTape",
+        "NativeMVPPlan",
         "OperatorBuilder",
+        "PropagationCircuitPlan",
+        "PropagationEngine",
+        "SPPSCircuitPlan",
+        "SPPSEngine",
         "U1CircuitPlan",
-    }
-    assert advanced_names.isdisjoint(set(tcp.__all__))
-    assert advanced_names <= set(advanced.__all__)
+        "U1MvpPlan",
+        "U1RestrictedOperator",
+        "Z2TaperingPlan",
+    )
     assert not hasattr(tcp, "NativeMVPPlan")
     assert not hasattr(tcp, "GateTape")
 
@@ -45,6 +105,29 @@ def test_operator_counts_and_unified_code_validation() -> None:
         tcp.PauliOperator.from_code_arrays(np.asarray([[True]], dtype=bool), [1.0])
     with pytest.raises(TypeError):
         tcp.PauliOperator.from_code_arrays(np.asarray([[1.0]]), [1.0])
+
+    for dtype in (np.bool_, np.float64, object):
+        with pytest.raises(TypeError):
+            tcp.PauliOperator.from_code_arrays(
+                np.empty((0, 2), dtype=dtype), np.empty(0)
+            )
+        with pytest.raises(TypeError):
+            tcp.PauliOperator.from_code_arrays(
+                np.empty((1, 0), dtype=dtype), np.zeros(1)
+            )
+    for dtype in (np.int8, np.uint8, np.int64, np.uint64):
+        assert (
+            tcp.PauliOperator.from_code_arrays(
+                np.empty((0, 2), dtype=dtype), np.empty(0)
+            ).term_count
+            == 0
+        )
+        assert (
+            tcp.PauliOperator.from_code_arrays(
+                np.empty((1, 0), dtype=dtype), np.ones(1)
+            ).term_count
+            == 1
+        )
 
 
 def test_grouping_metadata_is_canonical_and_mode_defaults_are_safe() -> None:
@@ -74,13 +157,51 @@ def test_mvp_plan_contract_and_factory_only_construction() -> None:
     )
 
 
+def test_all_four_mvp_plans_share_flat_apply_contract() -> None:
+    operator = tcp.PauliOperator.from_terms(1, [("I", 1.0)])
+    native = operator.compile(target="native_mvp")
+    backend = operator.compile(target="backend_mvp")
+    u1 = operator.restrict_u1(tcp.U1Sector(1, 0)).mvp_plan()
+    space = tcp.OperatorSpace(qubits=1)
+    charge = tcp.AdditiveCharge(space, qubits={0: (0, 1)})
+    charged = operator.restrict_charge(charge.sector(0)).mvp_plan()
+    plans = (native, backend, u1, charged)
+    for candidate in plans:
+        assert candidate.dimension == 1 or candidate.dimension == 2
+        assert candidate.term_count == 1
+        assert candidate.estimated_bytes >= 0
+        assert candidate.target == "native_mvp" or candidate.target == "backend_mvp"
+        result = candidate.apply(np.ones(candidate.dimension, dtype=np.complex128))
+        assert result.shape == (candidate.dimension,)
+        assert result.dtype == np.complex128
+        assert result.flags.c_contiguous and result.flags.owndata
+        assert result.flags.writeable
+        np.testing.assert_allclose(candidate(np.ones(candidate.dimension)), result)
+
+
 def test_circuit_capabilities_hermiticity_and_u1_state_contract() -> None:
     spps = tcp.SPPSCircuit(1)
     assert not isinstance(spps, tcp.PropagationCircuit)
     assert not hasattr(spps, "ptm")
     assert not hasattr(spps, "propagate_operator")
     assert not hasattr(spps, "profile")
+    assert not hasattr(tcp.SPPSCircuit, "ptm")
+    assert not hasattr(tcp.SPPSCircuit, "propagate_operator")
+    assert not hasattr(tcp.SPPSCircuit, "profile")
     assert type(tcp.SPPSCircuit.from_qir([], {"nqubits": 1})) is tcp.SPPSCircuit
+    with pytest.raises(ValueError, match="PTM"):
+        tcp.SPPSCircuit.from_qir(
+            [
+                {
+                    "name": "ptm",
+                    "index": [0],
+                    "matrix": np.eye(4, dtype=np.float64),
+                }
+            ],
+            {"nqubits": 1},
+        )
+    with pytest.raises(AttributeError):
+        tcp.SPPSCircuit.ptm(spps, [0], np.eye(4, dtype=np.float64))
 
     nonhermitian = tcp.PauliOperator.from_terms(1, [("X", 1.0j)])
     propagation = tcp.PropagationCircuit(1)
@@ -111,3 +232,41 @@ def test_mapping_name_and_keyword_contract() -> None:
         1, [(((0, "create"), (0, "annihilate")), 1.0)]
     )
     assert operator.compile(target="dense", mapping=mapping).shape == (2, 2)
+    with pytest.raises(TypeError, match="named factory"):
+        tcp.FermionQubitMapping("jordan_wigner", 1, ((1,),))
+    assert (
+        inspect.signature(tcp.FermionQubitMapping).parameters["max_bytes"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
+
+
+def test_propagation_engine_term_count_is_consumed_canonical_count() -> None:
+    observable = tcp.PauliOperator.from_terms(1, [("X", 1.0), ("X", -1.0), ("Z", 0.25)])
+    engine = advanced.PropagationEngine(advanced.GateTape(1), observable)
+    assert observable.term_count == 1
+    assert engine.term_count == 1
+
+
+def test_u1_exact_hermiticity_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tencirpauli.pauli as pauli_module
+
+    calls = 0
+    original = pauli_module._native.pauli_operator_is_hermitian
+
+    def counted(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return bool(original(*args, **kwargs))
+
+    monkeypatch.setattr(pauli_module._native, "pauli_operator_is_hermitian", counted)
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+    circuit = tcp.U1Circuit(1, particle_number=0)
+    circuit.value_and_grad(observable)
+    circuit.value_and_grad(observable)
+    plan = circuit.compile()
+    plan.value_and_grad(None, observable)
+    assert calls == 1
+
+
+def test_advanced_reference_is_published() -> None:
+    assert Path("docs/advanced-api.md").is_file()

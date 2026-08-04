@@ -309,6 +309,7 @@ class PauliOperator:
     )
     _coefficient_reals: Tuple[float, ...] = field(repr=False, compare=False)
     _coefficient_imaginaries: Tuple[float, ...] = field(repr=False, compare=False)
+    _hermitian_exact: Optional[bool] = field(default=None, repr=False, compare=False)
 
     def __init__(
         self, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
@@ -592,6 +593,8 @@ class PauliOperator:
         """Validate Hermiticity using an explicit non-negative tolerance."""
         if not math.isfinite(tolerance) or tolerance < 0.0:
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
+        if tolerance == 0.0:
+            return self._exact_hermitian_value()
         structures, coefficients_re, coefficients_im = self._arrays()
         return bool(
             _native.pauli_operator_is_hermitian(
@@ -602,6 +605,23 @@ class PauliOperator:
                 tolerance,
             )
         )
+
+    def _exact_hermitian_value(self) -> bool:
+        """Return exact Hermiticity, caching the immutable operator query."""
+        cached = self._hermitian_exact
+        if cached is None:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            cached = bool(
+                _native.pauli_operator_is_hermitian(
+                    self.nqubits,
+                    structures,
+                    coefficients_re,
+                    coefficients_im,
+                    0.0,
+                )
+            )
+            object.__setattr__(self, "_hermitian_exact", cached)
+        return cached
 
     def analyze_charge(
         self,
@@ -1035,6 +1055,11 @@ def _normalize_code_array_inputs(
             np.empty((0, nqubits), dtype=np.uint8),
             np.empty(0, dtype=np.complex128),
         )
+    if all(isinstance(value, (tuple, list)) and len(value) == 0 for value, _ in terms):
+        return _normalize_code_arrays(
+            np.empty((len(terms), 0), dtype=np.uint8),
+            [coefficient for _, coefficient in terms],
+        )
     try:
         structures, coefficients = _normalize_code_arrays(
             [cast(Sequence[int], value) for value, _ in terms],
@@ -1060,7 +1085,7 @@ def _normalize_code_arrays(
         ) from error
     if code_array.ndim != 2:
         raise ValueError("structures must be a rectangular two-dimensional array")
-    if code_array.size and code_array.dtype.kind not in ("i", "u"):
+    if code_array.dtype.kind not in ("i", "u"):
         raise TypeError("Pauli code arrays must use an integer dtype")
     if code_array.size and (np.any(code_array < 0) or np.any(code_array > 3)):
         raise ValueError("Pauli codes must be in the half-open range 0..4")
@@ -1145,6 +1170,7 @@ def _initialize_operator(
     object.__setattr__(instance, "_canonical_structures", canonical_structures)
     object.__setattr__(instance, "_coefficient_reals", real_values)
     object.__setattr__(instance, "_coefficient_imaginaries", imaginary_values)
+    object.__setattr__(instance, "_hermitian_exact", None)
 
 
 def _ensure_operator_compatible(left: PauliOperator, right: object) -> None:

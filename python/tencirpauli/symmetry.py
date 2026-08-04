@@ -327,11 +327,13 @@ class U1MvpPlan:
             )
         return cast(
             np.ndarray[Any, Any],
-            np.asarray(
+            np.array(
                 self._native_plan.apply(
                     np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
                 ),
                 dtype=np.complex128,
+                copy=True,
+                order="C",
             ),
         )
 

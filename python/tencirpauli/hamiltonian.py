@@ -253,13 +253,16 @@ class NativeMVPPlan:
         contiguous = np.ascontiguousarray(values)
         return cast(
             np.ndarray[Any, Any],
-            np.ascontiguousarray(
+            np.array(
                 np.asarray(
                     self._native_plan.apply(
                         contiguous, _effective_max_bytes(max_bytes)
                     ),
                     dtype=np.complex128,
-                )
+                ),
+                dtype=np.complex128,
+                copy=True,
+                order="C",
             ),
         )
 
@@ -423,13 +426,14 @@ class BackendMVPPlan:
         """Apply the plan using deterministic array operations.
 
         Args:
-            state: A flat complex state of length ``dimension``. Direct-Weyl
-                plans also accept the mixed-radix tensor shape described by
-                ``local_dimensions``.
+            state: A flat ``complex128`` vector with shape ``(dimension,)``.
+                Direct-Weyl plans use ``local_dimensions`` only for their
+                internal mixed-radix basis interpretation.
             max_bytes: Best-effort bound for temporary and output arrays.
 
         Returns:
-            A complex128 state with the same logical shape as the input.
+            An owned, C-contiguous, writable ``complex128`` vector with shape
+            ``(dimension,)``.
 
         Raises:
             ValueError: If the state shape is incompatible with the plan.

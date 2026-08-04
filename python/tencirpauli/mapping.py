@@ -34,6 +34,7 @@ from .structured import (
 _CONVENTION = "tencirpauli.gf2_occupation.v1"
 _BASIS_ORDERING = "qubit0_msb_matrix"
 _SCHEMA_VERSION = 1
+_MAPPING_FACTORY_TOKEN = object()
 
 
 _exact_nonnegative = validate_nonnegative_int
@@ -197,10 +198,15 @@ class FermionQubitMapping:
         mapping_name: str,
         n_modes: int,
         encoding: Tuple[Tuple[int, ...], ...],
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
         *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
         _native_plan: Optional[Any] = None,
+        _factory_token: object = None,
     ) -> None:
+        if _factory_token is not _MAPPING_FACTORY_TOKEN:
+            raise TypeError(
+                "FermionQubitMapping instances must be created by a named factory"
+            )
         n_modes = _exact_nonnegative(n_modes, "n_modes")
         if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError("unsupported fermion-to-qubit mapping")
@@ -283,6 +289,7 @@ class FermionQubitMapping:
             encoding,
             max_bytes=max_bytes,
             _native_plan=native_plan,
+            _factory_token=_MAPPING_FACTORY_TOKEN,
         )
 
     @classmethod

@@ -80,6 +80,7 @@ struct CompiledPropagationProgram {
 pub struct PropagationEngine {
     program: Arc<CompiledPropagationProgram>,
     observable: PauliOperator,
+    term_count: usize,
     hermitian: bool,
 }
 
@@ -136,9 +137,11 @@ impl PropagationEngine {
             "propagation engine storage",
         )?;
         let hermitian = observable.is_hermitian(0.0);
+        let term_count = observable.terms().len();
         Ok(Self {
             program,
             observable,
+            term_count,
             hermitian,
         })
     }
@@ -153,6 +156,10 @@ impl PropagationEngine {
 
     pub fn gate_count(&self) -> usize {
         self.program.operations.len()
+    }
+
+    pub fn term_count(&self) -> usize {
+        self.term_count
     }
 
     pub fn max_weight(&self) -> Option<usize> {

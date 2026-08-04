@@ -388,6 +388,7 @@ class PropagationEngine:
         )
         self.nqubits = int(self._native.nqubits)
         self.nparameters = int(self._native.nparameters)
+        self.term_count = int(self._native.term_count)
         self.max_weight = max_weight
         self.is_exact = bool(self._native.is_exact)
         self.is_hermitian = bool(self._native.is_hermitian_observable)

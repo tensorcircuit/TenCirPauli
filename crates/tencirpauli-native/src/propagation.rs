@@ -41,6 +41,11 @@ impl NativePropagationEngine {
     }
 
     #[getter]
+    fn term_count(&self) -> usize {
+        self.engine.term_count()
+    }
+
+    #[getter]
     fn max_weight(&self) -> Option<usize> {
         self.engine.max_weight()
     }
