@@ -142,11 +142,15 @@ def test_phase5_128q_k2_sparse_materialization(
 ) -> None:
     """Measure 128-qubit k=2 sparse output without allocating a dense target."""
     operator = make_wide_hopping(128)
-    restricted = operator.restrict_u1(U1Sector(128, 2))
-    expected = getattr(restricted, target)()
-    result = benchmark.pedantic(
-        getattr(restricted, target), rounds=7, iterations=1, warmup_rounds=1
-    )
+
+    def materialize():
+        restricted = operator.restrict_charge(
+            U1Sector(128, 2), storage="lazy", max_bytes=None
+        )
+        return getattr(restricted, target)(max_bytes=None)
+
+    expected = materialize()
+    result = benchmark.pedantic(materialize, rounds=7, iterations=1, warmup_rounds=1)
     if target == "coo":
         np.testing.assert_array_equal(result.row, expected.row)
         np.testing.assert_array_equal(result.column, expected.column)
@@ -193,7 +197,7 @@ def test_phase5_wide_u1_setup_and_mvp(
 ) -> None:
     operator = make_wide_hopping(nqubits)
     sector = U1Sector(nqubits, particle_number)
-    restricted = operator.restrict_u1(sector)
+    restricted = operator.restrict_charge(sector, storage="lazy")
     plan = restricted.mvp_plan()
     state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
     expected = plan.apply(state)
@@ -215,7 +219,11 @@ def test_phase5_wide_u1_setup_and_mvp(
         }
     )
     result = benchmark.pedantic(
-        operator.restrict_u1, args=(sector,), rounds=3, iterations=1
+        operator.restrict_charge,
+        args=(sector,),
+        kwargs={"storage": "lazy"},
+        rounds=3,
+        iterations=1,
     )
     np.testing.assert_allclose(plan.apply(state), expected)
     assert result.dimension == plan.dimension
@@ -231,10 +239,14 @@ def test_phase5_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -> Non
     """Measure cross-limb Z-group aggregation and long-range hopping setup."""
     operator = make_long_range_duplicate_x()
     sector = U1Sector(129, 2)
-    expected = operator.restrict_u1(sector)
+    expected = operator.restrict_charge(sector, storage="lazy")
     expected_csr = expected.csr()
     result = benchmark.pedantic(
-        operator.restrict_u1, args=(sector,), rounds=3, iterations=1
+        operator.restrict_charge,
+        args=(sector,),
+        kwargs={"storage": "lazy"},
+        rounds=3,
+        iterations=1,
     )
     result_csr = result.csr()
     np.testing.assert_array_equal(result_csr.indptr, expected_csr.indptr)
@@ -281,7 +293,9 @@ def test_phase5_wide_u1_steady_mvp(
     benchmark: BenchmarkFixture, nqubits: int, particle_number: int
 ) -> None:
     operator = make_wide_hopping(nqubits)
-    restricted = operator.restrict_u1(U1Sector(nqubits, particle_number))
+    restricted = operator.restrict_charge(
+        U1Sector(nqubits, particle_number), storage="lazy"
+    )
     plan = restricted.mvp_plan()
     state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
     expected = plan.apply(state)
@@ -304,6 +318,38 @@ def test_phase5_wide_u1_steady_mvp(
             "plan_bytes": plan_bytes,
             "output_bytes": result.nbytes,
             "numerical_error": float(np.max(np.abs(result - expected), initial=0.0)),
+        }
+    )
+
+
+@pytest.mark.performance_large
+@pytest.mark.parametrize(("nqubits", "particle_number"), [(16, 8), (18, 9), (20, 10)])
+def test_phase85_u1_medium_csr(
+    benchmark: BenchmarkFixture, nqubits: int, particle_number: int
+) -> None:
+    """Measure full eager CSR construction at representative medium sizes."""
+    operator = make_wide_hopping(nqubits)
+    sector = U1Sector(nqubits, particle_number)
+
+    def materialize():
+        restricted = operator.restrict_charge(sector, storage="eager", max_bytes=None)
+        return restricted.csr(max_bytes=None)
+
+    expected = materialize()
+    result = benchmark.pedantic(materialize, rounds=3, iterations=1)
+    np.testing.assert_array_equal(result.indptr, expected.indptr)
+    np.testing.assert_array_equal(result.indices, expected.indices)
+    np.testing.assert_allclose(result.data, expected.data)
+    benchmark.extra_info.update(
+        {
+            "nqubits": nqubits,
+            "particle_number": particle_number,
+            "dimension": result.shape[0],
+            "nnz": int(result.data.size),
+            "output_bytes": result.indptr.nbytes
+            + result.indices.nbytes
+            + result.data.nbytes,
+            "numerical_error": 0.0,
         }
     )
 

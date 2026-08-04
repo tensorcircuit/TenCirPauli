@@ -208,6 +208,7 @@ class U1RestrictedOperator:
     dimension: int
     term_count: int
     _native_operator: Any
+    _native_lazy_plan: Any
     storage: str
     _operator: Optional[PauliOperator]
     _lock: Any
@@ -222,6 +223,7 @@ class U1RestrictedOperator:
         *,
         operator: Optional[PauliOperator] = None,
         storage: str = "eager",
+        native_lazy_plan: Any = None,
     ) -> None:
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
@@ -239,6 +241,7 @@ class U1RestrictedOperator:
         )
         object.__setattr__(self, "term_count", int(term_count))
         object.__setattr__(self, "_native_operator", native_operator)
+        object.__setattr__(self, "_native_lazy_plan", native_lazy_plan)
         object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_operator", operator)
         object.__setattr__(self, "_lock", threading.Lock())
@@ -247,7 +250,9 @@ class U1RestrictedOperator:
             self,
             "_lazy_estimate",
             int(
-                sector.dimension * 16
+                native_lazy_plan.estimated_bytes
+                if native_lazy_plan is not None
+                else sector.dimension * 16
                 + (sector.dimension + 1) * 8
                 + term_count * (sector.nqubits // 8 + 32)
             ),
@@ -276,6 +281,16 @@ class U1RestrictedOperator:
                     dtype=np.complex128,
                 ),
             )
+        if self._native_lazy_plan is not None:
+            return cast(
+                np.ndarray[Any, Any],
+                np.asarray(
+                    self._native_lazy_plan.apply(
+                        np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
+                    ),
+                    dtype=np.complex128,
+                ),
+            )
         return _apply_u1_lazy(
             self.sector, self._operator, values, max_bytes, self._terms
         )
@@ -291,6 +306,13 @@ class U1RestrictedOperator:
         _validate_apply_into_buffers(input_state, output_state, self.dimension)
         if self._native_operator is not None:
             self._native_operator.apply_into(
+                input_state,
+                output_state,
+                _effective_max_bytes(max_bytes),
+            )
+            return
+        if self._native_lazy_plan is not None:
+            self._native_lazy_plan.apply_into(
                 input_state,
                 output_state,
                 _effective_max_bytes(max_bytes),
@@ -318,7 +340,7 @@ class U1RestrictedOperator:
         if storage == "lazy":
             return U1MvpPlan(
                 self.sector,
-                None,
+                self._native_lazy_plan,
                 self.term_count,
                 operator=self._operator,
                 storage="lazy",
@@ -433,16 +455,25 @@ class U1MvpPlan:
             sector.dimension if native_plan is None else int(native_plan.dimension),
         )
         object.__setattr__(self, "term_count", int(term_count))
+        lazy_native = native_plan is not None and hasattr(
+            native_plan, "estimated_bytes"
+        )
         object.__setattr__(
             self,
             "transition_count",
-            0 if native_plan is None else int(native_plan.transition_count),
+            (
+                0
+                if native_plan is None or lazy_native
+                else int(native_plan.transition_count)
+            ),
         )
         object.__setattr__(
             self,
             "estimated_bytes",
             int(
-                self.dimension * 16
+                int(native_plan.estimated_bytes)
+                if lazy_native
+                else self.dimension * 16
                 + (self.dimension + 1) * 8
                 + self.transition_count * 32
                 + (
@@ -657,14 +688,25 @@ def _restrict_u1(
         OperatorSpace(qubits=sector.nqubits),
         qubits={index: (0, 1) for index in range(sector.nqubits)},
     )
-    if not operator.analyze_charge(number, max_bytes=max_bytes).is_conserved:
+    if (
+        storage == "lazy"
+        and not operator.analyze_charge(number, max_bytes=max_bytes).is_conserved
+    ):
         raise ValueError(
             "selected U1 sector requires an exactly conserved operator; "
             "nonzero U(1) sector leakage was detected"
         )
     native_operator = None
+    native_lazy_plan = None
     if storage == "eager":
         native_operator = _native.pauli_restrict_u1(
+            operator.nqubits,
+            *operator._arrays(),
+            sector.particle_number,
+            _effective_max_bytes(max_bytes),
+        )
+    else:
+        native_lazy_plan = _native.pauli_restrict_u1_lazy(
             operator.nqubits,
             *operator._arrays(),
             sector.particle_number,
@@ -676,4 +718,5 @@ def _restrict_u1(
         operator.term_count if term_count is None else term_count,
         operator=operator,
         storage=storage,
+        native_lazy_plan=native_lazy_plan,
     )

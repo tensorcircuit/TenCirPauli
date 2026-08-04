@@ -47,8 +47,9 @@ use structured::{
     structured_sparse, structured_sparse_plan, StructuredMvpPlan,
 };
 use symmetry::{
-    pauli_find_z2_symmetries, pauli_restrict_u1, pauli_z2_tapering_plan, u1_basis_words,
-    NativeU1MvpPlan, NativeU1RestrictedOperator, NativeZ2TaperingPlan,
+    pauli_find_z2_symmetries, pauli_restrict_u1, pauli_restrict_u1_lazy, pauli_z2_tapering_plan,
+    u1_basis_words, NativeU1LazyMvpPlan, NativeU1MvpPlan, NativeU1RestrictedOperator,
+    NativeZ2TaperingPlan,
 };
 use u1_circuit::{u1_circuit_plan, NativeU1CircuitPlan, NativeU1FinalState};
 use word::{
@@ -66,6 +67,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeZ2TaperingPlan>()?;
     module.add_class::<NativeU1RestrictedOperator>()?;
     module.add_class::<NativeU1MvpPlan>()?;
+    module.add_class::<NativeU1LazyMvpPlan>()?;
     module.add_class::<NativeU1CircuitPlan>()?;
     module.add_class::<NativeU1FinalState>()?;
     module.add_class::<NativePropagationEngine>()?;
@@ -114,6 +116,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_find_z2_symmetries, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_z2_tapering_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_restrict_u1, module)?)?;
+    module.add_function(wrap_pyfunction!(pauli_restrict_u1_lazy, module)?)?;
     module.add_function(wrap_pyfunction!(u1_basis_words, module)?)?;
     module.add_function(wrap_pyfunction!(u1_circuit_plan, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_propagation_engine, module)?)?;

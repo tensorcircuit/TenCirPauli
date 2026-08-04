@@ -289,6 +289,67 @@ impl NativeU1MvpPlan {
     }
 }
 
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativeU1LazyMvpPlan {
+    plan: tencir_pauli_core::U1LazyMvpPlan,
+}
+
+#[pymethods]
+impl NativeU1LazyMvpPlan {
+    #[getter]
+    fn nqubits(&self) -> usize {
+        self.plan.sector().nqubits()
+    }
+
+    #[getter]
+    fn particle_number(&self) -> usize {
+        self.plan.sector().particle_number()
+    }
+
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.plan.dimension()
+    }
+
+    #[getter]
+    fn estimated_bytes(&self) -> u128 {
+        self.plan.estimated_bytes()
+    }
+
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<numpy::Complex64>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let values = py
+            .allow_threads(|| self.plan.apply(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, values))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        mut output: PyReadwriteArray1<'py, numpy::Complex64>,
+        max_bytes: u128,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let _ = max_bytes;
+        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice))
+            .map_err(map_error)
+    }
+}
+
 #[pyfunction]
 pub(crate) fn pauli_restrict_u1(
     py: Python<'_>,
@@ -307,6 +368,26 @@ pub(crate) fn pauli_restrict_u1(
             .map_err(map_error)
     })?;
     Ok(NativeU1RestrictedOperator { operator })
+}
+
+#[pyfunction]
+pub(crate) fn pauli_restrict_u1_lazy(
+    py: Python<'_>,
+    nqubits: usize,
+    structures: Vec<Vec<u8>>,
+    coefficients_re: Vec<f64>,
+    coefficients_im: Vec<f64>,
+    particle_number: usize,
+    max_bytes: usize,
+) -> PyResult<NativeU1LazyMvpPlan> {
+    let plan = py.allow_threads(|| {
+        let operator =
+            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
+        let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
+        tencir_pauli_core::U1LazyMvpPlan::new(&operator, sector, max_bytes as u128)
+            .map_err(map_error)
+    })?;
+    Ok(NativeU1LazyMvpPlan { plan })
 }
 
 #[pyfunction]

@@ -47,7 +47,8 @@ pub use propagation::{
 };
 pub use scalar::Complex64;
 pub use sector::{
-    PackedU1Basis, U1CooMatrix, U1CsrMatrix, U1MvpPlan, U1RestrictedOperator, U1Sector,
+    PackedU1Basis, U1CooMatrix, U1CsrMatrix, U1LazyMvpPlan, U1MvpPlan, U1RestrictedOperator,
+    U1Sector,
 };
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 pub use structured::{

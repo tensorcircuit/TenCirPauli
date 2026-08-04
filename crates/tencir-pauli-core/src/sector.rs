@@ -41,6 +41,18 @@ pub struct U1MvpPlan {
     values: Arc<[Complex64]>,
 }
 
+/// A compact matrix-free plan for a fixed-Hamming-weight Pauli operator.
+///
+/// Unlike [`U1MvpPlan`], this plan retains only the packed sector and grouped
+/// Pauli descriptors. It enumerates one source column at a time and does not
+/// retain a complete destination-major transition graph.
+#[derive(Clone, Debug)]
+pub struct U1LazyMvpPlan {
+    sector: U1Sector,
+    terms: CompiledU1Terms,
+    estimated_bytes: u128,
+}
+
 /// A restricted operator whose setup has already validated sector preservation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct U1RestrictedOperator {
@@ -329,28 +341,6 @@ impl U1Sector {
         }
         Ok(rank)
     }
-
-    fn rank_active_positions(&self, positions: &[usize]) -> Result<u64, PauliError> {
-        if positions.len() != self.active_number
-            || positions.windows(2).any(|window| window[0] >= window[1])
-            || positions.iter().any(|&position| position >= self.nqubits)
-        {
-            return Err(PauliError::InvalidIndex {
-                context: "ranking invalid active U1 positions",
-            });
-        }
-        let mut rank = 0_u64;
-        for (selected, &position) in positions.iter().enumerate() {
-            let remaining = self.nqubits - position - 1;
-            let needed = self.active_number - selected;
-            rank = rank
-                .checked_add(self.choose_value(remaining, needed)?)
-                .ok_or(PauliError::Overflow {
-                    context: "ranking U1 basis state",
-                })?;
-        }
-        Ok(rank)
-    }
 }
 
 impl U1RestrictedOperator {
@@ -374,14 +364,17 @@ impl U1RestrictedOperator {
         let mut row_counts = vec![0_usize; dimension];
         let mut aggregate = Vec::with_capacity(terms.groups.len());
         let mut source_active = Vec::with_capacity(sector.active_number);
-        let mut destination_active = Vec::with_capacity(sector.active_number);
+        let mut source_words = vec![0_u64; sector.word_count()];
+        let mut destination_words = vec![0_u64; sector.word_count()];
         let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
             source_iterator.active_qubits_to(&mut source_active);
+            source_iterator.packed_words_to(&mut source_words);
             aggregate_source(
                 source_index as u64,
                 &source_active,
-                &mut destination_active,
+                &source_words,
+                &mut destination_words,
                 &terms,
                 &sector,
                 &mut aggregate,
@@ -413,10 +406,12 @@ impl U1RestrictedOperator {
         let mut source_iterator = U1BasisIterator::new(&sector);
         for source_index in 0..dimension {
             source_iterator.active_qubits_to(&mut source_active);
+            source_iterator.packed_words_to(&mut source_words);
             aggregate_source(
                 source_index as u64,
                 &source_active,
-                &mut destination_active,
+                &source_words,
+                &mut destination_words,
                 &terms,
                 &sector,
                 &mut aggregate,
@@ -532,6 +527,110 @@ impl U1RestrictedOperator {
 
     pub fn csr(&self, max_bytes: u128) -> Result<U1CsrMatrix, PauliError> {
         self.plan.csr(max_bytes)
+    }
+}
+
+impl U1LazyMvpPlan {
+    pub fn new(
+        operator: &PauliOperator,
+        sector: U1Sector,
+        max_bytes: u128,
+    ) -> Result<Self, PauliError> {
+        if operator.nqubits() != sector.nqubits {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: operator.nqubits(),
+                right: sector.nqubits,
+            });
+        }
+        let terms = compile_terms(operator)?;
+        let estimated_bytes = estimate_compiled_terms_bytes(&sector, &terms)?;
+        check_allocation(estimated_bytes, max_bytes)?;
+        Ok(Self {
+            sector,
+            terms,
+            estimated_bytes,
+        })
+    }
+
+    pub fn sector(&self) -> U1Sector {
+        self.sector.clone()
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.sector
+            .dimension()
+            .expect("lazy U1 plan dimension was checked at construction")
+    }
+
+    pub fn estimated_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+
+    pub fn apply(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        let dimension = self.dimension();
+        if state.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: state.len(),
+            });
+        }
+        let bytes = (dimension as u128)
+            .checked_mul(size_of::<Complex64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating lazy U1 MVP output memory",
+            })?;
+        check_allocation(bytes, max_bytes)?;
+        let mut output = vec![Complex64::default(); dimension];
+        self.apply_into(state, &mut output)?;
+        Ok(output)
+    }
+
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
+        let dimension = self.dimension();
+        if state.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: state.len(),
+            });
+        }
+        if output.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: output.len(),
+            });
+        }
+        output.fill(Complex64::default());
+        let mut source_iterator = U1BasisIterator::new(&self.sector);
+        let mut source_active = Vec::with_capacity(self.sector.active_number);
+        let mut source_words = vec![0_u64; self.sector.word_count()];
+        let mut destination_words = vec![0_u64; self.sector.word_count()];
+        let mut aggregate = Vec::with_capacity(self.terms.groups.len());
+        for (source_index, state_value) in state.iter().enumerate() {
+            source_iterator.active_qubits_to(&mut source_active);
+            source_iterator.packed_words_to(&mut source_words);
+            aggregate_source(
+                source_index as u64,
+                &source_active,
+                &source_words,
+                &mut destination_words,
+                &self.terms,
+                &self.sector,
+                &mut aggregate,
+            )?;
+            for &(destination, value) in &aggregate {
+                output[destination] += value * *state_value;
+            }
+            source_iterator.advance();
+        }
+        Ok(())
     }
 }
 
@@ -733,9 +832,14 @@ impl U1BasisIterator {
     #[cfg(test)]
     fn write_to(&self, output: &mut [u64]) {
         debug_assert_eq!(output.len(), self.word_count);
+        self.packed_words_to(output);
+    }
+
+    fn packed_words_to(&self, output: &mut [u64]) {
+        debug_assert_eq!(output.len(), packed_word_count(self.nqubits));
         if self.complement {
             for (index, word) in output.iter_mut().enumerate() {
-                *word = if index + 1 == self.word_count {
+                *word = if index + 1 == packed_word_count(self.nqubits) {
                     tail_mask(self.nqubits)
                 } else {
                     u64::MAX
@@ -1003,7 +1107,8 @@ fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, Pau
 fn aggregate_source(
     source_index: u64,
     source_active: &[usize],
-    destination_active: &mut Vec<usize>,
+    source_words: &[u64],
+    destination_words: &mut [u64],
     terms: &CompiledU1Terms,
     sector: &U1Sector,
     aggregate: &mut Vec<(usize, Complex64)>,
@@ -1064,29 +1169,15 @@ fn aggregate_source(
                 actual: actual_weight,
             });
         }
-        destination_active.clear();
-        destination_active.extend_from_slice(source_active);
-        for &qubit in x_support {
-            match destination_active.binary_search(&qubit) {
-                Ok(index) => {
-                    destination_active.remove(index);
-                }
-                Err(index) => destination_active.insert(index, qubit),
-            }
+        destination_words.copy_from_slice(source_words);
+        for (destination_word, x_word) in destination_words
+            .iter_mut()
+            .zip(&terms.x_words[group.x_offset..group.x_offset + terms.word_count])
+        {
+            *destination_word ^= *x_word;
         }
-        debug_assert_eq!(destination_active.len(), sector.active_number);
-        let active_rank = sector.rank_active_positions(destination_active)?;
-        let restricted_destination = if sector.complement {
-            sector
-                .dimension
-                .checked_sub(1)
-                .and_then(|last| last.checked_sub(active_rank))
-                .ok_or(PauliError::Overflow {
-                    context: "ranking complemented U1 destination state",
-                })?
-        } else {
-            active_rank
-        };
+        let restricted_destination =
+            sector.rank_words_known_weight(destination_words, actual_weight)?;
         let restricted_destination =
             usize::try_from(restricted_destination).map_err(|_| PauliError::Overflow {
                 context: "converting U1 destination rank to a native index",
@@ -1181,6 +1272,39 @@ fn estimate_plan_bytes(
     dimension: usize,
     upper_bound: usize,
 ) -> Result<u128, PauliError> {
+    let compiled = estimate_compiled_terms_bytes(sector, terms)?;
+    let row_bytes = (dimension as u128)
+        .checked_mul(size_of::<usize>() as u128)
+        .and_then(|bytes| {
+            (dimension as u128 + 1)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|indptr| bytes.checked_add(indptr))
+        })
+        .and_then(|bytes| {
+            (dimension as u128)
+                .checked_mul(size_of::<usize>() as u128)
+                .and_then(|next| bytes.checked_add(next))
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 row workspace memory",
+        })?;
+    let transition_bytes = (upper_bound as u128)
+        .checked_mul(size_of::<usize>() as u128 + size_of::<Complex64>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 transition memory",
+        })?;
+    compiled
+        .checked_add(row_bytes)
+        .and_then(|bytes| bytes.checked_add(transition_bytes))
+        .ok_or(PauliError::Overflow {
+            context: "estimating U1 restricted plan memory",
+        })
+}
+
+fn estimate_compiled_terms_bytes(
+    sector: &U1Sector,
+    terms: &CompiledU1Terms,
+) -> Result<u128, PauliError> {
     let compiled = (terms.x_words.len() as u128)
         .checked_mul(size_of::<u64>() as u128)
         .and_then(|bytes| {
@@ -1221,32 +1345,10 @@ fn estimate_plan_bytes(
         .ok_or(PauliError::Overflow {
             context: "estimating U1 combinatorial table memory",
         })?;
-    let row_bytes = (dimension as u128)
-        .checked_mul(size_of::<usize>() as u128)
-        .and_then(|bytes| {
-            (dimension as u128 + 1)
-                .checked_mul(size_of::<usize>() as u128)
-                .and_then(|indptr| bytes.checked_add(indptr))
-        })
-        .and_then(|bytes| {
-            (dimension as u128)
-                .checked_mul(size_of::<usize>() as u128)
-                .and_then(|next| bytes.checked_add(next))
-        })
-        .ok_or(PauliError::Overflow {
-            context: "estimating U1 row workspace memory",
-        })?;
-    let transition_bytes = (upper_bound as u128)
-        .checked_mul(size_of::<usize>() as u128 + size_of::<Complex64>() as u128)
-        .ok_or(PauliError::Overflow {
-            context: "estimating U1 transition memory",
-        })?;
     compiled
         .checked_add(choose_bytes)
-        .and_then(|bytes| bytes.checked_add(row_bytes))
-        .and_then(|bytes| bytes.checked_add(transition_bytes))
         .ok_or(PauliError::Overflow {
-            context: "estimating U1 restricted plan memory",
+            context: "estimating lazy U1 plan memory",
         })
 }
 
