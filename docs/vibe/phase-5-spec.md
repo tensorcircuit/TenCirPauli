@@ -2,6 +2,8 @@
 
 状态：设计已冻结，可进入实现。Owner 已确认使用多个固定宽度整数而不是 arbitrary-precision big integer；不得在 128 qubits 处建立新的硬边界。Phase 5 只扩展 static U1 restricted Hamiltonian engine，不包含 U1 circuit、time evolution 或 gradient。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 阶段目标
 
 Phase 5 将阶段二只支持 `nqubits < usize::BITS` 的 native U1 restriction 扩展到任意数量的 64-bit packed words。目标 workload 是 64、65、128、129、256 qubits 等宽系统中的低粒子数或低空穴数 sector，其中完整 Hilbert space 的 computational-basis state 已无法放入单个整数，但 restricted dimension `C(n,k)` 仍可安全表示和物化。

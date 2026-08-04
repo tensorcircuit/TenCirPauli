@@ -2,6 +2,8 @@
 
 Status: frozen implementation contract, approved by the owner on 2026-08-03. P0–P5 implementation and local acceptance evidence are complete; the clean Phase 7 prerequisite and Phase 7.5 handoff are recorded in `implementation-status.md`.
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. Purpose
 
 Phase 7.5 extends the structured-operator layer in three connected directions: a public Majorana algebra at the same level as the existing fermion and boson algebras; deterministic parity and Bravyi–Kitaev fermion-to-qubit mappings alongside Jordan–Wigner; and exact integer-valued additive charges that can be validated as symmetries and used to reduce a finite Hamiltonian basis.

@@ -22,6 +22,7 @@ from typing import Any, Callable
 import numpy as np
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 @dataclass(frozen=True)
@@ -60,8 +61,8 @@ def make_native(
     case: Case,
     operations: list[tuple[Any, ...]],
     terms: list[tuple[float, int, int]],
-) -> tuple[tcp.PropagationEngine, tcp.SPPSEngine, np.ndarray]:
-    tape = tcp.GateTape(case.nqubits)
+) -> tuple[advanced.PropagationEngine, advanced.SPPSEngine, np.ndarray]:
+    tape = advanced.GateTape(case.nqubits)
     for operation in operations:
         if operation[0] == "H":
             tape.h(int(operation[1]))
@@ -88,8 +89,10 @@ def make_native(
     parameters = np.linspace(
         -0.19, 0.23, 2 * case.layers * case.nqubits, dtype=np.float64
     )
-    deterministic = tcp.PropagationEngine(tape, observable, max_weight=case.locality)
-    spps = tcp.SPPSEngine(tape, observable, smoothing=0.25 / case.layers)
+    deterministic = advanced.PropagationEngine(
+        tape, observable, max_weight=case.locality
+    )
+    spps = advanced.SPPSEngine(tape, observable, smoothing=0.25 / case.layers)
     return deterministic, spps, parameters
 
 

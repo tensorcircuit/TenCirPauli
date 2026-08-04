@@ -9,6 +9,7 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 def make_case(
@@ -18,8 +19,8 @@ def make_case(
     layers: int = 4,
     terms_per_observable: int = 1,
     rotation_heavy: bool = True,
-) -> tuple[tcp.GateTape, list[tcp.PauliOperator]]:
-    tape = tcp.GateTape(nqubits)
+) -> tuple[advanced.GateTape, list[tcp.PauliOperator]]:
+    tape = advanced.GateTape(nqubits)
     for layer in range(layers):
         if rotation_heavy:
             for wire in range(nqubits):
@@ -42,18 +43,24 @@ def make_case(
 
 
 def profile_metadata(
-    tape: tcp.GateTape,
+    tape: advanced.GateTape,
     observables: list[tcp.PauliOperator],
     parameters: np.ndarray,
 ) -> dict[str, int]:
     profiles = [
-        tcp.PropagationEngine(tape, observable).profile(parameters).profile
+        advanced.PropagationEngine(tape, observable).profile(parameters).profile
         for observable in observables
     ]
     return {
-        "initial_terms_max": max((item.initial_terms for item in profiles), default=0),
-        "peak_terms_max": max((item.peak_terms for item in profiles), default=0),
-        "final_terms_max": max((item.final_terms for item in profiles), default=0),
+        "initial_term_count_max": max(
+            (item.initial_term_count for item in profiles), default=0
+        ),
+        "peak_term_count_max": max(
+            (item.peak_term_count for item in profiles), default=0
+        ),
+        "final_term_count_max": max(
+            (item.final_term_count for item in profiles), default=0
+        ),
         "estimated_peak_bytes_max": max(
             (item.estimated_peak_bytes for item in profiles), default=0
         ),
@@ -136,7 +143,9 @@ def test_scalar_serial_expectations(
     benchmark: BenchmarkFixture, observable_count: int
 ) -> None:
     tape, observables = make_case(observable_count)
-    engines = [tcp.PropagationEngine(tape, observable) for observable in observables]
+    engines = [
+        advanced.PropagationEngine(tape, observable) for observable in observables
+    ]
     parameters = np.linspace(-0.4, 0.4, engines[0].nparameters)
     expected = np.array([engine.expectation(parameters) for engine in engines])
     result = benchmark.pedantic(
@@ -160,7 +169,9 @@ def test_scalar_serial_values_and_gradients(
     benchmark: BenchmarkFixture, observable_count: int
 ) -> None:
     tape, observables = make_case(observable_count)
-    engines = [tcp.PropagationEngine(tape, observable) for observable in observables]
+    engines = [
+        advanced.PropagationEngine(tape, observable) for observable in observables
+    ]
     parameters = np.linspace(-0.4, 0.4, engines[0].nparameters)
     expected = [
         engine.value_and_grad(parameters, checkpoint_interval=4) for engine in engines
@@ -199,7 +210,9 @@ def test_batch_light_clifford_crossover(benchmark: BenchmarkFixture) -> None:
         rotation_heavy=False,
     )
     batch = tcp.PropagationBatch(tape, observables)
-    engines = [tcp.PropagationEngine(tape, observable) for observable in observables]
+    engines = [
+        advanced.PropagationEngine(tape, observable) for observable in observables
+    ]
     parameters = np.empty(0, dtype=np.float64)
     expected = np.array([engine.expectation(parameters) for engine in engines])
     result = benchmark.pedantic(batch.expectations, args=(parameters,), rounds=5)

@@ -120,6 +120,16 @@ class PropagationCircuitPlan:
     evaluations.
     """
 
+    __slots__ = (
+        "_dynamic_angles",
+        "_engine",
+        "_locked",
+        "is_exact",
+        "max_weight",
+        "nparameters",
+        "nqubits",
+    )
+
     def __init__(
         self,
         engine: PropagationEngine,
@@ -132,6 +142,12 @@ class PropagationCircuitPlan:
         self.nparameters = nparameters
         self.max_weight = engine.max_weight
         self.is_exact = engine.is_exact
+        self._locked = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_locked", False):
+            raise AttributeError("PropagationCircuitPlan is immutable")
+        object.__setattr__(self, name, value)
 
     def _native_parameters(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
@@ -186,7 +202,7 @@ class PropagationCircuitPlan:
         return self._engine.profile(native)
 
 
-class PropagationCircuit:
+class _CircuitBuilder:
     """TensorCircuit-style builder for deterministic Pauli propagation.
 
     Gates are appended in execution order with zero-based wires. Rotation
@@ -220,6 +236,21 @@ class PropagationCircuit:
         self._operations: list[_PropagationOperation] = []
         self._generation = 0
         self._cached_plan: Optional[tuple[Any, ...]] = None
+
+    _SPPS_HIDDEN = frozenset({"ptm", "propagate_operator", "profile"})
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _CircuitBuilder._SPPS_HIDDEN:
+            cls = object.__getattribute__(self, "__class__")
+            if getattr(cls, "_stochastic_facade", False):
+                raise AttributeError(f"SPPSCircuit does not expose {name}()")
+        return super().__getattribute__(name)
+
+    def __dir__(self) -> list[str]:
+        names = list(super().__dir__())
+        if getattr(type(self), "_stochastic_facade", False):
+            return [name for name in names if name not in self._SPPS_HIDDEN]
+        return names
 
     def __len__(self) -> int:
         return len(self._operations)
@@ -554,7 +585,7 @@ class PropagationCircuit:
         parameter_order: Optional[Sequence[Any]] = None,
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> "PropagationCircuit":
+    ) -> "_CircuitBuilder":
         """Convert a supported TensorCircuit circuit into this facade.
 
         ``tensorcircuit-ng`` must be installed. ``parameter_order`` fixes the
@@ -564,6 +595,10 @@ class PropagationCircuit:
         from .integrations.tensorcircuit import gate_tape_from_circuit
 
         converted = gate_tape_from_circuit(circuit, parameter_order=parameter_order)
+        if getattr(cls, "_stochastic_facade", False) and any(
+            operation[0] == 15 for operation in converted.tape._operations
+        ):
+            raise ValueError("SPPSCircuit conversion does not support PTM gates")
         result = cls(
             converted.tape.nqubits,
             initial_state=initial_state,
@@ -585,7 +620,7 @@ class PropagationCircuit:
         parameter_order: Optional[Sequence[Any]] = None,
         initial_state: PropagationState = "zero",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> "PropagationCircuit":
+    ) -> "_CircuitBuilder":
         """Restore a propagation circuit from QIR gate records.
 
         ``circuit_params`` must contain ``nqubits`` and may contain a
@@ -670,6 +705,10 @@ class PropagationCircuit:
                 raise ValueError("QIR item must contain an index sequence")
             arity = 1 if name in _ONE_QUBIT_GATES else 2
             if name == "ptm":
+                if getattr(cls, "_stochastic_facade", False):
+                    raise ValueError(
+                        "SPPSCircuit QIR conversion does not support PTM gates"
+                    )
                 if len(wires_value) not in (1, 2):
                     raise ValueError("PTM wires must contain one or two distinct wires")
                 wires = _validate_wires(
@@ -733,6 +772,10 @@ class PropagationCircuit:
         result._generation = len(operations)
         result._cached_plan = None
         return result
+
+
+class PropagationCircuit(_CircuitBuilder):
+    """Deterministic Pauli-propagation circuit facade."""
 
 
 __all__ = ["PropagationCircuit", "PropagationCircuitPlan"]

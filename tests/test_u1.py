@@ -93,17 +93,16 @@ def test_phase5_basis_order_and_packed_padding(
     assert sector.dimension == len(expected)
     assert sector.rank(expected[0]) == 0
     assert sector.rank(expected[-1]) == len(expected) - 1
-    assert sector.unrank(0) == (
-        expected[0]
-        if nqubits <= 64
-        else tuple(
-            (expected[0] >> (nqubits - 1 - qubit)) & 1 for qubit in range(nqubits)
-        )
+    assert sector.unrank(0) == tuple(
+        (expected[0] >> (nqubits - 1 - qubit)) & 1 for qubit in range(nqubits)
     )
-    basis = sector.basis_words()
+    basis = sector.basis_words_packed()
     assert basis.flags.writeable is False
     if nqubits <= 64:
-        np.testing.assert_array_equal(basis, np.asarray(expected, dtype=np.uint64))
+        assert basis.shape == (len(expected), 1)
+        np.testing.assert_array_equal(
+            basis[:, 0], np.asarray(expected, dtype=np.uint64)
+        )
     else:
         assert basis.shape == (len(expected), (nqubits + 63) // 64)
         np.testing.assert_array_equal(

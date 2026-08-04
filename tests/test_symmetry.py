@@ -171,10 +171,14 @@ def test_u1_basis_order_rank_and_unrank(
 ) -> None:
     sector = tcp.U1Sector(nqubits, particle_number)
     assert sector.dimension == len(expected)
-    assert [sector.unrank(index) for index in range(sector.dimension)] == expected
+    expected_bits = [
+        tuple((value >> (nqubits - 1 - qubit)) & 1 for qubit in range(nqubits))
+        for value in expected
+    ]
+    assert [sector.unrank(index) for index in range(sector.dimension)] == expected_bits
     assert [sector.rank(value) for value in expected] == list(range(len(expected)))
-    basis = sector.basis_words()
-    np.testing.assert_array_equal(basis, np.asarray(expected, dtype=np.uint64))
+    basis = sector.basis_states()
+    np.testing.assert_array_equal(basis, np.asarray(expected_bits, dtype=np.uint8))
     assert basis.flags.writeable is False
 
 
@@ -187,7 +191,12 @@ def test_u1_restricted_operator_matches_full_projection_and_aggregates_hopping()
     )
     sector = tcp.U1Sector(3, 1)
     restricted = operator.restrict_u1(sector)
-    basis = np.asarray([sector.unrank(index) for index in range(sector.dimension)])
+    basis = np.asarray(
+        [
+            sum(bit << (2 - qubit) for qubit, bit in enumerate(sector.unrank(index)))
+            for index in range(sector.dimension)
+        ]
+    )
     expected = operator.dense()[np.ix_(basis, basis)]
     np.testing.assert_allclose(restricted.dense(), expected)
     np.testing.assert_allclose(_coo_dense(restricted.coo()), expected)
@@ -233,7 +242,13 @@ def test_u1_complex_y_properties_match_independent_dense_projection() -> None:
             sector = tcp.U1Sector(nqubits, particle_number)
             restricted = operator.restrict_u1(sector)
             basis = np.asarray(
-                [sector.unrank(index) for index in range(sector.dimension)]
+                [
+                    sum(
+                        bit << (nqubits - 1 - qubit)
+                        for qubit, bit in enumerate(sector.unrank(index))
+                    )
+                    for index in range(sector.dimension)
+                ]
             )
             expected = operator.dense()[np.ix_(basis, basis)]
             np.testing.assert_allclose(restricted.dense(), expected)

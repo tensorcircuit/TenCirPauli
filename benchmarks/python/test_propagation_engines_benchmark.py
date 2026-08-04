@@ -7,10 +7,11 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
-def deterministic_workload() -> tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]:
-    tape = tcp.GateTape(12)
+def deterministic_workload() -> tuple[advanced.GateTape, tcp.PauliOperator, np.ndarray]:
+    tape = advanced.GateTape(12)
     for layer in range(3):
         for wire in range(12):
             tape.ry(wire, parameter=wire % 2)
@@ -28,8 +29,8 @@ def deterministic_workload() -> tuple[tcp.GateTape, tcp.PauliOperator, np.ndarra
     )
 
 
-def spps_workload() -> tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]:
-    tape = tcp.GateTape(12)
+def spps_workload() -> tuple[advanced.GateTape, tcp.PauliOperator, np.ndarray]:
+    tape = advanced.GateTape(12)
     for wire in range(12):
         tape.ry(wire, parameter=wire % 2)
     terms = []
@@ -45,9 +46,9 @@ def spps_workload() -> tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]:
 
 
 def rotation_heavy_spps_workload() -> (
-    tuple[tcp.GateTape, tcp.PauliOperator, np.ndarray]
+    tuple[advanced.GateTape, tcp.PauliOperator, np.ndarray]
 ):
-    tape = tcp.GateTape(12)
+    tape = advanced.GateTape(12)
     for _layer in range(2):
         for wire in range(12):
             tape.rz(wire, parameter=wire % 4)
@@ -72,13 +73,13 @@ def rotation_heavy_spps_workload() -> (
 
 def test_deterministic_gradient_setup(benchmark: BenchmarkFixture) -> None:
     tape, observable, _ = deterministic_workload()
-    engine = benchmark(tcp.PropagationEngine, tape, observable, max_weight=3)
+    engine = benchmark(advanced.PropagationEngine, tape, observable, max_weight=3)
     assert engine.nparameters == 2
 
 
 def test_deterministic_gradient_first_and_steady(benchmark: BenchmarkFixture) -> None:
     tape, observable, parameters = deterministic_workload()
-    engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+    engine = advanced.PropagationEngine(tape, observable, max_weight=3)
     expected = engine.value_and_grad(parameters, checkpoint_interval=4)
     result = benchmark.pedantic(
         engine.value_and_grad,
@@ -95,7 +96,7 @@ def test_deterministic_gradient_first_and_steady(benchmark: BenchmarkFixture) ->
 
 def test_deterministic_checkpoint_scaling(benchmark: BenchmarkFixture) -> None:
     tape, observable, parameters = deterministic_workload()
-    engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+    engine = advanced.PropagationEngine(tape, observable, max_weight=3)
     result = benchmark(engine.value_and_grad, parameters, checkpoint_interval=1)
     assert result.gradient.shape == (2,)
     benchmark.extra_info["checkpoint_interval"] = 1
@@ -106,7 +107,7 @@ def test_deterministic_representative_max_weight(
     benchmark: BenchmarkFixture, max_weight: int
 ) -> None:
     tape, observable, parameters = deterministic_workload()
-    engine = tcp.PropagationEngine(tape, observable, max_weight=max_weight)
+    engine = advanced.PropagationEngine(tape, observable, max_weight=max_weight)
     result = benchmark(engine.value_and_grad, parameters, checkpoint_interval=1)
     assert result.gradient.shape == (2,)
     assert np.isfinite(result.gradient).all()
@@ -115,8 +116,8 @@ def test_deterministic_representative_max_weight(
 
 def test_spps_fixed_budget_setup(benchmark: BenchmarkFixture) -> None:
     tape, observable, _ = spps_workload()
-    engine = benchmark(tcp.SPPSEngine, tape, observable)
-    assert engine.observable_terms == 12
+    engine = benchmark(advanced.SPPSEngine, tape, observable)
+    assert engine.term_count == 12
 
 
 @pytest.mark.parametrize("samples_per_term", (128, 1024))
@@ -124,7 +125,7 @@ def test_spps_fixed_budget_steady(
     benchmark: BenchmarkFixture, samples_per_term: int
 ) -> None:
     tape, observable, parameters = spps_workload()
-    engine = tcp.SPPSEngine(tape, observable)
+    engine = advanced.SPPSEngine(tape, observable)
     result = benchmark.pedantic(
         engine.value_and_grad,
         args=(parameters,),
@@ -139,7 +140,7 @@ def test_spps_fixed_budget_steady(
 
 
 def test_deterministic_100q_near_clifford_gradient(benchmark: BenchmarkFixture) -> None:
-    tape = tcp.GateTape(100)
+    tape = advanced.GateTape(100)
     for wire in range(0, 100, 10):
         tape.h(wire)
         tape.rz(wire, parameter=wire // 10)
@@ -148,7 +149,7 @@ def test_deterministic_100q_near_clifford_gradient(benchmark: BenchmarkFixture) 
         codes = [0] * 100
         codes[wire] = 3
         observable_terms.append((codes, 0.1))
-    engine = tcp.PropagationEngine(
+    engine = advanced.PropagationEngine(
         tape,
         tcp.PauliOperator.from_terms(100, observable_terms),
         max_weight=2,
@@ -161,7 +162,7 @@ def test_deterministic_100q_near_clifford_gradient(benchmark: BenchmarkFixture) 
 
 
 def test_spps_100q_near_clifford_throughput(benchmark: BenchmarkFixture) -> None:
-    tape = tcp.GateTape(100)
+    tape = advanced.GateTape(100)
     for wire in range(0, 100, 10):
         tape.h(wire)
         tape.rz(wire, parameter=wire // 10)
@@ -170,7 +171,9 @@ def test_spps_100q_near_clifford_throughput(benchmark: BenchmarkFixture) -> None
         codes = [0] * 100
         codes[wire] = 3
         observable_terms.append((codes, 0.1))
-    engine = tcp.SPPSEngine(tape, tcp.PauliOperator.from_terms(100, observable_terms))
+    engine = advanced.SPPSEngine(
+        tape, tcp.PauliOperator.from_terms(100, observable_terms)
+    )
     parameters = np.linspace(0.13, 0.22, 10, dtype=np.float64)
     result = benchmark(
         engine.value_and_grad,
@@ -185,7 +188,7 @@ def test_spps_100q_near_clifford_throughput(benchmark: BenchmarkFixture) -> None
 
 def test_spps_rotation_heavy_throughput(benchmark: BenchmarkFixture) -> None:
     tape, observable, parameters = rotation_heavy_spps_workload()
-    engine = tcp.SPPSEngine(tape, observable)
+    engine = advanced.SPPSEngine(tape, observable)
     result = benchmark(
         engine.value_and_grad,
         parameters,
@@ -199,7 +202,7 @@ def test_spps_rotation_heavy_throughput(benchmark: BenchmarkFixture) -> None:
 
 def test_spps_adaptive_budget(benchmark: BenchmarkFixture) -> None:
     tape, observable, parameters = spps_workload()
-    engine = tcp.SPPSEngine(tape, observable)
+    engine = advanced.SPPSEngine(tape, observable)
     result = benchmark(
         engine.value_and_grad_adaptive,
         parameters,

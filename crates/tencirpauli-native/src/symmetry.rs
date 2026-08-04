@@ -232,6 +232,11 @@ impl NativeU1MvpPlan {
         self.plan.dimension()
     }
 
+    #[getter]
+    fn transition_count(&self) -> usize {
+        self.plan.transition_count()
+    }
+
     fn apply<'py>(
         &self,
         py: Python<'py>,

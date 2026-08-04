@@ -2,6 +2,8 @@
 
 状态：已实现并完成首轮本地检查；2026-08-02 acceptance review 发现多生成元 tapering row-sign blocker，修复并通过独立 projector/property regression 前不得标记为最终验收完成。Phase 1 remediation 和 Rust module split 已完成，不属于本 Spike 的待办。MSRV 1.85 CI 不在本阶段实施。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 这一阶段到底要解决什么
 
 Phase 2 不负责“生成一个具有 Z2 或 U(1) 对称性的 Hamiltonian”。它接收用户已有的 `PauliOperator`，回答两个更实用的问题：这个 Hamiltonian 是否存在可利用的对称性，以及选定某个对称 sector 后，能否把后续矩阵、MVP、求本征值或 VQE 计算放到更小的空间中。

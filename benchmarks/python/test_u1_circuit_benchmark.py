@@ -13,6 +13,7 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 @dataclass(frozen=True)
@@ -33,13 +34,14 @@ WORKLOADS = (
     U1Workload("40q-k3", nqubits=40, particles=3, layers=12),
     U1Workload("40q-k5", nqubits=40, particles=5, layers=4),
 )
+JAX_WORKLOADS = tuple(workload for workload in WORKLOADS if workload.name != "40q-k5")
 
 
 def make_native(workload: U1Workload = WORKLOADS[0]) -> tcp.U1Circuit:
     circuit = tcp.U1Circuit(
         workload.nqubits,
-        k=workload.particles,
-        filled=list(range(workload.particles)),
+        particle_number=workload.particles,
+        occupied=list(range(workload.particles)),
     )
     layer_parameters = [tcp.Parameter(index) for index in range(workload.layers)]
     for layer in range(workload.layers):
@@ -63,8 +65,8 @@ def native_parameters(workload: U1Workload) -> np.ndarray[Any, Any]:
 def _initial_state(workload: U1Workload) -> np.ndarray[Any, Any]:
     circuit = tcp.U1Circuit(
         workload.nqubits,
-        k=workload.particles,
-        filled=list(range(workload.particles)),
+        particle_number=workload.particles,
+        occupied=list(range(workload.particles)),
     )
     return circuit._initial_state.copy()
 
@@ -160,7 +162,7 @@ def _block_until_ready(value: Any) -> Any:
 def test_native_u1_compile(benchmark: BenchmarkFixture, workload: U1Workload) -> None:
     circuit = make_native(workload)
 
-    def compile_cold() -> tcp.U1CircuitPlan:
+    def compile_cold() -> advanced.U1CircuitPlan:
         circuit._native_plan = None
         return circuit.compile()
 
@@ -206,7 +208,7 @@ def test_native_u1_end_to_end(
 
 
 @pytest.mark.performance_large
-@pytest.mark.parametrize("workload", WORKLOADS, ids=lambda item: item.name)
+@pytest.mark.parametrize("workload", JAX_WORKLOADS, ids=lambda item: item.name)
 def test_tensorcircuit_jax_jit_first_call(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
@@ -222,7 +224,7 @@ def test_tensorcircuit_jax_jit_first_call(
 
 
 @pytest.mark.performance_large
-@pytest.mark.parametrize("workload", WORKLOADS, ids=lambda item: item.name)
+@pytest.mark.parametrize("workload", JAX_WORKLOADS, ids=lambda item: item.name)
 def test_tensorcircuit_jax_jit_steady_state(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
@@ -240,7 +242,7 @@ def test_tensorcircuit_jax_jit_steady_state(
 
 
 @pytest.mark.performance_large
-@pytest.mark.parametrize("workload", WORKLOADS, ids=lambda item: item.name)
+@pytest.mark.parametrize("workload", JAX_WORKLOADS, ids=lambda item: item.name)
 def test_tensorcircuit_jax_jit_end_to_end(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:

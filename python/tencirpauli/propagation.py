@@ -310,9 +310,9 @@ class PropagationProfile:
     """Structural and timing metadata from one explicit profile call."""
 
     gate_count: int
-    initial_terms: int
-    final_terms: int
-    peak_terms: int
+    initial_term_count: int
+    final_term_count: int
+    peak_term_count: int
     estimated_peak_bytes: int
     final_weight_counts: Tuple[int, ...]
     kernel_seconds: float
@@ -403,6 +403,8 @@ class PropagationEngine:
         ``parameters`` must contain exactly ``nparameters`` finite values. The
         result is real because the observable is required to be Hermitian.
         """
+        if not self.is_hermitian:
+            raise ValueError("observable must be exactly Hermitian")
         return float(self._native.expectation(self._parameters(parameters)))
 
     def value_and_grad(
@@ -418,6 +420,8 @@ class PropagationEngine:
         is a read-only contiguous ``float64`` vector. The observable must be
         Hermitian.
         """
+        if not self.is_hermitian:
+            raise ValueError("observable must be exactly Hermitian")
         if checkpoint_interval is not None and (
             not isinstance(checkpoint_interval, int)
             or isinstance(checkpoint_interval, bool)
@@ -453,14 +457,16 @@ class PropagationEngine:
         The profile reports gate count, initial/final/peak term counts, a
         best-effort peak-byte estimate, final weight counts, and kernel time.
         """
+        if not self.is_hermitian:
+            raise ValueError("observable must be exactly Hermitian")
         value, initial, final, peak, estimated, weights, seconds = self._native.profile(
             self._parameters(parameters)
         )
         profile = PropagationProfile(
             gate_count=int(self._native.gate_count),
-            initial_terms=int(initial),
-            final_terms=int(final),
-            peak_terms=int(peak),
+            initial_term_count=int(initial),
+            final_term_count=int(final),
+            peak_term_count=int(peak),
             estimated_peak_bytes=int(estimated),
             final_weight_counts=tuple(int(weight) for weight in weights),
             kernel_seconds=float(seconds),
@@ -529,6 +535,10 @@ class PropagationBatch:
         self.nparameters = int(self._native.nparameters)
         self.observable_count = int(self._native.observable_count)
         self.max_weight = max_weight
+        self._all_observables_hermitian = all(
+            observable.is_hermitian(tolerance=0.0)
+            for observable in normalized_observables
+        )
 
     def _parameters(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
@@ -543,6 +553,8 @@ class PropagationBatch:
         The result is a read-only float64 vector with shape
         ``(observable_count,)`` and deterministic observable order.
         """
+        if not self._all_observables_hermitian:
+            raise ValueError("all observables must be exactly Hermitian")
         result = np.asarray(
             self._native.expectations(self._parameters(parameters)), dtype=np.float64
         )
@@ -562,6 +574,8 @@ class PropagationBatch:
         ``gradients`` has shape ``(observable_count, nparameters)``. Support
         decisions and truncation branches are those of the forward execution.
         """
+        if not self._all_observables_hermitian:
+            raise ValueError("all observables must be exactly Hermitian")
         if checkpoint_interval is not None and (
             not isinstance(checkpoint_interval, int)
             or isinstance(checkpoint_interval, bool)

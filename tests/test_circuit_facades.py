@@ -114,7 +114,7 @@ def test_propagation_compile_caches_retain_key_objects() -> None:
 
 def test_u1_facade_expectation_and_canonical_diagonal_qir() -> None:
     parameter = tcp.Parameter(0)
-    circuit = tcp.U1Circuit(2, k=1, filled=[0])
+    circuit = tcp.U1Circuit(2, particle_number=1, occupied=[0])
     circuit.iswap(0, 1, theta=parameter)
     circuit.diagonal(0, diagonal=np.exp(1j * np.arange(2)))
     observable = tcp.PauliOperator.from_terms(2, [("ZI", 1.0), ("IZ", -0.25)])
@@ -130,7 +130,7 @@ def test_u1_facade_expectation_and_canonical_diagonal_qir() -> None:
     assert "diagonal" in diagonal_items[0] and "diag" not in diagonal_items[0]
 
     restored = tcp.U1Circuit.from_qir(
-        circuit.to_qir(), {"nqubits": 2, "k": 1, "filled": [0]}
+        circuit.to_qir(), {"nqubits": 2, "particle_number": 1, "occupied": [0]}
     )
     np.testing.assert_allclose(restored.state([0.21]), circuit.state([0.21]))
 

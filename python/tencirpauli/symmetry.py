@@ -13,6 +13,7 @@ from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     COOMatrix,
     CSRMatrix,
+    _check_allocation,
     _effective_max_bytes,
     _validate_max_bytes,
 )
@@ -142,8 +143,12 @@ class U1Sector:
                 ones += 1
         return rank
 
-    def unrank(self, index: int) -> int | Tuple[int, ...]:
-        """Return the computational-basis integer at a restricted index."""
+    def unrank(self, index: int) -> Tuple[int, ...]:
+        """Return the occupation bits at a restricted index.
+
+        The tuple is always ordered from qubit zero to qubit ``nqubits - 1``;
+        unlike the historical API, its type does not depend on system width.
+        """
         if (
             not isinstance(index, int)
             or isinstance(index, bool)
@@ -159,29 +164,36 @@ class U1Sector:
                 remaining_index -= zero_count
                 value |= 1 << (self.nqubits - 1 - position)
                 remaining_ones -= 1
-        if self.nqubits <= 64:
-            return value
         return tuple(
             (value >> (self.nqubits - 1 - position)) & 1
             for position in range(self.nqubits)
         )
 
-    def basis_words(
+    def basis_states(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> np.ndarray[Any, Any]:
-        """Return a read-only packed basis in ascending computational order."""
+        """Return read-only ``uint8`` basis rows in restricted-sector order."""
+        _validate_max_bytes(max_bytes)
+        _check_allocation(
+            self.dimension * self.nqubits,
+            max_bytes,
+            "U1 basis states",
+        )
+        result = np.asarray(
+            [self.unrank(index) for index in range(self.dimension)], dtype=np.uint8
+        ).reshape((self.dimension, self.nqubits))
+        result.flags.writeable = False
+        return cast(np.ndarray[Any, Any], result)
+
+    def basis_words_packed(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> np.ndarray[Any, Any]:
+        """Return the advanced packed ``uint64`` U(1) basis representation."""
         _validate_max_bytes(max_bytes)
         dimension, word_count, values = _native.u1_basis_words(
             self.nqubits, self.particle_number, _effective_max_bytes(max_bytes)
         )
-        packed = np.asarray(values, dtype=np.uint64)
-        if self.nqubits <= 64:
-            if self.nqubits == 0:
-                result = np.zeros(dimension, dtype=np.uint64)
-            else:
-                result = packed.reshape((dimension,))
-        else:
-            result = packed.reshape((dimension, word_count))
+        result = np.asarray(values, dtype=np.uint64).reshape((dimension, word_count))
         result.flags.writeable = False
         return cast(np.ndarray[Any, Any], result)
 
@@ -192,11 +204,15 @@ class U1RestrictedOperator:
 
     sector: U1Sector
     dimension: int
+    term_count: int
     _native_operator: Any
 
-    def __init__(self, sector: U1Sector, native_operator: Any) -> None:
+    def __init__(
+        self, sector: U1Sector, native_operator: Any, term_count: int = 0
+    ) -> None:
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", int(native_operator.dimension))
+        object.__setattr__(self, "term_count", int(term_count))
         object.__setattr__(self, "_native_operator", native_operator)
 
     def apply(
@@ -226,7 +242,9 @@ class U1RestrictedOperator:
         """Build a reusable restricted matrix-free plan."""
         _validate_max_bytes(max_bytes)
         return U1MvpPlan(
-            self.sector, self._native_operator.mvp_plan(_effective_max_bytes(max_bytes))
+            self.sector,
+            self._native_operator.mvp_plan(_effective_max_bytes(max_bytes)),
+            self.term_count,
         )
 
     def dense(
@@ -273,11 +291,25 @@ class U1MvpPlan:
 
     sector: U1Sector
     dimension: int
+    term_count: int
+    transition_count: int
+    estimated_bytes: int
+    basis_ordering: str
+    target: str
     _native_plan: Any
 
-    def __init__(self, sector: U1Sector, native_plan: Any) -> None:
+    def __init__(self, sector: U1Sector, native_plan: Any, term_count: int = 0) -> None:
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", int(native_plan.dimension))
+        object.__setattr__(self, "term_count", int(term_count))
+        object.__setattr__(self, "transition_count", int(native_plan.transition_count))
+        object.__setattr__(
+            self,
+            "estimated_bytes",
+            int((self.dimension + 1) * 8 + self.transition_count * 32),
+        )
+        object.__setattr__(self, "basis_ordering", "qubit0_msb_matrix")
+        object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_native_plan", native_plan)
 
     def apply(
@@ -302,6 +334,9 @@ class U1MvpPlan:
                 dtype=np.complex128,
             ),
         )
+
+    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
+        return self.apply(state)
 
 
 def _validate_sector_value(value: int) -> int:
@@ -331,6 +366,8 @@ def _restrict_u1(
     operator: PauliOperator,
     sector: U1Sector,
     max_bytes: Optional[int],
+    *,
+    term_count: Optional[int] = None,
 ) -> U1RestrictedOperator:
     native_operator = _native.pauli_restrict_u1(
         operator.nqubits,
@@ -338,4 +375,8 @@ def _restrict_u1(
         sector.particle_number,
         _effective_max_bytes(max_bytes),
     )
-    return U1RestrictedOperator(sector, native_operator)
+    return U1RestrictedOperator(
+        sector,
+        native_operator,
+        operator.term_count if term_count is None else term_count,
+    )

@@ -536,6 +536,10 @@ impl U1MvpPlan {
         self.indptr.len() - 1
     }
 
+    pub fn transition_count(&self) -> usize {
+        self.values.len()
+    }
+
     pub fn apply(
         &self,
         state: &[Complex64],

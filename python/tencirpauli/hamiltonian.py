@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Literal, Optional, Protocol, Sequence, Tuple, Union, cast
 
 import numpy as np
 
@@ -19,6 +19,35 @@ DEFAULT_MAX_BYTES = 16 * 1024 * 1024 * 1024
 # OperatorSpace and therefore must not advertise a binary qubit basis.
 MIXED_RADIX_BASIS_ORDERING = "operator_space_axis0_msb_mixed_radix"
 DIRECT_WEYL_BASIS_ORDERING = "qudit0_msb_matrix"
+_PLAN_FACTORY_TOKEN = object()
+
+
+class MVPPlan(Protocol):
+    """Minimal common protocol for public matrix-free operator plans."""
+
+    @property
+    def dimension(self) -> int: ...
+
+    @property
+    def term_count(self) -> int: ...
+
+    @property
+    def estimated_bytes(self) -> int: ...
+
+    @property
+    def basis_ordering(self) -> str: ...
+
+    @property
+    def target(self) -> Literal["native_mvp", "backend_mvp"]: ...
+
+    def apply(
+        self,
+        state: Sequence[complex],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]: ...
+
+    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -136,7 +165,10 @@ class NativeMVPPlan:
         boson_boundary: Optional[str] = None,
         qudit_dimension: Optional[int] = None,
         weyl_convention: Optional[str] = None,
+        _factory_token: object = None,
     ) -> None:
+        if _factory_token is not _PLAN_FACTORY_TOKEN:
+            raise TypeError("NativeMVPPlan instances must be created by a plan factory")
         dimensions = tuple(local_dimensions)
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
             raise ValueError("nqubits must be a non-negative integer")
@@ -206,6 +238,7 @@ class NativeMVPPlan:
     def apply(
         self,
         state: Sequence[complex],
+        *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the precompiled Rust plan without rebuilding its structure."""
@@ -220,9 +253,13 @@ class NativeMVPPlan:
         contiguous = np.ascontiguousarray(values)
         return cast(
             np.ndarray[Any, Any],
-            np.asarray(
-                self._native_plan.apply(contiguous, _effective_max_bytes(max_bytes)),
-                dtype=np.complex128,
+            np.ascontiguousarray(
+                np.asarray(
+                    self._native_plan.apply(
+                        contiguous, _effective_max_bytes(max_bytes)
+                    ),
+                    dtype=np.complex128,
+                )
             ),
         )
 
@@ -272,10 +309,15 @@ class BackendMVPPlan:
     boson_cutoffs: Tuple[Tuple[int, int], ...] = ()
     boson_boundary: Optional[str] = None
     weyl_convention: Optional[str] = None
+    _factory_token: object = field(default=None, repr=False, compare=False)
     _dimension_value: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Normalize plan buffers and freeze them after construction."""
+        if self._factory_token is not _PLAN_FACTORY_TOKEN:
+            raise TypeError(
+                "BackendMVPPlan instances must be created by a plan factory"
+            )
         for name, dtype in (
             ("x_words", np.uint64),
             ("z_words", np.uint64),
@@ -375,6 +417,7 @@ class BackendMVPPlan:
     def apply(
         self,
         state: Sequence[complex],
+        *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the plan using deterministic array operations.
@@ -421,7 +464,9 @@ class BackendMVPPlan:
                 elif code == 3:
                     phase *= np.where(bit == 1, -1.0, 1.0)
             output[rows] += coefficient * phase * values
-        return output
+        return cast(
+            np.ndarray[Any, Any], np.ascontiguousarray(output, dtype=np.complex128)
+        )
 
     @property
     def dimension(self) -> int:
@@ -442,17 +487,12 @@ class BackendMVPPlan:
     ) -> np.ndarray[Any, Any]:
         dimension = self.dimension
         values = np.asarray(state, dtype=np.complex128)
-        rank_shape = tuple(self.local_dimensions)
-        if values.ndim == 1 and values.shape == (dimension,):
-            tensor = values.reshape(rank_shape)
-            flat = True
-        elif values.shape == rank_shape:
-            tensor = values
-            flat = False
-        else:
+        if values.ndim != 1 or values.shape != (dimension,):
             raise ValueError(
-                f"state must have shape ({dimension},) or {rank_shape}, got {values.shape}"
+                f"state must have shape ({dimension},), got {values.shape}"
             )
+        rank_shape = tuple(self.local_dimensions)
+        tensor = values.reshape(rank_shape)
         _check_allocation(dimension * 16 * 2, max_bytes, "backend MVP working memory")
         omega = np.exp(2j * np.pi / self.qudit_dimension)
         output = np.zeros_like(tensor, dtype=np.complex128)
@@ -486,8 +526,10 @@ class BackendMVPPlan:
                         axis=axis,
                     )
             output += coefficient * term
-        result = output.reshape(-1) if flat else output
-        return cast(np.ndarray[Any, Any], np.asarray(result, dtype=np.complex128))
+        return cast(
+            np.ndarray[Any, Any],
+            np.ascontiguousarray(output.reshape(-1), dtype=np.complex128),
+        )
 
 
 CompileResult = Union[

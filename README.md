@@ -4,7 +4,7 @@
   <p><strong>Fast, Rust-native Pauli algebra and quantum-circuit primitives for TensorCircuit.</strong></p>
   <p>
     <a href="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml"><img src="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
-    <a href="https://tensorcircuit.github.io/TenCirPauli/">Documentation</a>
+    <a href="https://tensorcircuit.github.io/TenCirPauli/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/v/tencirpauli.svg" alt="PyPI version"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/pyversions/tencirpauli.svg" alt="Python versions"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/dm/tencirpauli.svg" alt="PyPI downloads"></a>
@@ -43,7 +43,7 @@ hamiltonian = tcp.PauliOperator.from_terms(
     (("XX", 0.5), ("ZI", -1.25j)),
 )
 
-matrix = hamiltonian.dense()
+matrix = hamiltonian.compile(target="dense")
 print(matrix.shape)  # (4, 4)
 ```
 
@@ -92,12 +92,12 @@ External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use q
 | Fixed-particle-number circuit | `U1Circuit` |
 | Majorana algebra and fermion mappings | `MajoranaOperator`, `FermionQubitMapping` |
 | Additive-charge sectors | `AdditiveCharge`, `ChargeSector`, `.restrict_charge()` |
-| Deterministic Pauli propagation | `PropagationCircuit` (low-level `GateTape`/`PropagationEngine` remains available) |
+| Deterministic Pauli propagation | `PropagationCircuit` (advanced `GateTape`/`PropagationEngine` remain available) |
 | Stochastic Pauli-path estimation | `SPPSCircuit` (low-level `SPPSEngine` remains available) |
 
 ## Structured operator algebra
 
-Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `OperatorSpace`, and `OperatorBuilder` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention.
+Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
 
 Phase 7.5 adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the frozen [`phase-7.5-spec.md`](docs/vibe/phase-7.5-spec.md).
 
@@ -113,7 +113,7 @@ import tencirpauli as tcp
 p0 = tcp.Parameter(0)
 p1 = tcp.Parameter(1)
 
-circuit = tcp.U1Circuit(nqubits=4, k=2, filled=[0, 1])
+circuit = tcp.U1Circuit(nqubits=4, particle_number=2, occupied=[0, 1])
 circuit.iswap(0, 1, theta=p0)
 circuit.rzz(1, 2, theta=2.0 * p1 + 0.1)
 
@@ -170,13 +170,15 @@ The plan structure is static; coefficients may be supplied as backend tensors wh
 The low-level API remains available when an Agent needs explicit tape or engine control:
 
 ```python
-tape = tcp.GateTape(3)
+from tencirpauli import advanced
+
+tape = advanced.GateTape(3)
 tape.h(0)
 tape.cnot(0, 1)
 tape.rz(1, parameter=0)
 
 observable = tcp.PauliOperator.from_terms(3, (("ZII", 1.0),))
-engine = tcp.PropagationEngine(tape, observable, max_weight=3)
+engine = advanced.PropagationEngine(tape, observable, max_weight=3)
 result = engine.value_and_grad([0.125])
 ```
 
@@ -188,7 +190,7 @@ The Phase Alpha facade adds the corresponding value-only form `circuit.expectati
 
 ## U(1) semantics
 
-`U1Sector` and `U1Circuit` use TensorCircuit computational-basis integer ordering. `U1Circuit` stores and executes only the fixed-Hamming-weight sector; `to_dense()` and `probability_full()` are explicit full-space terminals. The native restricted implementation supports arbitrary-width packed occupation limbs, while full-space materialization remains subject to the public `DEFAULT_MAX_BYTES` guard.
+`U1Sector` and `U1Circuit` use TensorCircuit computational-basis integer ordering. `U1Circuit` stores and executes only the fixed-Hamming-weight sector; `state()`/`probability()` are restricted-space terminals and `state_full()`/`probability_full()` are explicit full-space terminals. The native restricted implementation supports arbitrary-width packed occupation limbs, while full-space materialization remains subject to the public `DEFAULT_MAX_BYTES` guard.
 
 ## TensorCircuit conversion
 

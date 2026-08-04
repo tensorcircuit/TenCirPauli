@@ -11,6 +11,7 @@ from propagation_reference import product_expectation, propagate_dense
 from reference import codes_to_dense
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 def _dense_expectation(
@@ -41,14 +42,16 @@ def test_local_vjp_table_covers_all_rotation_axes_and_pauli_words() -> None:
         for word in product(range(4), repeat=2)
     ]
     for name, nqubits, word, operation in cases:
-        tape = tcp.GateTape(nqubits)
+        tape = advanced.GateTape(nqubits)
         if nqubits == 1:
             getattr(tape, name)(0, parameter=0)
         else:
             getattr(tape, name)(0, 1, parameter=0)
         observable = tcp.PauliOperator(nqubits, [(word, 1.0)])
         initial_state = tcp.ProductBlochState(state[:nqubits])
-        engine = tcp.PropagationEngine(tape, observable, initial_state=initial_state)
+        engine = advanced.PropagationEngine(
+            tape, observable, initial_state=initial_state
+        )
         result = engine.value_and_grad([theta])
         h = 1.0e-6
         plus_operation = (*operation[:-1], theta + h)
@@ -67,10 +70,10 @@ def test_deleted_support_and_aggregate_cancellation_do_not_enter_reverse() -> No
     collision = np.zeros((4, 4), dtype=np.float64)
     collision[3, 1] = 1.0
     collision[3, 2] = -1.0
-    collision_tape = tcp.GateTape(1)
+    collision_tape = advanced.GateTape(1)
     collision_tape.rx(0, parameter=0)
     collision_tape.ptm((0,), collision)
-    collision_engine = tcp.PropagationEngine(
+    collision_engine = advanced.PropagationEngine(
         collision_tape,
         tcp.PauliOperator(1, [((1,), 1.0), ((2,), 1.0)]),
     )
@@ -78,9 +81,9 @@ def test_deleted_support_and_aggregate_cancellation_do_not_enter_reverse() -> No
     assert collision_result.value == 0.0
     assert collision_result.gradient[0] == 0.0
 
-    projection_tape = tcp.GateTape(2)
+    projection_tape = advanced.GateTape(2)
     projection_tape.rxx(0, 1, parameter=0)
-    projection_engine = tcp.PropagationEngine(
+    projection_engine = advanced.PropagationEngine(
         projection_tape,
         tcp.PauliOperator(2, [((3, 0), 1.0)]),
         initial_state=tcp.ProductBlochState([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]),
@@ -92,12 +95,12 @@ def test_deleted_support_and_aggregate_cancellation_do_not_enter_reverse() -> No
 
 
 def test_deterministic_gradient_concurrent_calls_are_isolated() -> None:
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.h(0)
     tape.cnot(0, 1)
     tape.rzz(0, 1, parameter=0)
     tape.ry(0, parameter=1)
-    engine = tcp.PropagationEngine(
+    engine = advanced.PropagationEngine(
         tape,
         tcp.PauliOperator(2, [((1, 2), 0.8), ((3, 0), -0.3)]),
     )
@@ -119,10 +122,10 @@ def test_deterministic_gradient_concurrent_calls_are_isolated() -> None:
 def test_local_rotation_gradients_match_independent_dense_difference() -> None:
     for name, code in (("rx", 3), ("ry", 1), ("rz", 1)):
         theta = 0.371
-        tape = tcp.GateTape(1)
+        tape = advanced.GateTape(1)
         getattr(tape, name)(0, parameter=0)
         observable = tcp.PauliOperator(1, [((code,), 1.0)])
-        engine = tcp.PropagationEngine(tape, observable)
+        engine = advanced.PropagationEngine(tape, observable)
         result = engine.value_and_grad([theta])
         operations = ((name, 0, theta),)
         h = 1.0e-6
@@ -146,13 +149,13 @@ def test_local_rotation_gradients_match_independent_dense_difference() -> None:
 
 
 def test_shared_slot_and_checkpoint_replay_are_identical() -> None:
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.ry(0, parameter=0)
     tape.cnot(0, 1)
     tape.rz(1, parameter=0)
     tape.h(0)
     observable = tcp.PauliOperator(2, [((1, 0), 0.7), ((0, 3), -0.2)])
-    engine = tcp.PropagationEngine(tape, observable, max_weight=2)
+    engine = advanced.PropagationEngine(tape, observable, max_weight=2)
     parameter = [0.37]
     results = [
         engine.value_and_grad(parameter, checkpoint_interval=interval)
@@ -166,10 +169,10 @@ def test_shared_slot_and_checkpoint_replay_are_identical() -> None:
 
 
 def test_frozen_support_drops_zero_local_branches() -> None:
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.ry(0, parameter=0)
-    x_engine = tcp.PropagationEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
-    z_engine = tcp.PropagationEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
+    x_engine = advanced.PropagationEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
+    z_engine = advanced.PropagationEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
     # At zero the sine edge is not part of the deterministic support.  The
     # full dense derivative is nonzero for X, but the frozen contract returns
     # only the executed cosine edge.
@@ -180,10 +183,10 @@ def test_frozen_support_drops_zero_local_branches() -> None:
 
 def test_static_ptm_transpose_path_and_projection_match_forward() -> None:
     matrix = np.diag([1.0, -1.0, 1.0, 1.0]).astype(np.float64)
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.ptm((0,), matrix)
     tape.rx(0, parameter=0)
-    engine = tcp.PropagationEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
+    engine = advanced.PropagationEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
     result = engine.value_and_grad([0.23])
     assert result.value == pytest.approx(engine.expectation([0.23]), abs=1e-12)
     h = 1.0e-6
@@ -194,13 +197,13 @@ def test_static_ptm_transpose_path_and_projection_match_forward() -> None:
 
 
 def test_gradient_boundaries_fail_explicitly() -> None:
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.rx(0, parameter=0)
     with pytest.raises(ValueError, match="checkpoint_interval"):
-        tcp.PropagationEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)])).value_and_grad(
-            [0.2], checkpoint_interval=0
-        )
+        advanced.PropagationEngine(
+            tape, tcp.PauliOperator(1, [((3,), 1.0)])
+        ).value_and_grad([0.2], checkpoint_interval=0)
     with pytest.raises(ValueError, match="Hermitian"):
-        tcp.PropagationEngine(
-            tcp.GateTape(1), tcp.PauliOperator(1, [((1,), 1.0j)])
+        advanced.PropagationEngine(
+            advanced.GateTape(1), tcp.PauliOperator(1, [((1,), 1.0j)])
         ).value_and_grad([])

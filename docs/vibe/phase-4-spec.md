@@ -2,6 +2,8 @@
 
 状态：可执行。Phase 1–3 已完成；本文冻结 2026-08-02 owner 讨论确认的 Phase 4 范围、两类梯度合同、公开接口、随机性语义、性能要求和验收边界。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 目标与完成定义
 
 Phase 4 在 Phase 3 的 `GateTape`、`PropagationEngine`、packed Pauli key、product-state expectation 和 parameter-slot 基础上交付两个相互独立的 Rust-native value-and-gradient 路径。

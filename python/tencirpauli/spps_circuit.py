@@ -15,7 +15,7 @@ from .propagation import (
     ProductBlochState,
     ZeroState,
 )
-from .propagation_circuit import _USE_DEFAULT_MAX_BYTES, PropagationCircuit
+from .propagation_circuit import _USE_DEFAULT_MAX_BYTES, _CircuitBuilder
 from .spps import SPPSEngine, SPPSEstimate, SPPSValueEstimate
 
 
@@ -29,6 +29,15 @@ class SPPSCircuitPlan:
     when returning gradients with respect to the circuit's public parameters.
     """
 
+    __slots__ = (
+        "_dynamic_angles",
+        "_engine",
+        "_locked",
+        "nparameters",
+        "nqubits",
+        "smoothing",
+    )
+
     def __init__(
         self,
         engine: SPPSEngine,
@@ -40,6 +49,12 @@ class SPPSCircuitPlan:
         self.nqubits = engine.nqubits
         self.nparameters = nparameters
         self.smoothing = engine.smoothing
+        self._locked = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_locked", False):
+            raise AttributeError("SPPSCircuitPlan is immutable")
+        object.__setattr__(self, name, value)
 
     def _native_parameters(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
@@ -70,7 +85,7 @@ class SPPSCircuitPlan:
 
     def expectation(
         self,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]],
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
         *,
         samples_per_term: int,
         seed: int,
@@ -83,7 +98,7 @@ class SPPSCircuitPlan:
 
     def value_and_grad(
         self,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]],
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
         *,
         samples_per_term: int,
         seed: int,
@@ -99,7 +114,7 @@ class SPPSCircuitPlan:
 
     def value_and_grad_adaptive(
         self,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]],
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
         *,
         initial_samples_per_term: int,
         max_samples_per_term: int,
@@ -120,7 +135,7 @@ class SPPSCircuitPlan:
         return replace(result, gradient=gradient)
 
 
-class SPPSCircuit(PropagationCircuit):
+class SPPSCircuit(_CircuitBuilder):
     """TensorCircuit-style builder for stochastic Pauli-path estimation.
 
     Gate construction follows :class:`PropagationCircuit`; execution requires
@@ -134,6 +149,8 @@ class SPPSCircuit(PropagationCircuit):
         >>> plan.nqubits
         1
     """
+
+    _stochastic_facade = True
 
     def compile(  # type: ignore[override]
         self,

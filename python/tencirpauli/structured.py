@@ -32,8 +32,9 @@ from typing import (
 import numpy as np
 
 from . import _native
-from ._validation import validate_nonnegative_int
+from ._validation import normalize_pauli_code, validate_nonnegative_int
 from .hamiltonian import (
+    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
     DIRECT_WEYL_BASIS_ORDERING,
     MIXED_RADIX_BASIS_ORDERING,
@@ -899,6 +900,9 @@ class _StructuredOperator:
         """Return the number of nonzero canonical terms."""
         return len(self._terms)
 
+    def __len__(self) -> int:
+        return self.term_count
+
     def _check_other(self, other: object) -> "_StructuredOperator":
         if not isinstance(other, _StructuredOperator):
             raise TypeError(f"expected structured operator, got {type(other).__name__}")
@@ -1292,7 +1296,7 @@ class _StructuredOperator:
         self,
         target: str,
         *,
-        fermion_mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
+        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
@@ -1301,15 +1305,13 @@ class _StructuredOperator:
             raise ValueError(
                 "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
             )
-        mapped = self.map_fermions(fermion_mapping, max_bytes=max_bytes)
+        mapped = self.map_fermions(mapping, max_bytes=max_bytes)
         if isinstance(mapped, PauliOperator):
             result: CompileResult = mapped.compile(target, max_bytes=max_bytes)
             if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
                 return _with_plan_metadata(
                     result,
-                    mapping=(
-                        _mapping_name(fermion_mapping) if self.space.fermions else None
-                    ),
+                    mapping=(_mapping_name(mapping) if self.space.fermions else None),
                     source_term_count=len(self._terms),
                 )
             return result
@@ -1341,7 +1343,7 @@ class _StructuredOperator:
             target,
             normalized_cutoffs,
             max_bytes,
-            mapping=(_mapping_name(fermion_mapping) if self.space.fermions else None),
+            mapping=(_mapping_name(mapping) if self.space.fermions else None),
         )
 
     def __add__(self, other: object) -> "_StructuredOperator":
@@ -1414,6 +1416,7 @@ def _with_plan_metadata(
             boson_boundary=plan.boson_boundary,
             qudit_dimension=plan.qudit_dimension,
             weyl_convention=plan.weyl_convention,
+            _factory_token=_PLAN_FACTORY_TOKEN,
         )
     return replace(
         plan,
@@ -1425,9 +1428,9 @@ def _with_plan_metadata(
 def _mapping_name(mapping: Union[str, "FermionQubitMapping"]) -> str:
     if isinstance(mapping, str):
         return mapping
-    name = mapping.mapping_name
+    name = mapping.name
     if not isinstance(name, str):
-        raise TypeError("mapping plan has an invalid mapping_name")
+        raise TypeError("mapping plan has an invalid name")
     return name
 
 
@@ -2403,14 +2406,14 @@ class HybridOperator(_StructuredOperator):
         self,
         target: str,
         *,
-        fermion_mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
+        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Compile a hybrid operator after optional Jordan-Wigner mapping."""
         return super().compile(
             target,
-            fermion_mapping=fermion_mapping,
+            mapping=mapping,
             boson_cutoffs=boson_cutoffs,
             max_bytes=max_bytes,
         )
@@ -2503,11 +2506,7 @@ class OperatorBuilder:
                         raise ValueError("Pauli code must be one of I, X, Y, Z")
                     code_value = _IDENTITY_CODES[code]
                 else:
-                    code_value = _nonnegative_int(code, "Pauli code")
-                if code_value not in range(4):
-                    raise ValueError(
-                        "Pauli code must be an integer in 0..3 (inclusive)"
-                    )
+                    code_value = normalize_pauli_code(code)
                 qubit_index = _positive_mode(index, self.space.qubits, "qubit")
                 current_code = qcodes[qubit_index]
                 qcodes[qubit_index], local_phase = _PAULI_PRODUCT[current_code][
@@ -2604,6 +2603,7 @@ def _compile_finite(
             boson_boundary="projected_fock" if cutoffs else None,
             qudit_dimension=qudit_dimension,
             weyl_convention="X^a Z^b" if qudit_dimension is not None else None,
+            _factory_token=_PLAN_FACTORY_TOKEN,
         )
     if target == "dense":
         _check_allocation(
@@ -2712,6 +2712,7 @@ def _direct_weyl_backend_plan(
         source_term_count=term_count,
         plan_term_count=term_count,
         weyl_convention="X^a Z^b",
+        _factory_token=_PLAN_FACTORY_TOKEN,
     )
 
 

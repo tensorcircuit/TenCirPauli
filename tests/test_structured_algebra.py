@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
-from tencirpauli import _native
+from tencirpauli import _native, advanced
 from tencirpauli.structured import _jordan_wigner_word
 
 
@@ -936,8 +936,8 @@ def test_plan_metadata_and_checked_weyl_dimension() -> None:
         tcp.QuditWeylOperator.from_terms(3, [(((0, 1, 0),), 1.0)], n_sites=50).compile(
             "backend_mvp"
         )
-    with pytest.raises(ValueError, match="exponents"):
-        tcp.BackendMVPPlan(
+    with pytest.raises(TypeError, match="factory"):
+        advanced.BackendMVPPlan(
             2,
             0,
             1,
@@ -952,8 +952,8 @@ def test_plan_metadata_and_checked_weyl_dimension() -> None:
             required_operations=("broadcast_phase", "cyclic_shift", "multiply", "add"),
             weyl_convention="X^a Z^b",
         )
-    with pytest.raises(ValueError, match="local dimensions"):
-        tcp.BackendMVPPlan(
+    with pytest.raises(TypeError, match="factory"):
+        advanced.BackendMVPPlan(
             2,
             0,
             0,

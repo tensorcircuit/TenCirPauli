@@ -223,6 +223,9 @@ def u1_circuit_from_tensorcircuit(
             raise ValueError("parameter_order must exactly cover direct QIR symbols")
     params = dict(circuit_params)
     params["nqubits"] = nqubits
+    params["particle_number"] = params.pop("k", None)
+    params["occupied"] = params.pop("filled", None)
+    params["initial_state"] = params.pop("inputs", None)
     params["parameter_order"] = ordered_symbols
     converted = U1Circuit.from_qir(qir, params, max_bytes=max_bytes)
     return TensorCircuitU1Conversion(converted, ordered_symbols)
@@ -232,6 +235,7 @@ def backend_mvp(
     plan: BackendMVPPlan,
     coefficients: Optional[Sequence[complex]] = None,
     backend: Any = None,
+    *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> Any:
     """Return a TensorCircuit-backend MVP callable for a pure-array plan.

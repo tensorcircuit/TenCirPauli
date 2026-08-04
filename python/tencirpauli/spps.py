@@ -86,6 +86,8 @@ class SPPSEngine:
             raise TypeError("observable must be a PauliOperator")
         if observable.nqubits != tape.nqubits:
             raise ValueError("tape and observable must use the same nqubits")
+        if not observable.is_hermitian(tolerance=0.0):
+            raise ValueError("SPPS observables must be exactly Hermitian")
         if isinstance(smoothing, bool):
             raise TypeError("smoothing must be a finite positive float")
         try:
@@ -109,7 +111,7 @@ class SPPSEngine:
         self.nqubits = int(self._native.nqubits)
         self.nparameters = int(self._native.nparameters)
         self.gate_count = int(self._native.gate_count)
-        self.observable_terms = int(self._native.observable_terms)
+        self.term_count = int(self._native.observable_terms)
         self.smoothing = float(self._native.smoothing)
 
     def _parameters(

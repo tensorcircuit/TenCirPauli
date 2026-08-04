@@ -2,6 +2,8 @@
 
 状态：deferred research proposal，尚未冻结，也不是Phase 6完成后的默认下一里程碑，禁止据此直接启动完整实现或标记完成。Owner认为本阶段需要新的数值线性代数、small eigensolver、Bessel和误差控制选择，与当前Pauli/U1专用核心的实现风格和依赖边界存在明显差异；只有出现明确matrix-free evolution workload、matched baseline和dependency/accuracy spike后才重新评估。若未来恢复，本阶段不属于U1-specific circuit能力：算法接受已经存在于Rust中的matrix-free Hamiltonian handle，对full-space `MvpPlan`、restricted `U1MvpPlan`和未来兼容native operators使用同一核心。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. Goal and scope
 
 Phase 6.5 实现完整留在Rust中的exponential action：

@@ -296,6 +296,9 @@ class MajoranaOperator:
         """Return the number of nonzero canonical terms."""
         return len(self._terms)
 
+    def __len__(self) -> int:
+        return self.term_count
+
     def _check_other(self, other: object) -> "MajoranaOperator":
         if not isinstance(other, MajoranaOperator):
             raise TypeError(f"expected MajoranaOperator, got {type(other).__name__}")
@@ -493,7 +496,7 @@ class MajoranaOperator:
         ):
             return _with_plan_metadata(
                 result,
-                mapping=plan.mapping_name,
+                mapping=plan.name,
                 source_term_count=self.term_count,
             )
         return result

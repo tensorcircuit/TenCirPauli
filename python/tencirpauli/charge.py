@@ -789,6 +789,7 @@ class ChargeMvpPlan:
         "dimension",
         "estimated_bytes",
         "rows",
+        "target",
         "term_count",
         "transition_count",
     )
@@ -800,6 +801,7 @@ class ChargeMvpPlan:
     coefficients: np.ndarray[Any, Any]
     estimated_bytes: int
     basis_ordering: str
+    target: str
     _locked: bool
 
     def __init__(
@@ -827,6 +829,7 @@ class ChargeMvpPlan:
             int(row_values.nbytes + column_values.nbytes + coefficient_values.nbytes),
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
+        object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:

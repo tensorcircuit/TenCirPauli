@@ -2,6 +2,8 @@
 
 状态：设计已冻结，可直接交付实现。Phase 6先建立backend-neutral logical circuit IR，但只实现fixed-particle-number U1 execution、observable evaluation和精确native adjoint gradient，不实现通用full-state simulator。Phase 6.5的MVP evolution proposal已搁置，不是本阶段完成后的自动下一里程碑。P0–P4的语义、范围、接口、错误行为和acceptance gates均以本文为准；实现中发现需要改变公开语义时必须先更新本文，不得自行留下隐式分叉。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 目标与边界
 
 Phase 6先建立一个与execution mode无关的logical circuit层，统一typed gates、parameter slots、parameter-expression DAG、线路变换和Python/Rust transport serialization。该层不模拟量子态，也不假设full-state `2**n` indexing、U1 sector、combinatorial rank或packed occupation representation；它只是未来不同circuit execution backend都可消费的语义输入。

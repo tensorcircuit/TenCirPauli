@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence, Tuple, Unio
 import numpy as np
 
 from . import _native
-from ._validation import validate_nonnegative_int
+from ._validation import normalize_pauli_code, validate_nonnegative_int
 from .hamiltonian import (
+    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
     _check_allocation,
     _effective_max_bytes,
@@ -119,14 +120,7 @@ class PauliWord:
         The input order is public qubit order, with qubit zero first. The
         returned word stores the equivalent packed symplectic representation.
         """
-        normalized = tuple(codes)
-        if any(
-            not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
-            for code in normalized
-        ):
-            raise ValueError(
-                f"Pauli codes must be integers in 0..3 (inclusive), got {normalized!r}"
-            )
+        normalized = tuple(normalize_pauli_code(code) for code in codes)
         x_words, z_words = _native.pauli_from_codes(len(normalized), normalized)
         return cls(len(normalized), tuple(x_words), tuple(z_words))
 
@@ -152,13 +146,14 @@ class PauliWord:
         codes ``0..3``. Results preserve input order.
         """
         normalized = tuple(tuple(structure) for structure in structures)
+        checked = []
         for structure in normalized:
             if len(structure) != nqubits:
                 raise ValueError(
                     f"expected structure length {nqubits}, got {len(structure)}"
                 )
-            if any(code not in range(4) for code in structure):
-                raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
+            checked.append(tuple(normalize_pauli_code(code) for code in structure))
+        normalized = tuple(checked)
         word_count, x_flat, z_flat = _native.pauli_batch_from_codes(nqubits, normalized)
         return tuple(
             cls(
@@ -502,6 +497,14 @@ class PauliOperator:
             self._coefficient_imaginaries,
         )
 
+    @property
+    def term_count(self) -> int:
+        """Return the number of nonzero canonical algebraic terms."""
+        return len(self.terms)
+
+    def __len__(self) -> int:
+        return self.term_count
+
     def add(
         self,
         other: "PauliOperator",
@@ -643,7 +646,7 @@ class PauliOperator:
             >>> import tencirpauli as tcp
             >>> operator = tcp.PauliOperator.from_terms(2, [("XX", 1.0), ("ZZ", 1.0)])
             >>> result = operator.group_commuting(mode="qubit_wise")
-            >>> result.nterms
+            >>> result.term_count
             2
         """
         from .grouping import group_operator
@@ -656,7 +659,7 @@ class PauliOperator:
         )
 
     def find_z2_symmetries(
-        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "Z2SymmetryAnalysis":
         """Discover deterministic, term-wise commuting Pauli Z2 symmetries."""
         from .symmetry import Z2SymmetryAnalysis
@@ -674,6 +677,7 @@ class PauliOperator:
     def taper_z2(
         self,
         sector: Sequence[int],
+        *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PauliOperator":
         """Find Z2 symmetries, select ``sector``, and taper this operator."""
@@ -683,6 +687,7 @@ class PauliOperator:
     def restrict_u1(
         self,
         sector: "U1Sector",
+        *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1RestrictedOperator":
         """Validate and restrict this operator to an explicit U1 sector."""
@@ -695,10 +700,10 @@ class PauliOperator:
             raise ValueError(
                 f"expected sector for {self.nqubits} qubits, got {sector.nqubits}"
             )
-        return _restrict_u1(self, sector, max_bytes)
+        return _restrict_u1(self, sector, max_bytes, term_count=self.term_count)
 
     def compatibility_matrix(
-        self, mode: str = "general", max_entries: int = 10_000_000
+        self, mode: str = "qubit_wise", max_entries: int = 10_000_000
     ) -> np.ndarray[Any, Any]:
         """Return a bounded dense matrix, limited by compatibility entries."""
         validate_nonnegative_int(max_entries, "max_entries")
@@ -716,7 +721,7 @@ class PauliOperator:
         return matrix
 
     def incompatibility_edges(
-        self, mode: str = "general", max_edges: int = 10_000_000
+        self, mode: str = "qubit_wise", max_edges: int = 10_000_000
     ) -> Tuple[Tuple[int, int], ...]:
         """Return streaming edges, limited by the number of output edges."""
         validate_nonnegative_int(max_edges, "max_edges")
@@ -732,7 +737,7 @@ class PauliOperator:
         )
 
     def dense(
-        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> np.ndarray[Any, Any]:
         """Materialize a bounded complex128 dense Hamiltonian matrix."""
         from . import _native
@@ -751,7 +756,7 @@ class PauliOperator:
         )
         return result
 
-    def coo(self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "COOMatrix":
+    def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "COOMatrix":
         """Compile deterministic, duplicate-aggregated COO arrays."""
         from . import _native
         from .hamiltonian import COOMatrix
@@ -772,7 +777,7 @@ class PauliOperator:
             (dimension, dimension),
         )
 
-    def csr(self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "CSRMatrix":
+    def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> "CSRMatrix":
         """Compile deterministic CSR arrays from the canonical COO stream."""
         from . import _native
         from .hamiltonian import CSRMatrix
@@ -796,6 +801,7 @@ class PauliOperator:
     def mvp(
         self,
         state: Sequence[complex],
+        *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the Hamiltonian to a one-dimensional complex128 state."""
@@ -822,7 +828,7 @@ class PauliOperator:
         )
 
     def backend_mvp_plan(
-        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "BackendMVPPlan":
         """Compile a versioned pure-array plan for backend execution."""
         from . import _native
@@ -850,10 +856,11 @@ class PauliOperator:
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
             estimated_bytes=int(len(real) * (word_count * 16 + 16)),
+            _factory_token=_PLAN_FACTORY_TOKEN,
         )
 
     def native_mvp_plan(
-        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "NativeMVPPlan":
         """Compile a reusable Rust-native matrix-free MVP plan."""
         from . import _native
@@ -887,10 +894,11 @@ class PauliOperator:
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
             estimated_bytes=estimated_bytes,
+            _factory_token=_PLAN_FACTORY_TOKEN,
         )
 
     def compile(
-        self, target: str, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+        self, target: str, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "CompileResult":
         """Compile one named Hamiltonian target.
 
@@ -1033,7 +1041,7 @@ def _normalize_code_array_inputs(
             [coefficient for _, coefficient in terms],
         )
     except (TypeError, ValueError, OverflowError) as error:
-        if "coefficients" in str(error) or "Pauli codes" in str(error):
+        if "coefficients" in str(error) or "Pauli code" in str(error):
             raise
         return None
     if structures.shape[1] != nqubits:
@@ -1053,9 +1061,9 @@ def _normalize_code_arrays(
     if code_array.ndim != 2:
         raise ValueError("structures must be a rectangular two-dimensional array")
     if code_array.size and code_array.dtype.kind not in ("i", "u"):
-        raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
+        raise TypeError("Pauli code arrays must use an integer dtype")
     if code_array.size and (np.any(code_array < 0) or np.any(code_array > 3)):
-        raise ValueError("Pauli codes must be integers in 0..3 (inclusive)")
+        raise ValueError("Pauli codes must be in the half-open range 0..4")
     try:
         coefficient_array = np.asarray(coefficients, dtype=np.complex128)
     except (TypeError, ValueError, OverflowError) as error:
@@ -1085,14 +1093,7 @@ def _coerce_structure(nqubits: int, value: PauliInput) -> Tuple[int, ...]:
         except KeyError as error:
             raise ValueError(f"invalid Pauli character {error.args[0]!r}") from error
     else:
-        structure = tuple(value)
-        if any(
-            not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
-            for code in structure
-        ):
-            raise ValueError(
-                f"Pauli codes must be integers in 0..3 (inclusive), got {structure!r}"
-            )
+        structure = tuple(normalize_pauli_code(code) for code in value)
     if len(structure) != nqubits:
         raise ValueError(f"expected {nqubits} qubits, got {len(structure)}")
     return structure

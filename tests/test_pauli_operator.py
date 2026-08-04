@@ -241,7 +241,7 @@ def test_explicit_code_array_api_preserves_mapping_and_validation() -> None:
     np.testing.assert_array_equal(array_result.coefficients, [2.0, 1.0 - 0.25j])
     np.testing.assert_array_equal(array_result.input_to_canonical, [1, 0, 1])
     assert not array_result.canonical_structures.flags.writeable
-    with pytest.raises(ValueError, match=r"integers in 0\.\.3"):
+    with pytest.raises(ValueError, match=r"half-open range 0\.\.4"):
         PauliOperator.from_code_arrays([[4]], [1.0])
     with pytest.raises(ValueError, match="one value per structure"):
         PauliOperator.from_code_arrays([[1], [2]], [1.0])

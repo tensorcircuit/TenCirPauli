@@ -18,6 +18,7 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 TENSORCIRCUIT_ROOT = Path(__file__).resolve().parents[3] / "tensorcircuit"
@@ -46,7 +47,7 @@ def _workload() -> dict[str, Any]:
     terms = example.tfim_terms(nqubits, 1.0, 1.0)
     parameters = np.linspace(-0.19, 0.23, nparameters, dtype=np.float64)
 
-    tape = tcp.GateTape(nqubits)
+    tape = advanced.GateTape(nqubits)
     for operation in operations:
         if operation[0] == "H":
             tape.h(int(operation[1]))
@@ -69,8 +70,8 @@ def _workload() -> dict[str, Any]:
         nqubits, list(zip(structures, coefficients))
     )
 
-    native_deterministic = tcp.PropagationEngine(tape, observable, max_weight=3)
-    native_spps = tcp.SPPSEngine(tape, observable, smoothing=0.25 / layers)
+    native_deterministic = advanced.PropagationEngine(tape, observable, max_weight=3)
+    native_spps = advanced.SPPSEngine(tape, observable, smoothing=0.25 / layers)
 
     tc.set_backend("jax")
     tc.set_dtype("complex128")

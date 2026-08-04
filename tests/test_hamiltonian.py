@@ -8,10 +8,9 @@ from reference import dense_operator
 
 from tencirpauli import (
     DEFAULT_MAX_BYTES,
-    BackendMVPPlan,
-    NativeMVPPlan,
     PauliOperator,
 )
+from tencirpauli.advanced import BackendMVPPlan, NativeMVPPlan
 
 
 def make_operator(nqubits: int) -> PauliOperator:

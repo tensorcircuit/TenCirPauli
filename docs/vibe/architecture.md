@@ -204,12 +204,14 @@ mvp_plan = h.compile(target="backend_mvp")
 ~~~
 
 ~~~python
-tape = tcp.GateTape(100)
+from tencirpauli import advanced
+
+tape = advanced.GateTape(100)
 tape.rxx(0, 1, parameter=0)
 tape.ryy(0, 1, parameter=1)
 tape.rzz(0, 1, parameter=2)
 
-engine = tcp.PropagationEngine(
+engine = advanced.PropagationEngine(
     tape,
     max_weight=3,
 )
@@ -375,7 +377,7 @@ maturin --version
 
 Phase 6唯一实现的execution backend与TensorCircuit `U1Circuit`常用构造、gate名称、basis ordering和observable语义对齐。Python gate methods只记录common typed operations；`compile()`、state、expectation或gradient terminal一次性跨PyO3，由U1 compiler完成sector validation、fusion、pair-map construction、restricted-state execution和reduction。Required gate set为RZ、RZZ、CZ、CPhase、SWAP、TensorCircuit-convention iSWAP和bounded static diagonal，并支持任意宽low-k/low-hole sectors。通用full-state和tensor-network simulator都不属于本阶段。
 
-Phase 6实现普通restricted statevector的精确adjoint gradient：forward只保留final state，reverse通过unitary inverses同时重建pre-gate state和传播adjoint state。Required bounded terminals包含`to_dense()`和`probability_full()`；static diagonal严格幺正；Givens/fSim/public general block不进入首版。它不包含time-evolution solver、noise、sampling/RDM/entropy、automatic Trotter、JAX custom call或GPU。完整冻结合同见`phase-6-spec.md`。
+Phase 6实现普通restricted statevector的精确adjoint gradient：forward只保留final state，reverse通过unitary inverses同时重建pre-gate state和传播adjoint state。Required bounded terminals包含`state_full()`和`probability_full()`；static diagonal严格幺正；Givens/fSim/public general block不进入首版。它不包含time-evolution solver、noise、sampling/RDM/entropy、automatic Trotter、JAX custom call或GPU。完整冻结合同见`phase-6-spec.md`。
 
 ### 阶段六点五：generic Rust-native matrix-free time evolution（deferred proposal）
 

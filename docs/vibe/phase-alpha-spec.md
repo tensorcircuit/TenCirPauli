@@ -2,6 +2,8 @@
 
 状态：已实现的 Phase Alpha public contract。本文冻结 Python 用户层的调用形状；U(1)、deterministic Pauli propagation 和 SPPS 的 native executor 继续保持各自实现，不要求共享 Rust kernel、内存布局或编译器。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 目标
 
 Phase Alpha 的目标不是增加新的量子算法，而是把已有的 U(1) state execution、deterministic Heisenberg Pauli propagation 和 stochastic Pauli-path execution 组织成一套一致的 Python circuit facade，使 Agent 可以用同一套规则构造线路、声明参数、编译线路，并对 Hamiltonian/observable 请求 value、gradient 或 estimator。

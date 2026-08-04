@@ -14,7 +14,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 import numpy as np
 
 from . import _native
-from ._validation import validate_nonnegative_int
+from ._validation import normalize_pauli_code, validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     _check_allocation,
@@ -167,18 +167,18 @@ class FermionQubitMapping:
         "_encoding",
         "_inverse_encoding",
         "_locked",
+        "_name",
         "_native_plan",
         "basis_ordering",
         "convention",
         "estimated_bytes",
-        "mapping_name",
         "mode_ordering",
         "n_modes",
         "nqubits",
         "schema_version",
     )
     schema_version: int
-    mapping_name: str
+    _name: str
     n_modes: int
     nqubits: int
     mode_ordering: str
@@ -234,7 +234,7 @@ class FermionQubitMapping:
         # and guarantees that a budget at the documented estimate succeeds.
         estimated_bytes = max(actual_bytes, _mapping_plan_upper_bound(n_modes))
         object.__setattr__(self, "schema_version", _SCHEMA_VERSION)
-        object.__setattr__(self, "mapping_name", mapping_name)
+        object.__setattr__(self, "_name", mapping_name)
         object.__setattr__(self, "n_modes", n_modes)
         object.__setattr__(self, "nqubits", n_modes)
         object.__setattr__(self, "mode_ordering", "mode0_increasing")
@@ -334,13 +334,8 @@ class FermionQubitMapping:
 
     @property
     def name(self) -> str:
-        """Alias for the stable mapping name."""
-        return self.mapping_name
-
-    @property
-    def mapping(self) -> str:
-        """Alias retained for metadata-oriented callers."""
-        return self.mapping_name
+        """Return the stable mapping name."""
+        return self._name
 
     @property
     def encoding_matrix(self) -> np.ndarray[Any, Any]:
@@ -384,13 +379,9 @@ class FermionQubitMapping:
         self, codes: Sequence[int]
     ) -> Tuple[Tuple[int, ...], complex]:
         values = tuple(codes)
-        if len(values) != self.n_modes or any(
-            not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
-            for code in values
-        ):
-            raise ValueError(
-                "Pauli codes must have length n_modes and lie in 0..3 (inclusive)"
-            )
+        if len(values) != self.n_modes:
+            raise ValueError("Pauli codes must have length n_modes")
+        values = tuple(normalize_pauli_code(code) for code in values)
         result = list(values)
         phase = 1.0 + 0j
         control_images = ((0, 0), (1, 1), (2, 1), (3, 0))
@@ -614,4 +605,4 @@ class FermionQubitMapping:
         return HybridOperator._from_terms(jordan_wigner.space, terms, max_bytes)
 
     def __repr__(self) -> str:
-        return f"FermionQubitMapping({self.mapping_name!r}, n_modes={self.n_modes})"
+        return f"FermionQubitMapping({self.name!r}, n_modes={self.n_modes})"

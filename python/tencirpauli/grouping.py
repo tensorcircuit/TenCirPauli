@@ -12,7 +12,7 @@ from ._validation import validate_nonnegative_int
 from .pauli import PauliOperator
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class QWCGroupingResult:
     """A deterministic qubit-wise commuting measurement partition.
 
@@ -26,15 +26,55 @@ class QWCGroupingResult:
     groups: Tuple[Tuple[int, ...], ...]
     bases: Tuple[Tuple[int, ...], ...]
     reconstruction_masks: Tuple[Tuple[int, ...], ...]
-    coefficient_mapping: Tuple[Tuple[int, ...], ...]
+    term_to_group: Tuple[int, ...]
     algorithm: str
-    measurement_ready: bool = True
-    mode: str = "qubit_wise"
+    group_count: int
+    term_count: int
+    measurement_ready: bool
+    mode: str
 
-    @property
-    def nterms(self) -> int:
-        """Return the number of canonical operator terms covered by the groups."""
-        return sum(len(group) for group in self.groups)
+    def __init__(
+        self,
+        nqubits: int,
+        groups: Tuple[Tuple[int, ...], ...],
+        bases: Tuple[Tuple[int, ...], ...],
+        reconstruction_masks: Tuple[Tuple[int, ...], ...],
+        algorithm: str,
+    ) -> None:
+        normalized_groups = tuple(
+            tuple(int(index) for index in group) for group in groups
+        )
+        if len(bases) != len(normalized_groups) or len(reconstruction_masks) != len(
+            normalized_groups
+        ):
+            raise ValueError("group metadata must have one entry per group")
+        term_count = sum(len(group) for group in normalized_groups)
+        flattened = tuple(index for group in normalized_groups for index in group)
+        if sorted(flattened) != list(range(term_count)):
+            raise ValueError("groups must cover each canonical term exactly once")
+        if any(
+            len(mask) != len(group)
+            for mask, group in zip(reconstruction_masks, normalized_groups)
+        ):
+            raise ValueError("reconstruction metadata must match group sizes")
+        term_to_group = [-1] * term_count
+        for group_index, group in enumerate(normalized_groups):
+            for term_index in group:
+                term_to_group[term_index] = group_index
+        object.__setattr__(self, "nqubits", int(nqubits))
+        object.__setattr__(self, "groups", normalized_groups)
+        object.__setattr__(self, "bases", tuple(tuple(basis) for basis in bases))
+        object.__setattr__(
+            self,
+            "reconstruction_masks",
+            tuple(tuple(int(mask) for mask in masks) for masks in reconstruction_masks),
+        )
+        object.__setattr__(self, "term_to_group", tuple(term_to_group))
+        object.__setattr__(self, "algorithm", algorithm)
+        object.__setattr__(self, "group_count", len(normalized_groups))
+        object.__setattr__(self, "term_count", term_count)
+        object.__setattr__(self, "measurement_ready", True)
+        object.__setattr__(self, "mode", "qubit_wise")
 
     def reconstruct(
         self, group_index: int, bitstrings: Sequence[Sequence[int]]
@@ -76,7 +116,7 @@ class QWCGroupingResult:
         return output
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class GeneralCommutingGroupingResult:
     """A deterministic algebraic commuting partition.
 
@@ -88,15 +128,38 @@ class GeneralCommutingGroupingResult:
 
     nqubits: int
     groups: Tuple[Tuple[int, ...], ...]
-    coefficient_mapping: Tuple[Tuple[int, ...], ...]
+    term_to_group: Tuple[int, ...]
     algorithm: str
-    measurement_ready: bool = False
-    mode: str = "general"
+    group_count: int
+    term_count: int
+    measurement_ready: bool
+    mode: str
 
-    @property
-    def nterms(self) -> int:
-        """Return the number of canonical operator terms covered by the groups."""
-        return sum(len(group) for group in self.groups)
+    def __init__(
+        self,
+        nqubits: int,
+        groups: Tuple[Tuple[int, ...], ...],
+        algorithm: str,
+    ) -> None:
+        normalized_groups = tuple(
+            tuple(int(index) for index in group) for group in groups
+        )
+        term_count = sum(len(group) for group in normalized_groups)
+        flattened = tuple(index for group in normalized_groups for index in group)
+        if sorted(flattened) != list(range(term_count)):
+            raise ValueError("groups must cover each canonical term exactly once")
+        term_to_group = [-1] * term_count
+        for group_index, group in enumerate(normalized_groups):
+            for term_index in group:
+                term_to_group[term_index] = group_index
+        object.__setattr__(self, "nqubits", int(nqubits))
+        object.__setattr__(self, "groups", normalized_groups)
+        object.__setattr__(self, "term_to_group", tuple(term_to_group))
+        object.__setattr__(self, "algorithm", algorithm)
+        object.__setattr__(self, "group_count", len(normalized_groups))
+        object.__setattr__(self, "term_count", term_count)
+        object.__setattr__(self, "measurement_ready", False)
+        object.__setattr__(self, "mode", "general")
 
 
 GroupingResult = Union[QWCGroupingResult, GeneralCommutingGroupingResult]
@@ -148,11 +211,8 @@ def group_operator(
         max_matrix_entries,
     )
     groups = tuple(tuple(group) for group in raw_groups)
-    mapping = groups
     if mode == "general":
-        return GeneralCommutingGroupingResult(
-            operator.nqubits, groups, mapping, algorithm
-        )
+        return GeneralCommutingGroupingResult(operator.nqubits, groups, algorithm)
     bases = []
     masks = []
     for group in groups:
@@ -178,6 +238,5 @@ def group_operator(
         groups,
         tuple(bases),
         tuple(masks),
-        mapping,
         algorithm,
     )

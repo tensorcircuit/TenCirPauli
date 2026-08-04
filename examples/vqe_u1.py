@@ -9,7 +9,7 @@ import tencirpauli as tcp
 
 def main() -> None:
     theta = tcp.Parameter(0)
-    circuit = tcp.U1Circuit(nqubits=2, k=1, filled=[0])
+    circuit = tcp.U1Circuit(nqubits=2, particle_number=1, occupied=[0])
     circuit.iswap(0, 1, theta=theta)
     hamiltonian = tcp.PauliOperator.from_terms(
         2,

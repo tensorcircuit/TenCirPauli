@@ -2,6 +2,8 @@
 
 状态：可执行。`semantics.md` 中 S1–S4 已冻结。目标范围为架构路线中的阶段零与阶段一。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 目标与完成定义
 
 Phase 1 交付一个可独立安装、可从 Rust 和 Python 使用、具有明确 TensorCircuit 兼容语义的 Pauli algebra、measurement grouping 和 Hamiltonian engine。正确性是硬门槛；在正确性覆盖之后，每个核心热路径必须具有本地 benchmark，但架构文档中的性能倍数是 go/no-go 评估指标，不是让 Agent 无限优化的完成条件。

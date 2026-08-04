@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from operator import index as operator_index
 from typing import Any, Mapping, Optional, Sequence, cast
 
 import numpy as np
 
 from . import _native
+from ._validation import normalize_pauli_code
 from .circuit import (
     Angle,
     Parameter,
@@ -138,14 +140,9 @@ def _pauli_codes(
         if x is not None or y is not None or z is not None:
             raise ValueError("ps cannot be combined with x, y, or z")
         codes = tuple(ps)
-        if len(codes) != nqubits or any(
-            not isinstance(code, int) or isinstance(code, bool) or code not in range(4)
-            for code in codes
-        ):
-            raise ValueError(
-                "ps must contain exactly nqubits codes in 0..3 (inclusive)"
-            )
-        return codes
+        if len(codes) != nqubits:
+            raise ValueError("ps must contain exactly nqubits codes")
+        return tuple(normalize_pauli_code(code) for code in codes)
     codes_list: list[int] = [0] * nqubits
     for code, indices in ((1, x or ()), (2, y or ()), (3, z or ())):
         seen: set[int] = set()
@@ -214,23 +211,42 @@ class U1CircuitPlan:
     sector: U1Sector
     dimension: int
     nparameters: int
+    _initial_state: Optional[np.ndarray[Any, Any]]
     _native: Any
 
-    def __init__(self, sector: U1Sector, native_plan: Any) -> None:
+    def __init__(
+        self,
+        sector: U1Sector,
+        native_plan: Any,
+        initial_state: Optional[np.ndarray[Any, Any]] = None,
+    ) -> None:
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", int(native_plan.dimension))
         object.__setattr__(self, "nparameters", int(native_plan.nparameters))
+        if initial_state is not None:
+            initial_state = _readonly(np.asarray(initial_state, dtype=np.complex128))
+        object.__setattr__(self, "_initial_state", initial_state)
         object.__setattr__(self, "_native", native_plan)
 
     def _params(
-        self, parameters: Sequence[float] | np.ndarray[Any, Any]
+        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
     ) -> np.ndarray[Any, Any]:
         return _parameter_array(parameters, self.nparameters)
 
+    def _state(
+        self, initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]]
+    ) -> np.ndarray[Any, Any]:
+        selected = self._initial_state if initial_state is None else initial_state
+        if selected is None:
+            raise TypeError(
+                "initial_state must be provided for a standalone U1CircuitPlan"
+            )
+        return _state_array(selected, self.dimension)
+
     def run(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
-        parameters: Sequence[float] | np.ndarray[Any, Any] = (),
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
         """Apply the circuit to a restricted-sector state vector.
 
@@ -238,37 +254,37 @@ class U1CircuitPlan:
         match ``nparameters``. The returned complex128 vector remains in the
         same sector ordering.
         """
-        result = self._native.run(
-            _state_array(initial_state, self.dimension), self._params(parameters)
-        )
+        result = self._native.run(self._state(initial_state), self._params(parameters))
         return _readonly(np.asarray(result, dtype=np.complex128))
 
     def probability(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
-        parameters: Sequence[float] | np.ndarray[Any, Any] = (),
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
         """Return probabilities in the restricted-sector basis ordering."""
         result = self._native.probability(
-            _state_array(initial_state, self.dimension), self._params(parameters)
+            self._state(initial_state),
+            self._params(parameters),
         )
         return _readonly(np.asarray(result, dtype=np.float64))
 
-    def to_dense(
+    def state_full(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
-        parameters: Sequence[float] | np.ndarray[Any, Any] = (),
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
         """Return the final restricted-sector state as a dense vector."""
         result = self._native.to_dense(
-            _state_array(initial_state, self.dimension), self._params(parameters)
+            self._state(initial_state),
+            self._params(parameters),
         )
         return _readonly(np.asarray(result, dtype=np.complex128))
 
     def probability_full(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
-        parameters: Sequence[float] | np.ndarray[Any, Any] = (),
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> np.ndarray[Any, Any]:
         """Return the full computational-basis probability vector.
 
@@ -276,21 +292,27 @@ class U1CircuitPlan:
         therefore potentially much larger than :meth:`probability`.
         """
         result = self._native.probability_full(
-            _state_array(initial_state, self.dimension), self._params(parameters)
+            self._state(initial_state),
+            self._params(parameters),
         )
         return _readonly(np.asarray(result, dtype=np.float64))
 
     def expectation(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]],
         observable: PauliOperator,
-        parameters: Sequence[float] | np.ndarray[Any, Any] = (),
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> complex:
         """Return the complex expectation of a Pauli observable."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
+        selected_state = self._initial_state if initial_state is None else initial_state
+        if selected_state is None:
+            raise TypeError(
+                "initial_state must be provided for a standalone U1CircuitPlan"
+            )
         real, imaginary = self._native.expectation(
-            _state_array(initial_state, self.dimension),
+            _state_array(selected_state, self.dimension),
             *observable._arrays(),
             self._params(parameters),
         )
@@ -298,15 +320,22 @@ class U1CircuitPlan:
 
     def value_and_grad(
         self,
-        initial_state: Sequence[complex] | np.ndarray[Any, Any],
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]],
         observable: PauliOperator,
-        parameters: Sequence[float] | np.ndarray[Any, Any],
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> U1CircuitValueAndGradient:
         """Return an observable expectation and its exact parameter gradient."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
+        if not observable.is_hermitian(tolerance=0.0):
+            raise ValueError("value_and_grad requires an exactly Hermitian observable")
+        selected_state = self._initial_state if initial_state is None else initial_state
+        if selected_state is None:
+            raise TypeError(
+                "initial_state must be provided for a standalone U1CircuitPlan"
+            )
         value, gradient = self._native.value_and_grad(
-            _state_array(initial_state, self.dimension),
+            _state_array(selected_state, self.dimension),
             *observable._arrays(),
             self._params(parameters),
         )
@@ -318,14 +347,15 @@ class U1CircuitPlan:
 class U1Circuit:
     """Lazy circuit that preserves a fixed particle-number sector.
 
-    Construct with either ``k`` occupied particles or an explicit ``filled``
-    occupation list. Gates are diagonal or particle-number preserving, and
+    Construct with ``particle_number`` and optionally an ``occupied`` basis
+    initialization or an explicit restricted-sector ``initial_state``. Gates
+    are diagonal or particle-number preserving, and
     execution is deferred until a state, probability, expectation, or compiled
     plan is requested.
 
     Examples:
         >>> import tencirpauli as tcp
-        >>> circuit = tcp.U1Circuit(2, k=1)
+        >>> circuit = tcp.U1Circuit(2, particle_number=1)
         >>> circuit.rz(0, 0.2)
         >>> circuit.probability().shape
         (2,)
@@ -334,55 +364,67 @@ class U1Circuit:
     def __init__(
         self,
         nqubits: int,
-        k: Optional[int] = None,
-        filled: Optional[Sequence[int]] = None,
-        inputs: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
+        particle_number: Optional[int] = None,
         *,
+        occupied: Optional[Sequence[int]] = None,
+        initial_state: Optional[Sequence[complex] | np.ndarray[Any, Any]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
             raise ValueError("nqubits must be a non-negative integer")
         _validate_max_bytes(max_bytes)
-        if k is None and filled is None:
-            raise ValueError("either k or filled must be provided")
-        normalized_filled = None if filled is None else tuple(filled)
-        if normalized_filled is not None:
-            if any(
-                not isinstance(index, int)
-                or isinstance(index, bool)
-                or index < 0
-                or index >= nqubits
-                for index in normalized_filled
+        if occupied is not None and initial_state is not None:
+            raise ValueError("occupied and initial_state are mutually exclusive")
+        normalized_occupied = None
+        if occupied is not None:
+            try:
+                normalized_occupied = tuple(operator_index(index) for index in occupied)
+            except TypeError as error:
+                raise TypeError(
+                    "occupied must contain integer qubit indices"
+                ) from error
+            if any(index < 0 or index >= nqubits for index in normalized_occupied):
+                raise ValueError("occupied indices must be in range 0..nqubits")
+            if len(set(normalized_occupied)) != len(normalized_occupied):
+                raise ValueError("occupied indices must be distinct")
+            normalized_occupied = tuple(sorted(normalized_occupied))
+            if (
+                particle_number is not None
+                and len(normalized_occupied) != particle_number
             ):
-                raise ValueError("filled indices must be distinct in-range integers")
-            if len(set(normalized_filled)) != len(normalized_filled):
-                raise ValueError("filled indices must be distinct")
-            if k is not None and len(normalized_filled) != k:
-                raise ValueError("k must equal len(filled)")
-            if k is None:
-                k = len(normalized_filled)
-        assert k is not None
-        if not isinstance(k, int) or isinstance(k, bool) or not 0 <= k <= nqubits:
-            raise ValueError("k must be between 0 and nqubits")
-        if normalized_filled is None:
-            normalized_filled = tuple(range(k))
+                raise ValueError("particle_number must equal len(occupied)")
+            particle_number = len(normalized_occupied)
+        if particle_number is None:
+            if initial_state is not None:
+                raise ValueError("particle_number is required with initial_state")
+            raise ValueError("particle_number or occupied must be provided")
+        if (
+            isinstance(particle_number, bool)
+            or not isinstance(particle_number, int)
+            or not 0 <= particle_number <= nqubits
+        ):
+            raise ValueError("particle_number must be between 0 and nqubits")
+        if normalized_occupied is None:
+            normalized_occupied = tuple(range(particle_number))
         self.nqubits = nqubits
-        self.k = k
+        self.particle_number = particle_number
         self.max_bytes = max_bytes
-        self.sector = U1Sector(nqubits, k)
+        self.sector = U1Sector(nqubits, particle_number)
         dimension = self.sector.dimension
         _check_allocation(
             dimension * np.dtype(np.complex128).itemsize,
             max_bytes,
             "U1 circuit initial state",
         )
-        if inputs is None:
-            basis_value = sum(1 << (nqubits - 1 - index) for index in normalized_filled)
+        if initial_state is None:
+            basis_value = sum(
+                1 << (nqubits - 1 - index) for index in normalized_occupied
+            )
             initial_index = self.sector.rank(basis_value)
             initial: np.ndarray[Any, Any] = np.zeros(dimension, dtype=np.complex128)
             initial[initial_index] = 1.0
         else:
-            initial = _state_array(inputs, dimension).copy()
+            initial = _state_array(initial_state, dimension).copy()
         initial.flags.writeable = False
         self._initial_state = initial
         self._program = _CircuitProgram(nqubits)
@@ -398,7 +440,7 @@ class U1Circuit:
     ) -> "U1Circuit":
         result = cls.__new__(cls)
         result.nqubits = other.nqubits
-        result.k = other.k
+        result.particle_number = other.particle_number
         result.max_bytes = other.max_bytes
         result.sector = other.sector
         result._initial_state = other._initial_state.copy()
@@ -416,7 +458,7 @@ class U1Circuit:
 
     @property
     def dimension(self) -> int:
-        """Return ``C(nqubits, k)``, the restricted-sector dimension."""
+        """Return ``C(nqubits, particle_number)``, the sector dimension."""
         return self.sector.dimension
 
     def _append(self, operation: _LogicalGate) -> None:
@@ -482,14 +524,14 @@ class U1Circuit:
             expression_nodes, gates = _encode_program(self._program)
             native = _native.u1_circuit_plan(
                 self.nqubits,
-                self.k,
+                self.particle_number,
                 1,
                 self.nparameters,
                 expression_nodes,
                 gates,
                 _effective_max_bytes(self.max_bytes),
             )
-            self._native_plan = U1CircuitPlan(self.sector, native)
+            self._native_plan = U1CircuitPlan(self.sector, native, self._initial_state)
         return self._native_plan
 
     def _cached_final(
@@ -519,8 +561,6 @@ class U1Circuit:
             )
         return cache.state
 
-    wavefunction = state
-
     def probability(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
@@ -529,10 +569,10 @@ class U1Circuit:
             np.asarray(self._cached_final(parameters).native.probability())
         )
 
-    def to_dense(
+    def state_full(
         self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
     ) -> np.ndarray[Any, Any]:
-        """Return the final restricted-sector state as a dense vector."""
+        """Return the final state expanded to the full computational basis."""
         return _readonly(np.asarray(self._cached_final(parameters).native.to_dense()))
 
     def probability_full(
@@ -542,57 +582,6 @@ class U1Circuit:
         return _readonly(
             np.asarray(self._cached_final(parameters).native.probability_full())
         )
-
-    def expectation_z(
-        self,
-        i: int,
-        *,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-    ) -> float:
-        """Return the Z expectation for one qubit in the final state."""
-        value = self.expectation_ps(z=(i,), parameters=parameters)
-        return float(value.real)
-
-    def expectation_ps(
-        self,
-        x: Optional[Sequence[int]] = None,
-        y: Optional[Sequence[int]] = None,
-        z: Optional[Sequence[int]] = None,
-        ps: Optional[Sequence[int]] = None,
-        *,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-    ) -> complex:
-        """Return one Pauli expectation using X/Y/Z index specifications.
-
-        Exactly one of ``ps`` or the combination of ``x``, ``y`` and ``z``
-        may describe each Pauli word; omitted axes are identity.
-        """
-        codes = _pauli_codes(self.nqubits, x, y, z, ps)
-        observable = PauliOperator(self.nqubits, [(codes, 1.0)])
-        real, imaginary = self._cached_final(parameters).native.expectation(
-            *observable._arrays()
-        )
-        return complex(float(real), float(imaginary))
-
-    def expectation_pss(
-        self,
-        ps_list: Sequence[object],
-        coefficients: Sequence[complex] | np.ndarray[Any, Any],
-        *,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
-    ) -> complex:
-        """Return the expectation of a finite linear combination of Pauli words."""
-        normalized = tuple(_normalize_ps(value, self.nqubits) for value in ps_list)
-        values = np.asarray(coefficients, dtype=np.complex128).reshape(-1)
-        if len(normalized) != values.shape[0]:
-            raise ValueError("ps_list and coefficients must have the same length")
-        if not np.isfinite(values).all():
-            raise ValueError("coefficients must be finite")
-        observable = PauliOperator(self.nqubits, list(zip(normalized, values.tolist())))
-        real, imaginary = self._cached_final(parameters).native.expectation(
-            *observable._arrays()
-        )
-        return complex(float(real), float(imaginary))
 
     def expectation(
         self,
@@ -611,11 +600,13 @@ class U1Circuit:
         self,
         observable: PauliOperator,
         *,
-        parameters: Sequence[float] | np.ndarray[Any, Any],
+        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> U1CircuitValueAndGradient:
         """Return an observable expectation and exact native gradient."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
+        if not observable.is_hermitian(tolerance=0.0):
+            raise ValueError("value_and_grad requires an exactly Hermitian observable")
         value, gradient = self._cached_final(parameters).native.value_and_grad(
             *observable._arrays()
         )
@@ -688,9 +679,9 @@ class U1Circuit:
             raise ValueError("circuit_params nqubits must be an integer")
         circuit = cls(
             nqubits_value,
-            cast(Optional[int], circuit_params.get("k")),
-            cast(Optional[Sequence[int]], circuit_params.get("filled")),
-            cast(Any, circuit_params.get("inputs")),
+            cast(Optional[int], circuit_params.get("particle_number")),
+            occupied=cast(Optional[Sequence[int]], circuit_params.get("occupied")),
+            initial_state=cast(Any, circuit_params.get("initial_state")),
             max_bytes=max_bytes,
         )
         parameter_order: tuple[object, ...] = tuple(

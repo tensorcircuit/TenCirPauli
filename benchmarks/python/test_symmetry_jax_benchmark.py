@@ -56,7 +56,8 @@ def _transition_table(
     operator: PauliOperator, sector: U1Sector
 ) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     """Build the exact fixed-sector COO transitions for the JAX baseline."""
-    basis = np.asarray(sector.basis_words(), dtype=np.uint64)
+    packed_basis = np.asarray(sector.basis_words_packed(), dtype=np.uint64)
+    basis = packed_basis[:, 0] if packed_basis.shape[1] == 1 else packed_basis
     structures, coefficients_re, coefficients_im = operator._arrays()
     basis_index = {int(value): index for index, value in enumerate(basis)}
     terms = []
@@ -199,7 +200,9 @@ def test_u1_26q_jax_restriction_setup(benchmark: BenchmarkFixture) -> None:
 def test_u1_26q_rust_restricted_mvp(benchmark: BenchmarkFixture) -> None:
     operator = make_hopping()
     sector = U1Sector(26, 2)
-    plan = operator.restrict_u1(sector, MAX_BYTES).mvp_plan(max_bytes=MAX_BYTES)
+    plan = operator.restrict_u1(sector, max_bytes=MAX_BYTES).mvp_plan(
+        max_bytes=MAX_BYTES
+    )
     state = np.arange(plan.dimension, dtype=np.float64) + 1j * np.arange(plan.dimension)
     expected = plan.apply(state, max_bytes=MAX_BYTES)
     result = benchmark.pedantic(
@@ -223,7 +226,9 @@ def test_u1_26q_jax_restricted_mvp(benchmark: BenchmarkFixture) -> None:
         sector.dimension, dtype=jnp.float64
     )
     expected = _sync_jax(apply(state))
-    rust_plan = operator.restrict_u1(sector, MAX_BYTES).mvp_plan(max_bytes=MAX_BYTES)
+    rust_plan = operator.restrict_u1(sector, max_bytes=MAX_BYTES).mvp_plan(
+        max_bytes=MAX_BYTES
+    )
     np.testing.assert_allclose(np.asarray(expected), rust_plan.apply(np.asarray(state)))
 
     def apply_sync(value: Any) -> Any:
@@ -243,7 +248,7 @@ def test_u1_26q_rust_end_to_end(benchmark: BenchmarkFixture) -> None:
     )
 
     def apply_end_to_end() -> Any:
-        restricted = operator.restrict_u1(sector, MAX_BYTES)
+        restricted = operator.restrict_u1(sector, max_bytes=MAX_BYTES)
         return restricted.mvp_plan(max_bytes=MAX_BYTES).apply(
             state, max_bytes=MAX_BYTES
         )
@@ -269,7 +274,9 @@ def test_u1_26q_jax_end_to_end(benchmark: BenchmarkFixture) -> None:
         return _sync_jax(apply(state))
 
     expected = apply_end_to_end()
-    rust_plan = operator.restrict_u1(sector, MAX_BYTES).mvp_plan(max_bytes=MAX_BYTES)
+    rust_plan = operator.restrict_u1(sector, max_bytes=MAX_BYTES).mvp_plan(
+        max_bytes=MAX_BYTES
+    )
     np.testing.assert_allclose(
         np.asarray(expected), rust_plan.apply(np.asarray(state)), rtol=1e-12, atol=1e-12
     )

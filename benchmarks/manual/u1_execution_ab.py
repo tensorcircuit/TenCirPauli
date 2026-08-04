@@ -18,6 +18,7 @@ from typing import Callable
 import numpy as np
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 def _measure(function: Callable[[], object], repeats: int) -> float:
@@ -31,7 +32,7 @@ def _measure(function: Callable[[], object], repeats: int) -> float:
 
 
 def _repeated_pair() -> dict[str, object]:
-    circuit = tcp.U1Circuit(40, k=5, filled=list(range(5)))
+    circuit = tcp.U1Circuit(40, particle_number=5, occupied=list(range(5)))
     for index in range(32):
         circuit.iswap(0, 1, theta=0.013 + index * 0.001)
     plan = circuit.compile()
@@ -45,7 +46,7 @@ def _repeated_pair() -> dict[str, object]:
 
 
 def _diagonal_heavy() -> dict[str, object]:
-    circuit = tcp.U1Circuit(20, k=10, filled=list(range(10)))
+    circuit = tcp.U1Circuit(20, particle_number=10, occupied=list(range(10)))
     for _ in range(32):
         circuit.rz(0, theta=0.01)
     plan = circuit.compile()
@@ -59,7 +60,7 @@ def _diagonal_heavy() -> dict[str, object]:
 
 
 def _gradient() -> dict[str, object]:
-    circuit = tcp.U1Circuit(20, k=5, filled=list(range(5)))
+    circuit = tcp.U1Circuit(20, particle_number=5, occupied=list(range(5)))
     parameters = []
     for index in range(12):
         parameter = tcp.Parameter(index)
@@ -80,10 +81,10 @@ def _gradient() -> dict[str, object]:
 
 
 def _pair_map_compile() -> dict[str, object]:
-    circuit = tcp.U1Circuit(40, k=5, filled=list(range(5)))
+    circuit = tcp.U1Circuit(40, particle_number=5, occupied=list(range(5)))
     circuit.iswap(0, 1, theta=0.13)
 
-    def compile() -> tcp.U1CircuitPlan:
+    def compile() -> advanced.U1CircuitPlan:
         circuit._native_plan = None
         return circuit.compile()
 
@@ -96,13 +97,13 @@ def _pair_map_compile() -> dict[str, object]:
 
 
 def _facade_cache() -> dict[str, object]:
-    circuit = tcp.U1Circuit(40, k=5, filled=list(range(5)))
+    circuit = tcp.U1Circuit(40, particle_number=5, occupied=list(range(5)))
     codes = [0] * 40
-    codes[3] = 3
+    codes[0] = 3
     observable = tcp.PauliOperator(40, [(codes, 1.0)])
     plan = circuit.compile()
-    first = _measure(lambda: circuit.expectation_z(0), 1)
-    repeated = _measure(lambda: circuit.expectation_z(0), 7)
+    first = _measure(lambda: circuit.expectation(observable), 1)
+    repeated = _measure(lambda: circuit.expectation(observable), 7)
     stateless = _measure(
         lambda: plan.expectation(circuit._initial_state, observable), 7
     )
@@ -115,7 +116,7 @@ def _facade_cache() -> dict[str, object]:
 
 
 def _projected_observable() -> dict[str, object]:
-    circuit = tcp.U1Circuit(20, k=5, filled=list(range(5)))
+    circuit = tcp.U1Circuit(20, particle_number=5, occupied=list(range(5)))
     for layer in range(4):
         circuit.iswap(0, 1, theta=0.07 + 0.01 * layer)
     structures = []

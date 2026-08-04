@@ -63,7 +63,7 @@ def test_batch_conversion_uses_one_public_call_shape() -> None:
 
 
 def test_invalid_code_shape_and_incompatible_operands_fail_explicitly() -> None:
-    with pytest.raises(ValueError, match="codes"):
+    with pytest.raises(ValueError, match="code"):
         PauliWord.from_codes((4,))
     with pytest.raises(ValueError, match="structure length"):
         PauliWord.batch_from_codes(2, ((1,),))

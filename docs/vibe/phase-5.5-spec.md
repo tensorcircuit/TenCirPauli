@@ -2,6 +2,8 @@
 
 状态：已实现 P0–P4，作为 Phase 5 与 Phase 6 之间的可选增量阶段完成。实现只做 observable-level parallelism：每个 observable 完整复用现有 deterministic propagation/value-and-gradient 内核，不做跨 observable coefficient batching、共享 aggregation map 或新的传播算法。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 背景与现有能力
 
 当前 `PropagationEngine` 已支持一个 canonical `PauliOperator`，因此一个 observable 可以是任意多个 Pauli strings 的加权和。`expectation()` 返回这个和的一个 scalar expectation；`value_and_grad()` 返回这个和的一个 scalar value 与 shape 为 `(nparameters,)` 的 frozen-support reverse gradient。传播过程中，同一 observable 内的 Pauli contributions 会按既有确定顺序聚合、执行 exact-zero removal，并在有限 `max_weight` 下执行 weight projection。

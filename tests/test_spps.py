@@ -15,12 +15,13 @@ from spps_reference import (
 )
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
-def _single_rotation(observable_code: int) -> tcp.SPPSEngine:
-    tape = tcp.GateTape(1)
+def _single_rotation(observable_code: int) -> advanced.SPPSEngine:
+    tape = advanced.GateTape(1)
     tape.ry(0, parameter=0)
-    return tcp.SPPSEngine(
+    return advanced.SPPSEngine(
         tape,
         tcp.PauliOperator(1, [((observable_code,), 1.0)]),
     )
@@ -58,9 +59,9 @@ def test_zero_factor_branch_preserves_pad_derivative() -> None:
     # For RY(0), the sine factor is exactly zero but its proposal probability
     # is positive.  The sine branch has final Z expectation one and therefore
     # supplies the nonzero PAD derivative of <0|RY^† X RY|0> at zero.
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.ry(0, parameter=0)
-    engine = tcp.SPPSEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
+    engine = advanced.SPPSEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
     estimate = engine.value_and_grad([0.0], samples_per_term=20_000, seed=5)
     assert estimate.value == 0.0
     assert estimate.gradient[0] == pytest.approx(1.0, abs=0.15)
@@ -68,9 +69,9 @@ def test_zero_factor_branch_preserves_pad_derivative() -> None:
 
 
 def test_near_zero_factor_uses_stable_pad_products() -> None:
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.ry(0, parameter=0)
-    engine = tcp.SPPSEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
+    engine = advanced.SPPSEngine(tape, tcp.PauliOperator(1, [((1,), 1.0)]))
     estimate = engine.value_and_grad([1.0e-14], samples_per_term=4096, seed=17)
     assert np.isfinite(estimate.value)
     assert np.isfinite(estimate.gradient).all()
@@ -93,7 +94,7 @@ def test_adaptive_budget_and_empty_observable_contract() -> None:
     assert estimate.term_gradient_error_proxies is not None
     assert estimate.converged in (False, True)
 
-    empty = tcp.SPPSEngine(tcp.GateTape(1), tcp.PauliOperator.empty(1))
+    empty = advanced.SPPSEngine(advanced.GateTape(1), tcp.PauliOperator.empty(1))
     empty_estimate = empty.value_and_grad_adaptive(
         [],
         initial_samples_per_term=2,
@@ -108,12 +109,12 @@ def test_adaptive_budget_and_empty_observable_contract() -> None:
 
 
 def test_fixed_budget_single_term_chunk_replay_is_bitwise_stable() -> None:
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.h(0)
     tape.rxx(0, 1, parameter=0)
     tape.cnot(0, 1)
     tape.ry(1, parameter=1)
-    engine = tcp.SPPSEngine(
+    engine = advanced.SPPSEngine(
         tape,
         tcp.PauliOperator(2, [((3, 1), 0.7)]),
         initial_state=tcp.ProductBlochState([[0.3, 0.4, 0.5], [0.2, -0.1, 0.6]]),
@@ -174,13 +175,13 @@ def test_composite_exact_paths_cover_static_two_qubit_and_shared_slots() -> None
             sum((gradient for _, gradient in path_contributions), start=np.zeros(1)),
         )
 
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.h(0)
     tape.rz(1, angle=-0.19)
     tape.cnot(0, 1)
     tape.rxx(0, 1, parameter=0)
     tape.ry(0, parameter=0)
-    engine = tcp.SPPSEngine(
+    engine = advanced.SPPSEngine(
         tape,
         tcp.PauliOperator(2, list(terms)),
         initial_state=tcp.ProductBlochState(state),
@@ -191,13 +192,13 @@ def test_composite_exact_paths_cover_static_two_qubit_and_shared_slots() -> None
 
 
 def test_composite_bloch_terminal_reduction_and_adaptive_replay() -> None:
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.h(0)
     tape.rz(1, angle=-0.19)
     tape.cnot(0, 1)
     tape.rxx(0, 1, parameter=0)
     tape.ry(0, parameter=0)
-    engine = tcp.SPPSEngine(
+    engine = advanced.SPPSEngine(
         tape,
         tcp.PauliOperator(2, [((1, 3), 0.7), ((2, 1), -0.4)]),
         initial_state=tcp.ProductBlochState([[0.31, -0.27, 0.44], [-0.22, 0.35, 0.51]]),
@@ -224,11 +225,11 @@ def test_composite_bloch_terminal_reduction_and_adaptive_replay() -> None:
 
 
 def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
-    tape = tcp.GateTape(2)
+    tape = advanced.GateTape(2)
     tape.cnot(0, 1)
     tape.rzz(0, 1, parameter=0)
     tape.rx(0, parameter=1)
-    engine = tcp.SPPSEngine(tape, tcp.PauliOperator(2, [((1, 2), 0.8)]))
+    engine = advanced.SPPSEngine(tape, tcp.PauliOperator(2, [((1, 2), 0.8)]))
     parameters = ([0.21, -0.17], [0.33, 0.14])
     expected = [
         engine.value_and_grad(values, samples_per_term=768, seed=seed)
@@ -252,12 +253,12 @@ def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
 
 def test_spps_execution_workspace_guard_covers_term_parameter_product() -> None:
     nqubits = 10
-    tape = tcp.GateTape(nqubits)
+    tape = advanced.GateTape(nqubits)
     for parameter in range(1000):
         tape.rx(parameter % nqubits, parameter=parameter)
     structures = list(islice(product(range(4), repeat=nqubits), 1000))
     observable = tcp.PauliOperator(nqubits, [(word, 1.0) for word in structures])
-    engine = tcp.SPPSEngine(tape, observable, max_bytes=150_000)
+    engine = advanced.SPPSEngine(tape, observable, max_bytes=150_000)
     with pytest.raises(MemoryError, match="memory limit"):
         engine.value_and_grad([0.1] * 1000, samples_per_term=2, seed=3)
     with pytest.raises(MemoryError, match="memory limit"):
@@ -271,13 +272,13 @@ def test_spps_execution_workspace_guard_covers_term_parameter_product() -> None:
 
 
 def test_spps_validation_and_unsupported_ptm() -> None:
-    tape = tcp.GateTape(1)
+    tape = advanced.GateTape(1)
     tape.ptm((0,), np.eye(4, dtype=np.float64))
     with pytest.raises(ValueError, match="SPPS"):
-        tcp.SPPSEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
+        advanced.SPPSEngine(tape, tcp.PauliOperator(1, [((3,), 1.0)]))
     with pytest.raises(ValueError, match="positive"):
-        tcp.SPPSEngine(
-            tcp.GateTape(1),
+        advanced.SPPSEngine(
+            advanced.GateTape(1),
             tcp.PauliOperator(1, [((3,), 1.0)]),
             smoothing=0.0,
         )

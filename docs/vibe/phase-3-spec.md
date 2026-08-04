@@ -2,6 +2,8 @@
 
 状态：可执行。Phase 1 与 Phase 2 已完成；本文冻结 2026-08-02 owner 讨论确认的 Phase 3 范围、公开接口、数值语义、性能方向和验收合同。
 
+> API note: this historical specification predates the breaking Phase 8 API contract; current public names and signatures are defined in [`phase-8-api-coherence-spec.md`](phase-8-api-coherence-spec.md).
+
 ## 1. 目标与完成定义
 
 Phase 3 交付一个可从 Python 端直接使用、核心计算完全在 Rust 中执行的动态 Pauli propagation engine。用户显式构造 `GateTape`，将一个 canonical `PauliOperator` 按 Heisenberg picture 传播，并选择不做结构投影的 exact recurrence，或在每个 gate 后应用 Pauli-weight projection。默认热路径直接在 Rust 中计算 product-state expectation，只返回一个标量；只有用户明确请求时才把完整传播后算符跨 FFI 物化回 Python。
