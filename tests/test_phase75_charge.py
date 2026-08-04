@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
+import tencirpauli.pauli as pauli_module
 
 
 def _selected_basis(sector: tcp.ChargeSector) -> list[tuple[int, ...]]:
@@ -79,6 +80,34 @@ def test_charge_equality_ignores_name_and_sector_rank_unrank() -> None:
     assert states == [(0, 0, 1), (0, 1, 0), (1, 0, 0)]
     for index, state in enumerate(states):
         assert sector.rank(state) == index
+
+
+@pytest.mark.parametrize("n_modes", [62, 63, 64, 65])
+def test_wide_small_generic_charge_sector_avoids_full_space_index_limit(
+    n_modes: int,
+) -> None:
+    space = tcp.OperatorSpace(fermions=n_modes)
+    number = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
+    sector = number.sector(1)
+    assert sector.dimension == n_modes
+    assert sector.rank(sector.unrank(n_modes - 1)) == n_modes - 1
+
+    marked = tcp.AdditiveCharge(space, fermions={0: 1})
+    simultaneous = tcp.ChargeSector(((number, 1), (marked, 1)))
+    assert simultaneous.dimension == 1
+    assert simultaneous.unrank(0) == (1,) + (0,) * (n_modes - 1)
+
+    if n_modes == 65:
+        hopping = space.fermion.create(64) * space.fermion.annihilate(
+            0
+        ) + space.fermion.create(0) * space.fermion.annihilate(64)
+        generic = hopping.restrict_charge(sector).dense()
+        specialized = (
+            hopping.map_fermions("jordan_wigner")
+            .restrict_u1(tcp.U1Sector(n_modes, 1))
+            .dense()
+        )
+        np.testing.assert_allclose(generic, specialized)
     assert sector.basis_ordering == "operator_space_axis0_msb_mixed_radix"
 
 
@@ -157,6 +186,21 @@ def test_charge_analysis_uses_aggregated_commutator_cancellation() -> None:
         tcp.AdditiveCharge(space, qubits={0: (0, 1)}).sector(0, boson_cutoffs={0: 0})
     broken = space.qubit.x(0)
     assert not broken.conserves(number)
+
+
+def test_pauli_charge_analysis_uses_cached_code_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    space = tcp.OperatorSpace(qubits=2)
+    number = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
+    operator = tcp.PauliOperator.from_terms(2, [("XX", 1.0), ("YY", 1.0)])
+
+    def reject_per_term_conversion(self: object) -> object:
+        del self
+        raise AssertionError("charge analysis converted one Pauli word at a time")
+
+    monkeypatch.setattr(pauli_module.PauliWord, "to_codes", reject_per_term_conversion)
+    assert operator.analyze_charge(number).is_conserved
 
 
 def test_restricted_qubit_targets_match_independent_projector() -> None:

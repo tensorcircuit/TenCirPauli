@@ -7,6 +7,33 @@ use rustc_hash::FxHashMap;
 const MAPPING_PLAN_FIXED_BYTES: u128 = 256;
 const MAPPING_TERM_BYTES: u128 = 16;
 
+fn mapping_plan_native_bytes(n_modes: usize, cnot_count: usize) -> Result<u128, PauliError> {
+    let matrix_entries =
+        (n_modes as u128)
+            .checked_mul(n_modes as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating fermion mapping plan",
+            })?;
+    let packed_word_count = n_modes.checked_add(63).ok_or(PauliError::Overflow {
+        context: "estimating packed fermion mapping plan",
+    })? / 64;
+    let packed_entries = (n_modes as u128)
+        .checked_mul(packed_word_count as u128)
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(8))
+        .ok_or(PauliError::Overflow {
+            context: "estimating packed fermion mapping plan",
+        })?;
+    matrix_entries
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(packed_entries))
+        .and_then(|value| value.checked_add((cnot_count as u128).checked_mul(16)?))
+        .and_then(|value| value.checked_add(MAPPING_PLAN_FIXED_BYTES))
+        .ok_or(PauliError::Overflow {
+            context: "estimating fermion mapping plan",
+        })
+}
+
 type HybridMappingKey = (
     bool,
     Vec<u32>,
@@ -416,25 +443,18 @@ pub fn build_mapping_plan(
             context: "unsupported fermion-to-qubit mapping",
         });
     }
-    let matrix_entries =
-        (n_modes as u128)
-            .checked_mul(n_modes as u128)
-            .ok_or(PauliError::Overflow {
-                context: "estimating fermion mapping plan",
-            })?;
     let max_cnot_count = (n_modes as u128)
         .checked_mul(n_modes.saturating_sub(1) as u128)
         .and_then(|value| value.checked_div(2))
         .ok_or(PauliError::Overflow {
             context: "estimating fermion mapping plan",
         })?;
-    let upper_bound = matrix_entries
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(max_cnot_count.checked_mul(16)?))
-        .and_then(|value| value.checked_add(MAPPING_PLAN_FIXED_BYTES))
-        .ok_or(PauliError::Overflow {
+    let upper_bound = mapping_plan_native_bytes(
+        n_modes,
+        usize::try_from(max_cnot_count).map_err(|_| PauliError::Overflow {
             context: "estimating fermion mapping plan",
-        })?;
+        })?,
+    )?;
     if upper_bound > max_bytes {
         return Err(PauliError::MemoryLimit {
             requested: upper_bound,
@@ -447,13 +467,7 @@ pub fn build_mapping_plan(
     let cnot_operations = canonical_cnot_operations(&encoding)?;
     let x_transform = PackedBinaryMatrix::from_rows(encoding.clone(), false)?;
     let z_transform = PackedBinaryMatrix::from_rows(inverse_encoding.clone(), true)?;
-    let estimated_bytes = matrix_entries
-        .checked_mul(2)
-        .and_then(|value| value.checked_add((cnot_operations.len() as u128).checked_mul(16)?))
-        .and_then(|value| value.checked_add(MAPPING_PLAN_FIXED_BYTES))
-        .ok_or(PauliError::Overflow {
-            context: "estimating fermion mapping plan",
-        })?;
+    let estimated_bytes = mapping_plan_native_bytes(n_modes, cnot_operations.len())?;
     Ok(MappingPlan {
         n_modes,
         encoding,

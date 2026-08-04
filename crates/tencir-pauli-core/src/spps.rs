@@ -988,10 +988,9 @@ fn combine_fixed(
     stats: &[TermStats],
     nparameters: usize,
 ) -> Result<(f64, Vec<f64>, f64), PauliError> {
-    // `value_standard_error` intentionally uses the MLE (population)
-    // variance estimator for the sampled path distribution. It is slightly
-    // biased low for small sample counts; callers needing an unbiased sample
-    // variance should account for that convention explicitly.
+    // Use the usual finite-sample sample-variance estimator. The public
+    // budget validation guarantees count >= 2, so the N-1 denominator is
+    // always defined.
     let mut value = 0.0;
     let mut gradient = vec![0.0; nparameters];
     let mut variance = 0.0;
@@ -999,7 +998,7 @@ fn combine_fixed(
         let count = stat.count as f64;
         let mean = stat.sum / count;
         value += mean;
-        let sample_variance = (stat.sum_squared / count - mean * mean).max(0.0);
+        let sample_variance = ((stat.sum_squared - count * mean * mean) / (count - 1.0)).max(0.0);
         variance += sample_variance / count;
         for (output, sum) in gradient.iter_mut().zip(&stat.gradient_sum) {
             *output += sum / count;
@@ -1035,8 +1034,7 @@ fn combine_adaptive(
     right: &[TermStats],
     budgets: &[usize],
 ) -> Result<(f64, Vec<f64>, f64), PauliError> {
-    // Keep the estimator convention explicit: this uses population (MLE)
-    // variances, which are biased low for small sample counts.
+    // Use finite-sample sample variances for both independent replicates.
     let nparameters = left.first().map_or(0, |stat| stat.gradient_sum.len());
     let mut value = 0.0;
     let mut gradient = vec![0.0; nparameters];
@@ -1047,8 +1045,12 @@ fn combine_adaptive(
         let left_mean = left_stat.sum / left_count;
         let right_mean = right_stat.sum / right_count;
         value += 0.5 * (left_mean + right_mean);
-        let left_var = (left_stat.sum_squared / left_count - left_mean * left_mean).max(0.0);
-        let right_var = (right_stat.sum_squared / right_count - right_mean * right_mean).max(0.0);
+        let left_var = ((left_stat.sum_squared - left_count * left_mean * left_mean)
+            / (left_count - 1.0))
+            .max(0.0);
+        let right_var = ((right_stat.sum_squared - right_count * right_mean * right_mean)
+            / (right_count - 1.0))
+            .max(0.0);
         variance += 0.25 * (left_var / left_count + right_var / right_count);
         for ((output, left_sum), right_sum) in gradient
             .iter_mut()
@@ -1086,7 +1088,7 @@ fn counter_random(
 
 #[cfg(test)]
 mod tests {
-    use super::{combine_adaptive, TermStats};
+    use super::{combine_adaptive, combine_fixed, TermStats};
     use crate::{
         Clifford1, Complex64, GateOperation, ParameterRef, PauliOperator, ProductState,
         RotationAxis, SPPSEngine,
@@ -1105,7 +1107,18 @@ mod tests {
         right.count = 2;
 
         let (_, _, standard_error) = combine_adaptive(&[left], &[right], &[2]).unwrap();
-        assert!((standard_error - 0.25).abs() < 1.0e-15);
+        assert!((standard_error - 0.3535533905932738).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn fixed_standard_error_uses_sample_variance() {
+        let mut stat = TermStats::new(0);
+        stat.sum = 1.0;
+        stat.sum_squared = 1.0;
+        stat.count = 2;
+
+        let (_, _, standard_error) = combine_fixed(&[stat], 0).unwrap();
+        assert!((standard_error - 0.5).abs() < 1.0e-15);
     }
 
     #[test]

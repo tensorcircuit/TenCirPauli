@@ -28,9 +28,8 @@ _DEFAULT_ZERO_STATE = ZeroState()
 class SPPSEstimate:
     """One fixed-budget or adaptive SPPS estimate.
 
-    ``value_standard_error`` uses the population (MLE) variance estimator of
-    the sampled path distribution, so it is biased low for very small sample
-    counts.
+    ``value_standard_error`` uses the usual finite-sample sample-variance
+    estimator of the sampled path distribution (with an ``N-1`` denominator).
     """
 
     value: float
@@ -49,9 +48,8 @@ class SPPSEstimate:
 class SPPSValueEstimate:
     """One value-only stochastic Pauli-path estimate.
 
-    ``value_standard_error`` uses the population (MLE) variance estimator of
-    the sampled path distribution, so it is biased low for very small sample
-    counts.
+    ``value_standard_error`` uses the usual finite-sample sample-variance
+    estimator of the sampled path distribution (with an ``N-1`` denominator).
     """
 
     value: float

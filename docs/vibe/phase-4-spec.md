@@ -277,7 +277,7 @@ class SPPSEngine:
 
 `samples_per_replicate`按canonical observable term order返回：fixed mode中`replicates=1`且每项为`B`；adaptive mode中`replicates=2`且每项为该term每个macro-replicate的最终累计budget。`total_paths = replicates * sum(samples_per_replicate)`。
 
-`gradient`是shape `(nparameters,)` 的只读 contiguous `float64` array。`value_standard_error`由独立 term sample moments按线性组合规则估算；empty observable返回0。Fixed mode的proxy/converged fields为`None`；adaptive mode返回global/term proxies和bool。
+`gradient`是shape `(nparameters,)` 的只读 contiguous `float64` array。`value_standard_error`由独立 term sample moments按线性组合规则估算，每个 term/replicate 使用至少两个样本的 `N-1` sample-variance denominator；empty observable返回0。Fixed mode的proxy/converged fields为`None`；adaptive mode返回global/term proxies和bool。
 
 Engine construction获取tape、observable和state的immutable snapshot。Public properties至少包括 `nqubits`、`nparameters`、`gate_count`、`observable_terms` 和 `smoothing`。本阶段不提供SPPS propagated operator materialization、raw sampled paths、per-sample gradients或持久化 RNG state。
 

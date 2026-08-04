@@ -439,52 +439,14 @@ pub fn compile_charge_transitions(
     Ok((rows, columns, coefficients))
 }
 
-fn encode_occupation(occupation: &[u64], local_dimensions: &[u64]) -> Result<u64, PauliError> {
-    if occupation.len() != local_dimensions.len() {
-        return Err(invalid_sector());
-    }
-    let mut key = 0_u64;
-    for (&value, &dimension) in occupation.iter().zip(local_dimensions) {
-        if dimension == 0 || value >= dimension {
-            return Err(invalid_sector());
-        }
-        key = key
-            .checked_mul(dimension)
-            .and_then(|key| key.checked_add(value))
-            .ok_or(PauliError::Overflow {
-                context: "encoding charge-sector occupation",
-            })?;
-    }
-    Ok(key)
-}
-
-fn decode_occupation(
-    mut key: u64,
-    occupation: &mut [u64],
-    local_dimensions: &[u64],
-) -> Result<(), PauliError> {
-    if occupation.len() != local_dimensions.len() {
-        return Err(invalid_sector());
-    }
-    for position in (0..local_dimensions.len()).rev() {
-        let dimension = local_dimensions[position];
-        if dimension == 0 {
-            return Err(invalid_sector());
-        }
-        occupation[position] = key % dimension;
-        key /= dimension;
-    }
-    if key != 0 {
-        return Err(invalid_sector());
-    }
-    Ok(())
-}
-
 /// Compile transitions directly against a reusable rank/unrank plan.
 ///
-/// A mixed-radix occupation key replaces the old ``HashMap<Vec<u64>, ...>``.
-/// Source and destination occupation buffers are reused for every term, while
-/// destination aggregation still happens before sector membership is checked.
+/// Source and destination occupation buffers are reused for every term. A
+/// destination occupation vector is used as the aggregate key so the path
+/// does not encode the full Cartesian Hilbert space into one integer; this is
+/// essential for wide layouts whose selected sector still fits platform
+/// indices. Destination aggregation still happens before sector membership is
+/// checked.
 pub fn compile_charge_transitions_from_plan(
     plan: &ChargeSectorPlan,
     layout: ChargeTransitionPlanLayout<'_>,
@@ -516,16 +478,6 @@ pub fn compile_charge_transitions_from_plan(
             return Err(invalid_sector());
         }
     }
-    let mut full_dimension = 1_u64;
-    for &local_dimension in local_dimensions {
-        full_dimension =
-            full_dimension
-                .checked_mul(local_dimension)
-                .ok_or(PauliError::Overflow {
-                    context: "encoding charge-sector occupation",
-                })?;
-    }
-    let _ = full_dimension;
     let scratch_bytes = axis_count
         .checked_mul(std::mem::size_of::<u64>())
         .and_then(|value| value.checked_add(terms.len().checked_mul(64)?))
@@ -557,8 +509,17 @@ pub fn compile_charge_transitions_from_plan(
     let mut remaining = vec![0_i128; plan.constraint_count()];
     let mut candidate_remaining = vec![0_i128; plan.constraint_count()];
     let mut transitions: FxHashMap<(u64, u64), Complex64> = FxHashMap::default();
-    let mut destinations: FxHashMap<u64, Complex64> =
+    let mut destinations: FxHashMap<Vec<u64>, Complex64> =
         FxHashMap::with_capacity_and_hasher(terms.len(), Default::default());
+    let destination_entry_bytes = 64usize
+        .checked_add(axis_count.checked_mul(std::mem::size_of::<u64>()).ok_or(
+            PauliError::Overflow {
+                context: "estimating charge-sector destination storage",
+            },
+        )?)
+        .ok_or(PauliError::Overflow {
+            context: "estimating charge-sector destination storage",
+        })?;
     for column in 0..dimension {
         plan.unrank_into_with_scratch(
             u64::try_from(column).map_err(|_| PauliError::Overflow {
@@ -616,15 +577,15 @@ pub fn compile_charge_transitions_from_plan(
             if value.re == 0.0 && value.im == 0.0 {
                 continue;
             }
-            let key = encode_occupation(&destination, local_dimensions)?;
-            *destinations.entry(key).or_insert(Complex64::new(0.0, 0.0)) += value;
-            check_bytes(destinations.len(), 64, max_bytes)?;
+            *destinations
+                .entry(destination.clone())
+                .or_insert(Complex64::new(0.0, 0.0)) += value;
+            check_bytes(destinations.len(), destination_entry_bytes, max_bytes)?;
         }
-        for (key, value) in destinations.drain() {
+        for (destination, value) in destinations.drain() {
             if value.re == 0.0 && value.im == 0.0 {
                 continue;
             }
-            decode_occupation(key, &mut destination, local_dimensions)?;
             let row = match plan.rank_into(&destination, &mut remaining, &mut candidate_remaining) {
                 Ok(row) => row,
                 Err(PauliError::InvalidSector { .. }) => {

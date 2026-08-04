@@ -400,6 +400,8 @@ Mapping-first and restriction-first equivalence must be validated on small syste
 
 ## 9. Error and memory contract
 
+`max_bytes` is a cheap, best-effort guard for the dominant new output, retained plan storage, and directly predictable workspace of the current public call. It is intentionally not an exact peak-memory quota. Implementations may use a deliberately loose checked upper bound, but must not perform a symbolic second traversal, allocator/RSS query, per-element budget accounting, or other work whose runtime is material relative to the operation merely to tighten the estimate. Python/Rust object headers, allocator slack, conversion temporaries, and pre-existing caller-owned state remain outside this logical estimate.
+
 The phase must fail explicitly for:
 
 - invalid, non-integer, or out-of-layout charge weights;

@@ -429,16 +429,18 @@ def _resolve_boson_cutoffs(
 def _local_dimensions(
     space: OperatorSpace, cutoffs: Mapping[int, int]
 ) -> Tuple[int, ...]:
-    dimensions = tuple(
+    """Return finite local dimensions without multiplying the full space.
+
+    A selected charge sector can be small even when the Cartesian product of
+    all local axes is wider than a platform index (for example, one fermion
+    in 65 modes).  The selected dimension is checked by the rank/unrank plan
+    after its suffix counts are built; this helper must not impose a full
+    Hilbert-space ceiling of its own.
+    """
+    return tuple(
         cutoffs[axis.index] + 1 if axis.domain == "boson" else axis.dimension
         for axis in space._axes
     )
-    dimension = math.prod(dimensions)
-    if dimension > int(np.iinfo(np.intp).max):
-        raise OverflowError(
-            "charge-sector dimension cannot be represented by platform indices"
-        )
-    return dimensions
 
 
 def _charge_contribution(
@@ -1156,8 +1158,14 @@ def _exact_charge_commutator(
             raise ValueError("operator and charge layouts are incompatible")
         term_count = len(operator.terms)
         qubit_count = operator.nqubits
-        terms: Iterable[Tuple[Sequence[int], complex, Optional[_Term]]] = (
-            (term.word.to_codes(), term.coefficient, None) for term in operator.terms
+        structures, coefficients_re, coefficients_im = operator._arrays()
+        terms: Iterable[Tuple[Sequence[int], complex, Optional[_Term]]] = zip(
+            structures,
+            (
+                complex(real, imaginary)
+                for real, imaginary in zip(coefficients_re, coefficients_im)
+            ),
+            (None for _ in structures),
         )
     elif isinstance(operator, _StructuredOperator):
         if operator.space != charge.space:

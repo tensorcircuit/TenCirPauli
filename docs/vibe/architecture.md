@@ -276,7 +276,7 @@ maturin --version
 - 所有长时间 Rust 计算释放 GIL。
 - Rayon thread count 可由显式 option 或专用环境变量控制，避免和 BLAS、JAX CPU thread pool 形成不可控 oversubscription。
 - plan 和 operator object 在并发读取时必须线程安全；带 mutable scratch buffer 的 engine 不允许无保护共享。
-- 所有公开 API 的统一默认 memory budget 为 16 GiB。对可廉价估算的主要目标输出和 workspace 提供 best-effort `max_bytes` guard，允许调用者提高或显式关闭该 guard，并始终 checked dimension/arithmetic overflow；不把该 guard 描述成包含 allocator overhead、FFI conversion 和所有 transient scratch 的精确 peak-RSS limit，也不承诺避免操作系统 OOM。
+- 所有公开 API 的统一默认 memory budget 为 16 GiB。对可廉价估算的主要目标输出和 workspace 提供 best-effort `max_bytes` guard，允许调用者提高或显式关闭该 guard，并始终 checked dimension/arithmetic overflow；不把该 guard 描述成包含 allocator overhead、FFI conversion 和所有 transient scratch 的精确 peak-RSS limit，也不承诺避免操作系统 OOM。估算只应使用随维度、term/transition 数量直接可得的宽松 major-buffer 上界；不得为了把 `max_bytes` 算准而增加额外 dry run、逐元素记账、allocator 查询或可感知的热路径运行时间。
 - artifact serialization 使用版本化、确定性的格式；不序列化 Python object 地址、hash seed 或 backend device object。
 
 ## 14. 正确性与验证

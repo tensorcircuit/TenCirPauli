@@ -11,7 +11,12 @@ import numpy as np
 
 from . import _native
 from ._validation import validate_nonnegative_int
-from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    _check_allocation,
+    _effective_max_bytes,
+    _validate_max_bytes,
+)
 
 
 if TYPE_CHECKING:
@@ -901,7 +906,21 @@ class PauliOperator:
             raise TypeError("tensor_product expects a PauliOperator")
         left_structures, left_reals, left_imaginaries = self._arrays()
         right_structures, right_reals, right_imaginaries = other._arrays()
-        terms = []
+        pair_count = len(left_structures) * len(right_structures)
+        total_qubits = self.nqubits + other.nqubits
+        # The pair table is the dominant predictable workspace. Reserve room
+        # for its code/coefficient arrays and one comparable canonical output
+        # representation before materializing anything.
+        _check_allocation(
+            pair_count * (2 * total_qubits + 32),
+            max_bytes,
+            "Pauli tensor-product workspace",
+        )
+        structures: np.ndarray[Any, Any] = np.empty(
+            (pair_count, total_qubits), dtype=np.uint8
+        )
+        coefficients: np.ndarray[Any, Any] = np.empty(pair_count, dtype=np.complex128)
+        pair_index = 0
         for left_index, left_structure in enumerate(left_structures):
             left_coefficient = complex(
                 left_reals[left_index], left_imaginaries[left_index]
@@ -910,13 +929,13 @@ class PauliOperator:
                 right_coefficient = complex(
                     right_reals[right_index], right_imaginaries[right_index]
                 )
-                terms.append(
-                    (
-                        left_structure + right_structure,
-                        left_coefficient * right_coefficient,
-                    )
-                )
-        return PauliOperator.from_terms(self.nqubits + other.nqubits, terms)
+                structures[pair_index, :] = left_structure + right_structure
+                coefficients[pair_index] = left_coefficient * right_coefficient
+                pair_index += 1
+        return PauliOperator.from_code_arrays(
+            cast(Sequence[Sequence[int]], structures),
+            cast(Sequence[complex], coefficients),
+        )
 
 
 def _normalize_operator_inputs(

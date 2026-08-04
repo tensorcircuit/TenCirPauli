@@ -337,6 +337,15 @@ def test_phase75_mapping_plan_construction(
     benchmark(tcp.FermionQubitMapping.from_name, name, 8)
 
 
+@pytest.mark.parametrize("mapping", ["parity", "bravyi_kitaev"])
+def test_phase75_mapping_plan_construction_scale(
+    benchmark: BenchmarkFixture, mapping: str
+) -> None:
+    n_modes = 512
+    _record(benchmark, mapping=mapping, n_modes=n_modes, scale="xlarge")
+    benchmark(tcp.FermionQubitMapping.from_name, mapping, n_modes)
+
+
 @pytest.mark.parametrize(
     ("mapping", "scale", "n_modes"),
     [
@@ -517,6 +526,56 @@ def test_phase75_mapping_ab_native(
         input_terms=term_count,
         output_terms=len(actual.terms),
         cnot_count=len(plan.cnot_operations),
+    )
+    benchmark(plan.map_pauli, operator)
+
+
+@pytest.mark.parametrize("mapping", ["parity", "bravyi_kitaev"])
+def test_phase75_mapping_scale_native(
+    benchmark: BenchmarkFixture, mapping: str
+) -> None:
+    n_modes = 512
+    term_count = 1024
+    plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
+    operator = _mapping_ab_workload(n_modes, term_count)
+    actual = plan.map_pauli(operator)
+    assert len(operator.terms) == term_count
+    assert len(actual.terms) == term_count
+    _record(
+        benchmark,
+        path="rust_native",
+        mapping=mapping,
+        scale="xlarge",
+        n_modes=n_modes,
+        raw_requested_terms=term_count,
+        input_terms=len(operator.terms),
+        output_terms=len(actual.terms),
+        cnot_count=len(plan.cnot_operations),
+        plan_bytes=plan.estimated_bytes,
+    )
+    benchmark(plan.map_pauli, operator)
+
+
+def test_phase75_mapping_long_parity_word(benchmark: BenchmarkFixture) -> None:
+    n_modes = 512
+    plan = tcp.FermionQubitMapping.parity(n_modes)
+    codes = np.zeros((1, n_modes), dtype=np.uint8)
+    codes[0, 0] = 1
+    operator = tcp.PauliOperator.from_code_arrays(codes, [1.0])
+    mapped = plan.map_pauli(operator)
+    assert len(mapped.terms) == 1
+    _record(
+        benchmark,
+        path="rust_native",
+        operation="long_parity_word",
+        mapping="parity",
+        n_modes=n_modes,
+        raw_requested_terms=1,
+        input_terms=len(operator.terms),
+        output_terms=len(mapped.terms),
+        mapped_weight=mapped.terms[0].word.weight,
+        cnot_count=len(plan.cnot_operations),
+        plan_bytes=plan.estimated_bytes,
     )
     benchmark(plan.map_pauli, operator)
 

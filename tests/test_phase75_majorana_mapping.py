@@ -234,6 +234,18 @@ def test_mapping_plan_and_mapped_output_honor_memory_limits() -> None:
         plan.map_fermion_operator(operator, max_bytes=1)
 
 
+def test_mapping_estimate_covers_packed_and_public_major_buffers() -> None:
+    plan = tcp.FermionQubitMapping.parity(8)
+    packed_bytes = 2 * 8 * ((8 + 63) // 64) * 8
+    expected = 4 * 8 * 8 + packed_bytes + 3 * len(plan.cnot_operations) * 16 + 256
+    assert plan.estimated_bytes == expected
+    bounded = tcp.FermionQubitMapping.parity(8, max_bytes=expected)
+    assert bounded.estimated_bytes == expected
+    assert tcp.FermionQubitMapping.parity(16).estimated_bytes > plan.estimated_bytes
+    with pytest.raises(MemoryError):
+        tcp.FermionQubitMapping.parity(512, max_bytes=3_000_000)
+
+
 def test_packed_majorana_support_crosses_multiple_u64_boundaries() -> None:
     n_modes = 70
     left = tcp.MajoranaWord(n_modes, (63, 64, 127, 128))

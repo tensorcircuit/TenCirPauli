@@ -41,9 +41,21 @@ _exact_nonnegative = validate_nonnegative_int
 
 def _mapping_plan_upper_bound(n_modes: int) -> int:
     """Return a checked-before-allocation upper bound for one mapping plan."""
-    matrix_bytes = 2 * n_modes * n_modes
-    cnot_bytes = 16 * n_modes * (n_modes - 1) // 2
-    return matrix_bytes + cnot_bytes + 256
+    max_cnot_count = n_modes * (n_modes - 1) // 2
+    native_bytes = _mapping_plan_native_bytes(n_modes, max_cnot_count)
+    # The public object eagerly retains two uint8 diagnostic matrices, the
+    # tuple-of-pairs provenance, and its int64 CNOT mirror.  Count their
+    # logical payloads once; Python headers and allocator slack remain outside
+    # the best-effort contract.
+    public_bytes = 2 * n_modes * n_modes + 2 * 16 * max_cnot_count
+    return native_bytes + public_bytes
+
+
+def _mapping_plan_native_bytes(n_modes: int, cnot_count: int) -> int:
+    """Return the cheap logical payload estimate for the retained native plan."""
+    packed_words = (n_modes + 63) // 64
+    packed_bytes = 2 * n_modes * packed_words * 8
+    return 2 * n_modes * n_modes + packed_bytes + 16 * cnot_count + 256
 
 
 def _validate_matrix(
@@ -196,17 +208,25 @@ class FermionQubitMapping:
         if _native_plan is None:
             inverse = _gf2_inverse(matrix)
             cnot_operations = _canonical_cnot_operations(matrix)
-            estimated_bytes = n_modes * n_modes * 2 + len(cnot_operations) * 16 + 256
+            native_bytes = _mapping_plan_native_bytes(n_modes, len(cnot_operations))
         else:
             inverse = _validate_matrix(_native_plan.inverse_encoding, n_modes)
             cnot_operations = tuple(
                 (int(control), int(target))
                 for control, target in _native_plan.cnot_operations
             )
-            estimated_bytes = int(_native_plan.estimated_bytes)
+            native_bytes = int(_native_plan.estimated_bytes)
         clifford = np.asarray(cnot_operations, dtype=np.int64).reshape((-1, 2))
         clifford = np.ascontiguousarray(clifford)
         clifford.setflags(write=False)
+        public_matrix_bytes = 2 * n_modes * n_modes
+        public_cnot_bytes = len(cnot_operations) * 16
+        actual_bytes = native_bytes + public_matrix_bytes + 2 * public_cnot_bytes
+        # Keep the public estimate equal to the same cheap preflight upper
+        # bound used before the native plan is built. It is intentionally a
+        # little loose for JW/BK, which avoids an extra mapping-specific scan
+        # and guarantees that a budget at the documented estimate succeeds.
+        estimated_bytes = max(actual_bytes, _mapping_plan_upper_bound(n_modes))
         object.__setattr__(self, "schema_version", _SCHEMA_VERSION)
         object.__setattr__(self, "mapping_name", mapping_name)
         object.__setattr__(self, "n_modes", n_modes)
@@ -238,6 +258,11 @@ class FermionQubitMapping:
         if mapping_name not in {"jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError("unsupported fermion-to-qubit mapping")
         _validate_max_bytes(max_bytes)
+        _check_allocation(
+            _mapping_plan_upper_bound(normalized_modes),
+            max_bytes,
+            "fermion mapping plan",
+        )
         native_plan = _native.mapping_plan(
             mapping_name,
             normalized_modes,
