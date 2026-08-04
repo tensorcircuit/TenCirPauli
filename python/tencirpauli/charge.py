@@ -895,7 +895,8 @@ class ChargeRestrictedOperator:
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
         _validate_max_bytes(max_bytes)
-        indptr = np.bincount(self._plan.rows + 1, minlength=self.dimension + 1).astype(
+        row_indices = np.asarray(self._plan.rows, dtype=np.intp)
+        indptr = np.bincount(row_indices + 1, minlength=self.dimension + 1).astype(
             np.intp, copy=False
         )
         np.cumsum(indptr, out=indptr)

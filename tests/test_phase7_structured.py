@@ -13,6 +13,10 @@ from tencirpauli import _native
 from tencirpauli.structured import _jordan_wigner_word
 
 
+def _bit_count(value: int) -> int:
+    return bin(value).count("1")
+
+
 def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
     dimension = 1 << n_modes
     result = np.eye(dimension, dtype=np.complex128)
@@ -31,7 +35,7 @@ def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.nd
             lower_mask = 0
             for lower_mode in range(mode):
                 lower_mask |= 1 << (n_modes - 1 - lower_mode)
-            parity = (column & lower_mask).bit_count() & 1
+            parity = _bit_count(column & lower_mask) & 1
             local[row, column] = -1.0 if parity else 1.0
         result = result @ local
     return result

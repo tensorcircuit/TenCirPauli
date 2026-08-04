@@ -10,6 +10,10 @@ import pytest
 import tencirpauli as tcp
 
 
+def _bit_count(value: int) -> int:
+    return bin(value).count("1")
+
+
 def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
     dimension = 1 << n_modes
     result = np.eye(dimension, dtype=np.complex128)
@@ -26,7 +30,7 @@ def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.nd
                     continue
                 row = column | (1 << (n_modes - 1 - mode))
             lower_mask = sum(1 << (n_modes - 1 - index) for index in range(mode))
-            sign = -1.0 if (column & lower_mask).bit_count() & 1 else 1.0
+            sign = -1.0 if _bit_count(column & lower_mask) & 1 else 1.0
             local[row, column] = sign
         result = result @ local
     return result
