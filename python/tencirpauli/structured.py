@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         AdditiveSymmetryAnalysis,
         ChargeRestrictedOperator,
         ChargeSector,
+        ChargeStorage,
     )
     from .majorana import MajoranaOperator
     from .mapping import FermionQubitMapping
@@ -1155,12 +1156,18 @@ class _StructuredOperator:
         self,
         sector: "ChargeSector",
         *,
+        storage: "ChargeStorage" = "eager",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "ChargeRestrictedOperator":
-        """Restrict an exactly conserved operator to a charge sector."""
+        """Restrict an exactly conserved operator to a charge-sector MVP.
+
+        ``storage="eager"`` is the default transition-table strategy;
+        ``storage="lazy"`` keeps only native sector metadata and supports
+        matrix-vector application without retaining all transitions.
+        """
         from .charge import restrict_charge
 
-        return restrict_charge(self, sector, max_bytes=max_bytes)
+        return restrict_charge(self, sector, storage=storage, max_bytes=max_bytes)
 
     def tensor_product(
         self,

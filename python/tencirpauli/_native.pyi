@@ -87,6 +87,29 @@ class NativeChargeSectorPlan:
         qudit_dimension: int,
         max_bytes: int,
     ) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+    def apply_lazy(
+        self,
+        dimension: int,
+        local_dimensions: Sequence[int],
+        fermion_positions: Sequence[int],
+        boson_positions: Sequence[int],
+        qubit_positions: Sequence[int],
+        qudit_positions: Sequence[int],
+        fermion_creation: object,
+        fermion_annihilation: object,
+        boson_blocks: object,
+        qubit_codes: object,
+        mapped_present: Sequence[bool],
+        mapped_codes: object,
+        qudit_present: Sequence[bool],
+        qudit_triples: object,
+        coefficients: object,
+        state: object,
+        qudit_dimension: int,
+        termwise_conserved: bool,
+        max_bytes: int,
+        fast_fermion_particles: int | None,
+    ) -> object: ...
 
 def charge_sector_plan(
     local_dimensions: Sequence[int],

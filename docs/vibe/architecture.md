@@ -126,11 +126,13 @@ Hamiltonian compiler 接收 canonical Pauli structure 和 coefficient，支持�
 
 Pauli word 对 computational basis 的作用采用 XOR permutation 加 phase evaluation。矩阵构造按 term 和 basis block 并行，使用 Rayon；最终 COO/CSR 聚合必须确定性。系统过大时应根据估计的 rows、nonzeros 和 bytes 直接拒绝 dense/CSR target，并建议 MVP，而不是尝试分配后 OOM。
 
+All CPU-native MVP plans default to compact lazy storage; eager dimension-scale diagonals or transition graphs require an explicit eager-plan request or an explicit restricted materialization such as CSR, COO, or dense output. A fixed plan never changes storage. A charge-restricted facade may build and retain a synchronized eager transition cache after materialization is requested, then reuse it for later facade execution without changing previously returned plans. This keeps the ordinary MVP path memory-safe while making materialization natural and amortizing its cost.
+
 ### 8.3 Symmetry engine
 
 第一类能力是 Z2 Pauli symmetry。给定 Hamiltonian support，构造 binary symplectic commutation constraints，求 GF(2) null space，提取线性独立且彼此 commuting 的 symmetry generators，验证每个 generator 与完整 Hamiltonian commute，并允许用户选择 eigenvalue sector。Tapering 必须返回显式 Clifford transform、移除 qubits、sector signs 和可逆 provenance。
 
-第二类能力是显式 U(1) particle-number sector。第一阶段不声称从任意 Pauli sum 自动发现 U(1)，而是接受已知 number operator 或 `particle_number=k` 配置，构造 fixed-Hamming-weight basis、rank/unrank map 和 restricted Hamiltonian plan，并验证目标 Hamiltonian 在数值容限内没有 sector leakage。该能力应与现有 `U1Circuit` 的 basis ordering 和 observable 语义对齐，而不是建立第二套不兼容约定。
+第二类能力是显式 U(1) particle-number sector。第一阶段不声称从任意 Pauli sum 自动发现 U(1)，而是接受已知 number operator 或 `particle_number=k` 配置，构造 fixed-Hamming-weight basis、rank/unrank map 和 restricted Hamiltonian plan，并验证目标 Hamiltonian 在数值容限内没有 sector leakage。普通 operator restriction 统一通过 `restrict_charge()`；eligible pure-qubit fixed-weight sectors dispatch to the optimized packed U1 backend, while spinful fermion and general multi-charge layouts retain their own specialized or generic backends. `U1Sector` and `U1Circuit` remain public basis/circuit contracts, but the separate `restrict_u1()` operator entry point is deprecated according to Phase 8.5.
 
 后续可以扩展 parity、spin sectors、multiple commuting charges 和自动 symmetry suggestion，但所有自动建议必须经过 exact commutator validation 才能用于降维。
 

@@ -20,8 +20,9 @@ mod u1_circuit;
 mod word;
 
 pub use charge::{
-    compile_charge_transitions, compile_charge_transitions_from_plan, ChargeTransitionLayout,
-    ChargeTransitionPlanLayout, ChargeTransitionResult, ChargeTransitionTerm,
+    apply_charge_mvp_from_plan, compile_charge_transitions, compile_charge_transitions_from_plan,
+    ChargeTransitionLayout, ChargeTransitionPlanLayout, ChargeTransitionResult,
+    ChargeTransitionTerm,
 };
 pub use charge_sector::{
     build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,

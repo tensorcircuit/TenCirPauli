@@ -71,6 +71,7 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
     assert tuple(advanced.__all__) == (
         "BackendMVPPlan",
         "CanonicalizationArrayResult",
+        "ChargeLazyMvpPlan",
         "ChargeMvpPlan",
         "ChargeRestrictedOperator",
         "GateTape",

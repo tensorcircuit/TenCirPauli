@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import itertools
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
 import tencirpauli as tcp
 import tencirpauli.pauli as pauli_module
+from tencirpauli.charge import ChargeLazyMvpPlan
 
 
 def _selected_basis(sector: tcp.ChargeSector) -> list[tuple[int, ...]]:
@@ -250,6 +252,13 @@ def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> N
     np.testing.assert_array_equal(restricted.dense(), np.zeros((1, 1)))
     assert restricted.mvp_plan().transition_count == 0
 
+    lazy = parity_cancellation.restrict_charge(sector, storage="lazy")
+    assert lazy.storage == "lazy"
+    assert lazy.mvp_plan().storage == "lazy"
+    np.testing.assert_array_equal(lazy.apply(np.asarray([1.0 + 0j])), np.zeros(1))
+    with pytest.raises(NotImplementedError, match="storage='eager'"):
+        lazy.dense()
+
 
 def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
     fermion_space = tcp.OperatorSpace(fermions=2)
@@ -262,6 +271,9 @@ def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
     np.testing.assert_allclose(
         restricted.dense(), np.asarray([[0, 1], [1, 0]], dtype=np.complex128)
     )
+    lazy = hopping.restrict_charge(sector, storage="lazy")
+    state = np.asarray([0.5 - 0.2j, -0.3 + 0.7j])
+    np.testing.assert_allclose(lazy.apply(state), restricted.apply(state))
 
     boson_space = tcp.OperatorSpace(bosons=2)
     total = tcp.AdditiveCharge(boson_space, bosons={0: 1, 1: 1})
@@ -275,6 +287,30 @@ def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
         dtype=np.complex128,
     )
     np.testing.assert_allclose(actual, expected)
+
+
+def test_spinful_fermion_lazy_fast_path_matches_generic_and_eager() -> None:
+    space = tcp.OperatorSpace(fermions=4)
+    operator = tcp.FermionOperator.from_terms(
+        4,
+        [
+            (((0, "create"), (0, "annihilate"), (2, "create"), (2, "annihilate")), 3.0),
+            (((0, "create"), (1, "annihilate")), -1.0),
+            (((1, "create"), (0, "annihilate")), -1.0),
+            (((2, "create"), (3, "annihilate")), -1.0),
+            (((3, "create"), (2, "annihilate")), -1.0),
+        ],
+    )
+    total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
+    balance = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: -1, 3: -1})
+    sector = tcp.ChargeSector(((total, 2), (balance, 0)))
+    eager = operator.restrict_charge(sector)
+    fast = operator.restrict_charge(sector, storage="lazy")
+    generic_inputs = replace(fast.mvp_plan()._inputs, fast_fermion_particles=None)
+    generic = ChargeLazyMvpPlan(sector, operator.term_count, generic_inputs)
+    state = np.asarray([0.3 - 0.2j, -0.4 + 0.1j, 0.7 + 0.5j, -0.2 - 0.6j])
+    np.testing.assert_allclose(fast.apply(state), generic.apply(state))
+    np.testing.assert_allclose(fast.apply(state), eager.apply(state))
 
 
 def test_qudit_spectator_is_retained_in_restricted_execution() -> None:
@@ -296,6 +332,8 @@ def test_restriction_rejects_leakage_and_memory_guards() -> None:
     space = tcp.OperatorSpace(qubits=2)
     number = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
     sector = number.sector(1)
+    with pytest.raises(ValueError, match="storage"):
+        space.qubit.z(0).restrict_charge(sector, storage="auto")
     with pytest.raises(ValueError, match="conserved"):
         space.qubit.x(0).restrict_charge(sector)
     conserved = space.qubit.z(0)

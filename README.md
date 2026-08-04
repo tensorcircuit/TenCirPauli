@@ -101,6 +101,8 @@ Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `Opera
 
 Phase 7.5 adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the frozen [`phase-7.5-spec.md`](docs/vibe/phase-7.5-spec.md).
 
+Restricted charge plans use eager transition storage by default. For a sector too large to retain its full transition graph, request `storage="lazy"` from `.restrict_charge()` to apply the operator natively one matrix-vector product at a time; lazy plans intentionally support MVP application only and do not materialize dense or sparse targets.
+
 Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See [`examples/structured_algebra.py`](examples/structured_algebra.py) for an executable example.
 
 ## Common circuit facade

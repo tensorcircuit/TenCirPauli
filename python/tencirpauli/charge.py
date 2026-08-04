@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import (
     Any,
     Dict,
     Iterable,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -44,6 +46,13 @@ from .structured import (
 
 _I128_MIN = -(1 << 127)
 _I128_MAX = (1 << 127) - 1
+ChargeStorage = Literal["eager", "lazy"]
+
+
+def _validate_storage(value: object) -> ChargeStorage:
+    if value not in ("eager", "lazy"):
+        raise ValueError("storage must be either 'eager' or 'lazy'")
+    return value
 
 
 def _checked_float(value: Union[int, Fraction], name: str) -> float:
@@ -773,6 +782,27 @@ class ChargeSector:
         return f"ChargeSector(dimension={self.dimension}, constraints={len(self.constraints)})"
 
 
+@dataclass(frozen=True)
+class _RestrictedTransitionInputs:
+    local_dimensions: Tuple[int, ...]
+    fermion_positions: List[int]
+    boson_positions: List[int]
+    qubit_positions: List[int]
+    qudit_positions: List[int]
+    fermion_creation: List[List[int]]
+    fermion_annihilation: List[List[int]]
+    boson_blocks: List[List[Tuple[int, int, int]]]
+    qubit_codes: List[List[int]]
+    mapped_present: List[bool]
+    mapped_codes: List[List[int]]
+    qudit_present: List[bool]
+    qudit_triples: List[List[Tuple[int, int, int]]]
+    coefficients: np.ndarray[Any, Any]
+    qudit_dimension: int
+    termwise_conserved: bool
+    fast_fermion_particles: Optional[int]
+
+
 class ChargeMvpPlan:
     """Reusable matrix-free transition plan in a finite charge-sector basis.
 
@@ -789,6 +819,7 @@ class ChargeMvpPlan:
         "dimension",
         "estimated_bytes",
         "rows",
+        "storage",
         "target",
         "term_count",
         "transition_count",
@@ -801,6 +832,7 @@ class ChargeMvpPlan:
     coefficients: np.ndarray[Any, Any]
     estimated_bytes: int
     basis_ordering: str
+    storage: ChargeStorage
     target: str
     _locked: bool
 
@@ -829,6 +861,7 @@ class ChargeMvpPlan:
             int(row_values.nbytes + column_values.nbytes + coefficient_values.nbytes),
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
+        object.__setattr__(self, "storage", "eager")
         object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_locked", True)
 
@@ -872,12 +905,121 @@ class ChargeMvpPlan:
         return self.apply(state)
 
 
+class ChargeLazyMvpPlan:
+    """Explicitly lazy native MVP plan for a finite charge sector.
+
+    Unlike :class:`ChargeMvpPlan`, this plan does not retain the complete
+    restricted transition graph. The native implementation enumerates source
+    basis states and aggregates destinations for one source column at a time.
+    Dense and sparse materialization are intentionally unavailable for this
+    storage strategy.
+    """
+
+    __slots__ = (
+        "_inputs",
+        "_locked",
+        "_native_plan",
+        "basis_ordering",
+        "dimension",
+        "estimated_bytes",
+        "storage",
+        "target",
+        "term_count",
+    )
+    dimension: int
+    term_count: int
+    estimated_bytes: int
+    basis_ordering: str
+    storage: ChargeStorage
+    target: str
+    _locked: bool
+    _inputs: _RestrictedTransitionInputs
+    _native_plan: Any
+
+    def __init__(
+        self,
+        sector: ChargeSector,
+        term_count: int,
+        inputs: "_RestrictedTransitionInputs",
+    ) -> None:
+        if sector._native_plan is None:
+            raise NotImplementedError(
+                "storage='lazy' requires a native compact ChargeSector plan"
+            )
+        object.__setattr__(self, "_native_plan", sector._native_plan)
+        object.__setattr__(self, "_inputs", inputs)
+        object.__setattr__(self, "dimension", sector.dimension)
+        object.__setattr__(self, "term_count", int(term_count))
+        object.__setattr__(
+            self,
+            "estimated_bytes",
+            int(sector.estimated_bytes + inputs.coefficients.nbytes),
+        )
+        object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
+        object.__setattr__(self, "storage", "lazy")
+        object.__setattr__(self, "target", "native_mvp")
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_locked", False):
+            raise AttributeError("ChargeLazyMvpPlan is immutable")
+        object.__setattr__(self, name, value)
+
+    def apply(
+        self,
+        state: Sequence[complex],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]:
+        """Apply the operator without storing all restricted transitions."""
+        _validate_max_bytes(max_bytes)
+        values = np.asarray(state, dtype=np.complex128)
+        if values.ndim != 1 or values.shape[0] != self.dimension:
+            raise ValueError(
+                f"state must have shape ({self.dimension},), got {values.shape}"
+            )
+        _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
+        inputs = self._inputs
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(
+                self._native_plan.apply_lazy(
+                    self.dimension,
+                    list(inputs.local_dimensions),
+                    list(inputs.fermion_positions),
+                    list(inputs.boson_positions),
+                    list(inputs.qubit_positions),
+                    list(inputs.qudit_positions),
+                    inputs.fermion_creation,
+                    inputs.fermion_annihilation,
+                    inputs.boson_blocks,
+                    inputs.qubit_codes,
+                    inputs.mapped_present,
+                    inputs.mapped_codes,
+                    inputs.qudit_present,
+                    inputs.qudit_triples,
+                    inputs.coefficients,
+                    np.ascontiguousarray(values),
+                    inputs.qudit_dimension,
+                    inputs.termwise_conserved,
+                    _effective_max_bytes(max_bytes),
+                    inputs.fast_fermion_particles,
+                ),
+                dtype=np.complex128,
+                order="C",
+            ),
+        )
+
+    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
+        return self.apply(state)
+
+
 class ChargeRestrictedOperator:
     """Exact action of a conserved structured or Pauli operator in one sector.
 
-    Construction validates exact charge conservation and aggregates all
-    transitions before exposing MVP, dense, COO, or CSR targets. Matrix rows
-    and columns use the deterministic ordering of the associated
+    Construction validates exact charge conservation and exposes either an
+    eager aggregated transition plan or an explicitly lazy native MVP plan.
+    Matrix rows and columns use the deterministic ordering of the associated
     :class:`ChargeSector`.
     """
 
@@ -887,11 +1029,13 @@ class ChargeRestrictedOperator:
         "dimension",
         "operator",
         "sector",
+        "storage",
     )
     operator: Union[_StructuredOperator, PauliOperator]
     sector: ChargeSector
     dimension: int
-    _plan: ChargeMvpPlan
+    _plan: Union[ChargeMvpPlan, ChargeLazyMvpPlan]
+    storage: ChargeStorage
     _locked: bool
 
     def __init__(
@@ -899,8 +1043,10 @@ class ChargeRestrictedOperator:
         operator: Union[_StructuredOperator, PauliOperator],
         sector: ChargeSector,
         *,
+        storage: ChargeStorage = "eager",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
+        storage = _validate_storage(storage)
         if not isinstance(sector, ChargeSector):
             raise TypeError("sector must be a ChargeSector")
         if isinstance(operator, PauliOperator):
@@ -918,23 +1064,34 @@ class ChargeRestrictedOperator:
                 raise ValueError(
                     "selected charge sector requires an exactly conserved operator"
                 )
-        rows, columns, coefficients = _compile_restricted_transitions(
-            operator, sector, max_bytes
+        term_count = (
+            len(operator.terms)
+            if isinstance(operator, PauliOperator)
+            else operator.term_count
         )
-        plan = ChargeMvpPlan(
-            sector.dimension,
-            (
-                len(operator.terms)
-                if isinstance(operator, PauliOperator)
-                else operator.term_count
-            ),
-            rows,
-            columns,
-            coefficients,
-        )
+        if storage == "eager":
+            rows, columns, coefficients = _compile_restricted_transitions(
+                operator, sector, max_bytes
+            )
+            plan: Union[ChargeMvpPlan, ChargeLazyMvpPlan] = ChargeMvpPlan(
+                sector.dimension,
+                term_count,
+                rows,
+                columns,
+                coefficients,
+            )
+        else:
+            inputs = _restricted_transition_inputs(operator, sector)
+            _check_allocation(
+                int(sector.estimated_bytes + inputs.coefficients.nbytes),
+                max_bytes,
+                "lazy charge MVP plan",
+            )
+            plan = ChargeLazyMvpPlan(sector, term_count, inputs)
         object.__setattr__(self, "operator", operator)
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", sector.dimension)
+        object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_plan", plan)
         object.__setattr__(self, "_locked", True)
 
@@ -971,14 +1128,22 @@ class ChargeRestrictedOperator:
 
     def mvp_plan(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> ChargeMvpPlan:
-        """Return the reusable matrix-free plan for this restricted operator.
+    ) -> Union[ChargeMvpPlan, ChargeLazyMvpPlan]:
+        """Return the reusable MVP plan for this restricted operator.
 
-        The returned plan is immutable and can be applied repeatedly. Its
-        storage estimate is checked against ``max_bytes`` before returning.
+        The returned plan is immutable and its storage estimate is checked
+        against ``max_bytes`` before returning. Eager plans retain all
+        transitions; lazy plans retain only the sector plan and term metadata.
         """
         _validate_max_bytes(max_bytes)
         _check_allocation(self._plan.estimated_bytes, max_bytes, "charge MVP plan")
+        return self._plan
+
+    def _require_eager(self) -> ChargeMvpPlan:
+        if not isinstance(self._plan, ChargeMvpPlan):
+            raise NotImplementedError(
+                "dense and sparse targets require storage='eager'"
+            )
         return self._plan
 
     def dense(
@@ -991,13 +1156,14 @@ class ChargeRestrictedOperator:
         is not required.
         """
         _validate_max_bytes(max_bytes)
+        plan = self._require_eager()
         _check_allocation(
             self.dimension * self.dimension * 16, max_bytes, "charge dense matrix"
         )
         result: np.ndarray[Any, Any] = np.zeros(
             (self.dimension, self.dimension), dtype=np.complex128
         )
-        result[self._plan.rows, self._plan.columns] = self._plan.coefficients
+        result[plan.rows, plan.columns] = plan.coefficients
         return result
 
     def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
@@ -1007,11 +1173,12 @@ class ChargeRestrictedOperator:
         indices and can be converted to SciPy with ``to_scipy()``.
         """
         _validate_max_bytes(max_bytes)
-        _check_allocation(self._plan.estimated_bytes, max_bytes, "charge COO matrix")
+        plan = self._require_eager()
+        _check_allocation(plan.estimated_bytes, max_bytes, "charge COO matrix")
         return COOMatrix(
-            self._plan.rows,
-            self._plan.columns,
-            self._plan.coefficients,
+            plan.rows,
+            plan.columns,
+            plan.coefficients,
             (self.dimension, self.dimension),
         )
 
@@ -1023,61 +1190,101 @@ class ChargeRestrictedOperator:
         arrays and is guarded by ``max_bytes``.
         """
         _validate_max_bytes(max_bytes)
-        row_indices = np.asarray(self._plan.rows, dtype=np.intp)
+        plan = self._require_eager()
+        row_indices = np.asarray(plan.rows, dtype=np.intp)
         indptr = np.bincount(row_indices + 1, minlength=self.dimension + 1).astype(
             np.intp, copy=False
         )
         np.cumsum(indptr, out=indptr)
         _check_allocation(
-            int(
-                indptr.nbytes
-                + self._plan.columns.nbytes
-                + self._plan.coefficients.nbytes
-            ),
+            int(indptr.nbytes + plan.columns.nbytes + plan.coefficients.nbytes),
             max_bytes,
             "charge CSR matrix",
         )
         return CSRMatrix(
             indptr,
-            self._plan.columns,
-            self._plan.coefficients,
+            plan.columns,
+            plan.coefficients,
             (self.dimension, self.dimension),
         )
 
 
-def _compile_restricted_transitions(
-    operator: Union[_StructuredOperator, PauliOperator],
-    sector: ChargeSector,
-    max_bytes: Optional[int],
-) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
-    _validate_max_bytes(max_bytes)
+def _termwise_charge_conserved(
+    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
+) -> bool:
+    """Return whether every serialized term preserves every charge directly."""
+    if isinstance(operator, PauliOperator):
+        structures, _, _ = operator._arrays()
+        return all(
+            all(code not in (1, 2) for code in structure) for structure in structures
+        )
+    for term in operator._terms:
+        if any(code in (1, 2) for code in term.qubit):
+            return False
+        if term.mapped_fermion is not None and any(
+            code in (1, 2) for code in term.mapped_fermion
+        ):
+            return False
+        for charge, _ in sector.constraints:
+            if _structured_charge_delta(term, charge) != 0:
+                return False
+    return True
+
+
+def _fast_fermion_particles(
+    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
+) -> Optional[int]:
+    """Detect the fixed-spin-sector layout used by the Hubbard MVP fast path."""
+    if (
+        isinstance(operator, PauliOperator)
+        or getattr(operator, "_domain", None) != "fermion"
+    ):
+        return None
+    space = sector.space
+    if space.bosons or space.qubits or space.qudits or space.fermions == 0:
+        return None
+    if space.fermions % 2 or sector.local_dimensions != (2,) * space.fermions:
+        return None
+    sites = space.fermions // 2
+    total_weights = (1,) * space.fermions
+    balance_weights = (1,) * sites + (-1,) * sites
+    total_target: Optional[int] = None
+    balance_target: Optional[int] = None
+    for charge, requested in sector.constraints:
+        target = requested - charge.offset
+        if charge.fermion_weights == total_weights:
+            if total_target is not None:
+                return None
+            total_target = target
+        elif charge.fermion_weights == balance_weights:
+            if balance_target is not None:
+                return None
+            balance_target = target
+        else:
+            return None
+    if total_target is None or balance_target != 0 or total_target % 2:
+        return None
+    particles = total_target // 2
+    if particles < 1 or particles > sites:
+        return None
+    for term in operator._terms:
+        if (
+            term.boson is not None
+            or term.qubit
+            or term.qudit is not None
+            or term.mapped_fermion is not None
+        ):
+            return None
+    return particles
+
+
+def _restricted_transition_inputs(
+    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
+) -> _RestrictedTransitionInputs:
     axis_positions = {
         (axis.domain, axis.index): position
         for position, axis in enumerate(sector.space._axes)
     }
-    basis: Optional[np.ndarray[Any, Any]] = None
-    if sector._native_plan is not None:
-        _check_allocation(
-            sector.estimated_bytes,
-            max_bytes,
-            "charge-sector rank/unrank plan",
-        )
-        if max_bytes is None:
-            remaining = None
-        else:
-            remaining = max_bytes - sector.estimated_bytes
-    else:
-        basis = sector.basis_states(max_bytes=max_bytes)
-        _check_allocation(
-            int(basis.nbytes), max_bytes, "charge restricted basis workspace"
-        )
-        if max_bytes is None:
-            remaining = None
-        else:
-            if basis.nbytes > max_bytes:
-                raise MemoryError("charge restricted basis workspace exceeds max_bytes")
-            remaining = max_bytes - int(basis.nbytes)
-
     fermion_positions = [
         axis_positions[("fermion", index)] for index in range(sector.space.fermions)
     ]
@@ -1090,11 +1297,6 @@ def _compile_restricted_transitions(
     qudit_positions = [
         axis_positions[("qudit", index)] for index in range(len(sector.space.qudits))
     ]
-    term_count = (
-        len(operator.terms)
-        if isinstance(operator, PauliOperator)
-        else operator.term_count
-    )
     fermion_creation: List[List[int]] = []
     fermion_annihilation: List[List[int]] = []
     boson_blocks: List[List[Tuple[int, int, int]]] = []
@@ -1156,36 +1358,93 @@ def _compile_restricted_transitions(
                 else []
             )
             coefficients.append(structured_term.coefficient)
-    if len(coefficients) != term_count:
-        raise RuntimeError("restricted transition term serialization is inconsistent")
     coefficient_array = np.ascontiguousarray(coefficients, dtype=np.complex128)
+    termwise_conserved = _termwise_charge_conserved(operator, sector)
+    return _RestrictedTransitionInputs(
+        tuple(sector.local_dimensions),
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        fermion_creation,
+        fermion_annihilation,
+        boson_blocks,
+        qubit_codes,
+        mapped_present,
+        mapped_codes,
+        qudit_present,
+        qudit_triples,
+        coefficient_array,
+        sector.space.qudits[0] if sector.space.qudits else 0,
+        termwise_conserved,
+        _fast_fermion_particles(operator, sector) if termwise_conserved else None,
+    )
+
+
+def _compile_restricted_transitions(
+    operator: Union[_StructuredOperator, PauliOperator],
+    sector: ChargeSector,
+    max_bytes: Optional[int],
+) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    _validate_max_bytes(max_bytes)
+    basis: Optional[np.ndarray[Any, Any]] = None
+    if sector._native_plan is not None:
+        _check_allocation(
+            sector.estimated_bytes,
+            max_bytes,
+            "charge-sector rank/unrank plan",
+        )
+        if max_bytes is None:
+            remaining = None
+        else:
+            remaining = max_bytes - sector.estimated_bytes
+    else:
+        basis = sector.basis_states(max_bytes=max_bytes)
+        _check_allocation(
+            int(basis.nbytes), max_bytes, "charge restricted basis workspace"
+        )
+        if max_bytes is None:
+            remaining = None
+        else:
+            if basis.nbytes > max_bytes:
+                raise MemoryError("charge restricted basis workspace exceeds max_bytes")
+            remaining = max_bytes - int(basis.nbytes)
+
+    inputs = _restricted_transition_inputs(operator, sector)
+    term_count = (
+        len(operator.terms)
+        if isinstance(operator, PauliOperator)
+        else operator.term_count
+    )
+    if len(inputs.coefficients) != term_count:
+        raise RuntimeError("restricted transition term serialization is inconsistent")
     _check_allocation(
-        int(coefficient_array.nbytes),
+        int(inputs.coefficients.nbytes),
         remaining,
         "charge restricted coefficient workspace",
     )
     if remaining is None:
         native_limit: Optional[int] = None
     else:
-        native_limit = remaining - int(coefficient_array.nbytes)
+        native_limit = remaining - int(inputs.coefficients.nbytes)
     if sector._native_plan is not None:
         rows, columns, real, imaginary = sector._native_plan.compile_transitions(
             sector.dimension,
-            list(sector.local_dimensions),
-            fermion_positions,
-            boson_positions,
-            qubit_positions,
-            qudit_positions,
-            fermion_creation,
-            fermion_annihilation,
-            boson_blocks,
-            qubit_codes,
-            mapped_present,
-            mapped_codes,
-            qudit_present,
-            qudit_triples,
-            coefficient_array,
-            sector.space.qudits[0] if sector.space.qudits else 0,
+            list(inputs.local_dimensions),
+            inputs.fermion_positions,
+            inputs.boson_positions,
+            inputs.qubit_positions,
+            inputs.qudit_positions,
+            inputs.fermion_creation,
+            inputs.fermion_annihilation,
+            inputs.boson_blocks,
+            inputs.qubit_codes,
+            inputs.mapped_present,
+            inputs.mapped_codes,
+            inputs.qudit_present,
+            inputs.qudit_triples,
+            inputs.coefficients,
+            inputs.qudit_dimension,
             _effective_max_bytes(native_limit),
         )
     else:
@@ -1194,21 +1453,21 @@ def _compile_restricted_transitions(
         rows, columns, real, imaginary = _native.charge_compile_transitions(
             sector.dimension,
             basis_array,
-            list(sector.local_dimensions),
-            fermion_positions,
-            boson_positions,
-            qubit_positions,
-            qudit_positions,
-            fermion_creation,
-            fermion_annihilation,
-            boson_blocks,
-            qubit_codes,
-            mapped_present,
-            mapped_codes,
-            qudit_present,
-            qudit_triples,
-            coefficient_array,
-            sector.space.qudits[0] if sector.space.qudits else 0,
+            list(inputs.local_dimensions),
+            inputs.fermion_positions,
+            inputs.boson_positions,
+            inputs.qubit_positions,
+            inputs.qudit_positions,
+            inputs.fermion_creation,
+            inputs.fermion_annihilation,
+            inputs.boson_blocks,
+            inputs.qubit_codes,
+            inputs.mapped_present,
+            inputs.mapped_codes,
+            inputs.qudit_present,
+            inputs.qudit_triples,
+            inputs.coefficients,
+            inputs.qudit_dimension,
             _effective_max_bytes(native_limit),
         )
     return (
@@ -1371,9 +1630,19 @@ def restrict_charge(
     operator: Union[_StructuredOperator, PauliOperator],
     sector: ChargeSector,
     *,
+    storage: ChargeStorage = "eager",
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> ChargeRestrictedOperator:
-    """Validate exact conservation and build a restricted transition plan."""
+    """Validate exact conservation and build a restricted MVP plan.
+
+    ``storage="eager"`` retains the aggregated transition graph and is the
+    default. ``storage="lazy"`` retains only the native charge-sector plan
+    and applies one matrix-vector product at a time without storing all
+    transitions. Lazy plans currently support MVP application only; dense and
+    sparse materialization require the eager strategy.
+    """
     if not isinstance(sector, ChargeSector):
         raise TypeError("sector must be a ChargeSector")
-    return ChargeRestrictedOperator(operator, sector, max_bytes=max_bytes)
+    return ChargeRestrictedOperator(
+        operator, sector, storage=storage, max_bytes=max_bytes
+    )

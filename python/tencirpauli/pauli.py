@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         AdditiveSymmetryAnalysis,
         ChargeRestrictedOperator,
         ChargeSector,
+        ChargeStorage,
     )
     from .grouping import GroupingResult
     from .hamiltonian import (
@@ -647,12 +648,13 @@ class PauliOperator:
         self,
         sector: "ChargeSector",
         *,
+        storage: "ChargeStorage" = "eager",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "ChargeRestrictedOperator":
-        """Restrict an exactly conserved Pauli operator to a charge sector."""
+        """Restrict an exactly conserved Pauli operator to a charge-sector MVP."""
         from .charge import restrict_charge
 
-        return restrict_charge(self, sector, max_bytes=max_bytes)
+        return restrict_charge(self, sector, storage=storage, max_bytes=max_bytes)
 
     def group_commuting(
         self,

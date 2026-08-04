@@ -124,7 +124,7 @@ class MVPPlan(Protocol):
     def __call__(self, state: Sequence[complex]) -> np.ndarray: ...
 ```
 
-`NativeMVPPlan`、`BackendMVPPlan`、`U1MvpPlan` 和 `ChargeMvpPlan` 都实现这个最小协议。`term_count` 严格使用第 4 节的 algebraic-term 定义；`U1MvpPlan` 和 `ChargeMvpPlan` 另外提供 `transition_count`，表示 sector lowering 与 duplicate aggregation 后实际保存的 sparse transitions。native restricted plans 的 target 为 `"native_mvp"`，backend plan 的 target 为 `"backend_mvp"`。
+`NativeMVPPlan`、`BackendMVPPlan`、`U1MvpPlan` 和 eager `ChargeMvpPlan` 都实现这个最小协议。`term_count` 严格使用第 4 节的 algebraic-term 定义；`U1MvpPlan` 和 eager `ChargeMvpPlan` 另外提供 `transition_count`，表示 sector lowering 与 duplicate aggregation 后实际保存的 sparse transitions。native restricted plans 的 target 为 `"native_mvp"`，backend plan 的 target 为 `"backend_mvp"`。Charge restriction additionally accepts explicit `storage="lazy"`; its lazy native MVP plan keeps sector metadata and term metadata, applies one flat vector at a time, and does not provide sparse materialization or a transition count.
 
 共同 `apply()` contract 只接受 shape `(dimension,)` 的 flat complex state，并始终返回 shape `(dimension,)`。direct-Weyl backend plan 当前接受 mixed-radix tensor shape 并保留输入 rank 的 convenience 从共同 `apply()` 中删除；调用者可依据 `local_dimensions` 自行 reshape，reshape 不改变 basis ordering 或底层数据。若未来需要 `apply_tensor()`，它必须作为独立 advanced convenience 审查，不能改变 `MVPPlan.apply()` 的 flat-vector contract。
 
@@ -200,7 +200,7 @@ U1 的 `expectation_z()`、`expectation_ps()` 和 `expectation_pss()` 删除，�
 
 普通构造器只暴露语义完整的输入：`PauliWord.from_string/from_codes`、`PauliOperator.from_terms`、`U1Sector`、`OperatorSpace`、`AdditiveCharge` 和 named mapping factories。operator words/terms、facades 和普通 immutable value/result types 可以继续作为顶层 public 类型，但 quickstart 不把 result container 当作构造入口展示。
 
-以下类型保留为返回值类型和 advanced import，但不再是普通构造路径：`NativeMVPPlan`、`BackendMVPPlan`、`U1MvpPlan`、`ChargeMvpPlan`、`Z2TaperingPlan`、`U1RestrictedOperator`、`ChargeRestrictedOperator`、`PropagationCircuitPlan`、`SPPSCircuitPlan`、`U1CircuitPlan`、`GateTape`、`PropagationEngine`、`SPPSEngine`、`OperatorBuilder`、array canonicalization result 以及携带 native/internal buffers 的 structured result containers。
+以下类型保留为返回值类型和 advanced import，但不再是普通构造路径：`NativeMVPPlan`、`BackendMVPPlan`、`U1MvpPlan`、`ChargeMvpPlan`、`ChargeLazyMvpPlan`、`Z2TaperingPlan`、`U1RestrictedOperator`、`ChargeRestrictedOperator`、`PropagationCircuitPlan`、`SPPSCircuitPlan`、`U1CircuitPlan`、`GateTape`、`PropagationEngine`、`SPPSEngine`、`OperatorBuilder`、array canonicalization result 以及携带 native/internal buffers 的 structured result containers。
 
 Phase 8 新增 public `tencirpauli.advanced` namespace，集中导出上一段中的 raw engine、concrete plan、QIR/packed-array 和 internal-buffer-facing 类型；这些 advanced concrete types 不再从顶层 `tencirpauli.__all__` 导出。顶层继续导出普通入口、operator algebra 类型、`MVPPlan` typing protocol 和常用 immutable value/result 类型，方便类型标注与 `isinstance`。README、首页、quickstart 和 ordinary docstring 只使用顶层普通入口；advanced namespace 的完整签名和 stability boundary 由单独 API reference 页面说明。`tencirpauli._native` 始终是 private module，不能作为 advanced namespace 的替代品。
 

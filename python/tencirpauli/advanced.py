@@ -4,7 +4,7 @@ The names in this module are valid public return types, but ordinary user code
 should prefer the facade and factory APIs exported from :mod:`tencirpauli`.
 """
 
-from .charge import ChargeMvpPlan, ChargeRestrictedOperator
+from .charge import ChargeLazyMvpPlan, ChargeMvpPlan, ChargeRestrictedOperator
 from .hamiltonian import BackendMVPPlan, NativeMVPPlan
 from .pauli import CanonicalizationArrayResult
 from .propagation import GateTape, PropagationEngine
@@ -19,6 +19,7 @@ from .u1_circuit import U1CircuitPlan
 __all__ = [
     "BackendMVPPlan",
     "CanonicalizationArrayResult",
+    "ChargeLazyMvpPlan",
     "ChargeMvpPlan",
     "ChargeRestrictedOperator",
     "GateTape",

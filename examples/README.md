@@ -18,3 +18,5 @@ python examples/majorana_charge.py
 `structured_algebra.py` demonstrates finite boson compilation, matrix-free native application, and direct uniform-qudit backend MVP execution.
 
 `majorana_charge.py` demonstrates exact Majorana conversion, a reusable Bravyi–Kitaev plan, additive particle-number sectors, and restricted matrix-free execution.
+
+Heavier, manually run end-to-end studies live under [`research/`](research/). They are not part of the CI example execution list; the first study compares a restricted Fermi–Hubbard MVP with QuSpin's `quantum_LinearOperator`.
