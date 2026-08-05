@@ -201,9 +201,7 @@ def test_code_array_construction_uses_contiguous_native_batch(
     monkeypatch.setattr(
         pauli_module._native, "pauli_operator_native_array", count_array_call
     )
-    monkeypatch.setattr(
-        pauli_module._native, "pauli_canonicalize", reject_nested_sequence_call
-    )
+    assert not hasattr(pauli_module._native, "pauli_canonicalize")
     operator = PauliOperator.from_terms(
         3,
         ((((1, 2, 3)), 1.0), (((0, 0, 0)), 2.0), (((1, 2, 3)), -0.5)),

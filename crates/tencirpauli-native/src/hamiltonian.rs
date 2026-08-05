@@ -5,9 +5,23 @@ use tencir_pauli_core::{MvpPlan, MvpStrategy};
 
 use crate::convert::{
     build_canonical_operator, map_error, numpy_complex_array, split_complex, BackendPlanOutput,
-    CooOutput, CsrOutput, DenseOutput, NumpySparseOutput,
+    NumpySparseOutput,
 };
 use crate::operator::NativePauliOperatorHandle;
+
+type NumpyDenseOutput<'py> = (usize, Bound<'py, PyArray1<NumpyComplex128>>);
+type NumpyCooOutput<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+type NumpyCsrOutput<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeMvpPlan {
@@ -15,53 +29,48 @@ pub(crate) struct NativeMvpPlan {
 }
 
 #[pyfunction]
-pub(crate) fn pauli_dense_handle(
-    py: Python<'_>,
+pub(crate) fn pauli_dense_handle<'py>(
+    py: Python<'py>,
     handle: &NativePauliOperatorHandle,
     max_bytes: usize,
-) -> PyResult<DenseOutput> {
+) -> PyResult<NumpyDenseOutput<'py>> {
     let (dimension, values) = py
         .allow_threads(|| handle.core().dense_matrix(max_bytes as u128))
         .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&values);
-    Ok((dimension, real, imaginary))
+    Ok((dimension, numpy_complex_array(py, values)))
 }
 
 #[pyfunction]
-pub(crate) fn pauli_coo_handle(
-    py: Python<'_>,
+pub(crate) fn pauli_coo_handle<'py>(
+    py: Python<'py>,
     handle: &NativePauliOperatorHandle,
     max_bytes: usize,
-) -> PyResult<CooOutput> {
+) -> PyResult<NumpyCooOutput<'py>> {
     let matrix = py
         .allow_threads(|| handle.core().coo_matrix(max_bytes as u128))
         .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&matrix.values);
     Ok((
         matrix.dimension,
-        matrix.rows,
-        matrix.columns,
-        real,
-        imaginary,
+        PyArray1::from_vec(py, matrix.rows),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
     ))
 }
 
 #[pyfunction]
-pub(crate) fn pauli_csr_handle(
-    py: Python<'_>,
+pub(crate) fn pauli_csr_handle<'py>(
+    py: Python<'py>,
     handle: &NativePauliOperatorHandle,
     max_bytes: usize,
-) -> PyResult<CsrOutput> {
+) -> PyResult<NumpyCsrOutput<'py>> {
     let matrix = py
         .allow_threads(|| handle.core().csr_matrix(max_bytes as u128))
         .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&matrix.values);
     Ok((
         matrix.dimension,
-        matrix.indptr,
-        matrix.columns,
-        real,
-        imaginary,
+        PyArray1::from_vec(py, matrix.indptr),
+        PyArray1::from_vec(py, matrix.columns),
+        numpy_complex_array(py, matrix.values),
     ))
 }
 
@@ -179,24 +188,6 @@ impl NativeMvpPlan {
 }
 
 #[pyfunction]
-pub(crate) fn pauli_dense(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<DenseOutput> {
-    let (dimension, values) = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.dense_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    let (real, imaginary) = split_complex(&values);
-    Ok((dimension, real, imaginary))
-}
-
-#[pyfunction]
 pub(crate) fn pauli_dense_array<'py>(
     py: Python<'py>,
     nqubits: usize,
@@ -211,30 +202,6 @@ pub(crate) fn pauli_dense_array<'py>(
         operator.dense_matrix(max_bytes as u128).map_err(map_error)
     })?;
     Ok((dimension, numpy_complex_array(py, values)))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_coo(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<CooOutput> {
-    let matrix = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.coo_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    let (real, imaginary) = split_complex(&matrix.values);
-    Ok((
-        matrix.dimension,
-        matrix.rows,
-        matrix.columns,
-        real,
-        imaginary,
-    ))
 }
 
 #[pyfunction]
@@ -256,30 +223,6 @@ pub(crate) fn pauli_coo_array<'py>(
         PyArray1::from_vec(py, matrix.rows),
         PyArray1::from_vec(py, matrix.columns),
         numpy_complex_array(py, matrix.values),
-    ))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_csr(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<CsrOutput> {
-    let matrix = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.csr_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    let (real, imaginary) = split_complex(&matrix.values);
-    Ok((
-        matrix.dimension,
-        matrix.indptr,
-        matrix.columns,
-        real,
-        imaginary,
     ))
 }
 

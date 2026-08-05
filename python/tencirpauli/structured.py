@@ -1366,6 +1366,10 @@ class _StructuredOperator:
             or tolerance < 0
         ):
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
+        if self._native_handle is not None and hasattr(
+            self._native_handle, "is_hermitian"
+        ):
+            return bool(self._native_handle.is_hermitian(float(tolerance)))
         other = self.adjoint()
         keys = self.to_dict()
         other_keys = other.to_dict()

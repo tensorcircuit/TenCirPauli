@@ -160,6 +160,26 @@ impl NativeMajoranaOperatorHandle {
         })
     }
 
+    fn is_hermitian(&self, py: Python<'_>, tolerance: f64) -> bool {
+        py.allow_threads(|| {
+            self.indices.len() == self.coefficients.len()
+                && self
+                    .indices
+                    .iter()
+                    .zip(&self.coefficients)
+                    .all(|(word, value)| {
+                        let sign = if (word.len() * (word.len() - 1) / 2) & 1 == 0 {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        let target = value.conj() * sign;
+                        (value.re - target.re).abs() <= tolerance
+                            && (value.im - target.im).abs() <= tolerance
+                    })
+        })
+    }
+
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyMajoranaOutput<'py> {
         let (indices, offsets, coefficients) = py.allow_threads(|| {
             let mut payload = Vec::new();

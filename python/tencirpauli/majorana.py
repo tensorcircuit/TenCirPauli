@@ -503,6 +503,8 @@ class MajoranaOperator:
             or tolerance < 0
         ):
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
+        if self._native_handle is not None:
+            return bool(self._native_handle.is_hermitian(float(tolerance)))
         left = self.to_dict()
         right = self.adjoint().to_dict()
         return left.keys() == right.keys() and all(

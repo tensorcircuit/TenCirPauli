@@ -419,6 +419,24 @@ pub(crate) fn pauli_restrict_u1(
 }
 
 #[pyfunction]
+pub(crate) fn pauli_restrict_u1_handle(
+    py: Python<'_>,
+    operator: &NativePauliOperatorHandle,
+    particle_number: usize,
+    max_bytes: usize,
+) -> PyResult<NativeU1RestrictedOperator> {
+    let restricted = py.allow_threads(|| {
+        let sector =
+            U1Sector::new(operator.core().nqubits(), particle_number).map_err(map_error)?;
+        tencir_pauli_core::U1RestrictedOperator::new(operator.core(), sector, max_bytes as u128)
+            .map_err(map_error)
+    })?;
+    Ok(NativeU1RestrictedOperator {
+        operator: restricted,
+    })
+}
+
+#[pyfunction]
 pub(crate) fn pauli_restrict_u1_lazy(
     py: Python<'_>,
     nqubits: usize,
@@ -433,6 +451,22 @@ pub(crate) fn pauli_restrict_u1_lazy(
             build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
         let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
         tencir_pauli_core::U1LazyMvpPlan::new(&operator, sector, max_bytes as u128)
+            .map_err(map_error)
+    })?;
+    Ok(NativeU1LazyMvpPlan { plan })
+}
+
+#[pyfunction]
+pub(crate) fn pauli_restrict_u1_lazy_handle(
+    py: Python<'_>,
+    operator: &NativePauliOperatorHandle,
+    particle_number: usize,
+    max_bytes: usize,
+) -> PyResult<NativeU1LazyMvpPlan> {
+    let plan = py.allow_threads(|| {
+        let sector =
+            U1Sector::new(operator.core().nqubits(), particle_number).map_err(map_error)?;
+        tencir_pauli_core::U1LazyMvpPlan::new(operator.core(), sector, max_bytes as u128)
             .map_err(map_error)
     })?;
     Ok(NativeU1LazyMvpPlan { plan })

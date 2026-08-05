@@ -355,6 +355,15 @@ fn apply_fermions(
     positions: &[usize],
     coefficient: &mut Complex64,
 ) -> Result<bool, PauliError> {
+    let packed_parity = positions.len() <= 128;
+    let mut packed = [0_u64; 2];
+    if packed_parity {
+        for mode in 0..positions.len() {
+            if occupations[positions[mode]] != 0 {
+                packed[mode / 64] |= 1_u64 << (mode % 64);
+            }
+        }
+    }
     let mut apply = |mode: u32, create: bool| -> Result<bool, PauliError> {
         let mode = usize::try_from(mode).map_err(|_| invalid_sector())?;
         if mode >= positions.len() {
@@ -365,10 +374,19 @@ fn apply_fermions(
         if occupied > 1 {
             return Err(invalid_sector());
         }
-        let parity = (0..mode)
-            .map(|lower| occupations[positions[lower]])
-            .sum::<u64>()
-            & 1;
+        let parity = if packed_parity {
+            if mode < 64 {
+                (packed[0] & if mode == 0 { 0 } else { (1_u64 << mode) - 1 }).count_ones() & 1
+            } else {
+                (packed[0].count_ones() + (packed[1] & ((1_u64 << (mode - 64)) - 1)).count_ones())
+                    & 1
+            }
+        } else {
+            ((0..mode)
+                .map(|lower| occupations[positions[lower]])
+                .sum::<u64>()
+                & 1) as u32
+        };
         if parity != 0 {
             *coefficient = -*coefficient;
         }
@@ -377,11 +395,17 @@ fn apply_fermions(
                 return Ok(false);
             }
             occupations[position] = 1;
+            if packed_parity {
+                packed[mode / 64] |= 1_u64 << (mode % 64);
+            }
         } else {
             if occupied == 0 {
                 return Ok(false);
             }
             occupations[position] = 0;
+            if packed_parity {
+                packed[mode / 64] &= !(1_u64 << (mode % 64));
+            }
         }
         Ok(true)
     };

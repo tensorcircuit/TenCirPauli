@@ -46,6 +46,47 @@ def test_numeric_handle_readback_uses_flat_arrays() -> None:
     assert np.asarray(coefficients).dtype == np.complex128
 
 
+def test_structured_handle_readback_uses_flat_payloads() -> None:
+    fermion = tcp.FermionOperator.from_terms(
+        2, [(((0, "create"), (1, "annihilate")), 0.5 - 0.25j)]
+    )
+    boson = tcp.BosonOperator.from_terms(
+        1, [(((0, "create"), (0, "annihilate")), 0.75)]
+    )
+    hybrid_space = tcp.OperatorSpace(fermions=1, bosons=1, qubits=1, qudits=(3,))
+    hybrid = (
+        hybrid_space.fermion.create(0)
+        * hybrid_space.boson.create(0)
+        * hybrid_space.qubit.x(0)
+        * hybrid_space.qudit.weyl(0, 1, 2)
+    )
+    majorana = tcp.MajoranaOperator.from_terms(2, [((0, 1, 3), 1.0)])
+
+    _, creation, creation_offsets, annihilation, annihilation_offsets, values = (
+        fermion._native_handle.materialize()
+    )
+    assert np.asarray(creation).ndim == 1
+    assert np.asarray(annihilation).ndim == 1
+    assert np.asarray(creation_offsets).ndim == 1
+    assert np.asarray(annihilation_offsets).ndim == 1
+    assert np.asarray(values).dtype == np.complex128
+
+    _, blocks, offsets, values = boson._native_handle.materialize()
+    assert np.asarray(blocks).ndim == 1
+    assert np.asarray(offsets).ndim == 1
+    assert np.asarray(values).dtype == np.complex128
+
+    _, payload, majorana_offsets, values = majorana._native_handle.materialize()
+    assert np.asarray(payload).ndim == 1
+    assert np.asarray(majorana_offsets).ndim == 1
+    assert np.asarray(values).dtype == np.complex128
+
+    _, _, structural, fixed = hybrid._native_handle.materialize()
+    assert all(np.asarray(array).ndim == 1 for array in structural)
+    assert all(np.asarray(array).ndim == 1 for array in fixed)
+    assert np.asarray(fixed[-1]).dtype == np.complex128
+
+
 def test_scalable_native_work_releases_gil() -> None:
     nqubits = 12
     structures = np.asarray(

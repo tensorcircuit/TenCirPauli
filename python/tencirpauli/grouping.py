@@ -196,6 +196,29 @@ def group_operator(
         raise ValueError("mode must be 'qubit_wise' or 'general'")
     if algorithm_code is None:
         raise ValueError("algorithm must be 'largest_first' or 'dsatur'")
+    if operator._native_handle is not None:
+        native_groups, bases_raw, supports = _native.pauli_group_handle(
+            operator._native_handle, mode_code, algorithm_code, max_matrix_entries
+        )
+        normalized_groups = tuple(
+            tuple(int(index) for index in group) for group in native_groups
+        )
+        if mode == "general":
+            return GeneralCommutingGroupingResult(
+                operator.nqubits, normalized_groups, algorithm
+            )
+        native_bases = tuple(tuple(int(code) for code in basis) for basis in bases_raw)
+        native_masks = tuple(
+            tuple(sum(1 << int(qubit) for qubit in support) for support in group)
+            for group in supports
+        )
+        return QWCGroupingResult(
+            operator.nqubits,
+            normalized_groups,
+            native_bases,
+            native_masks,
+            algorithm,
+        )
     structures = operator._arrays()[0]
     size = len(structures)
     if size * size > max_matrix_entries:
@@ -210,11 +233,13 @@ def group_operator(
         algorithm_code,
         max_matrix_entries,
     )
-    groups = tuple(tuple(group) for group in raw_groups)
+    groups: Tuple[Tuple[int, ...], ...] = tuple(
+        tuple(int(index) for index in group) for group in raw_groups
+    )
     if mode == "general":
         return GeneralCommutingGroupingResult(operator.nqubits, groups, algorithm)
-    bases = []
-    masks = []
+    basis_values: list[tuple[int, ...]] = []
+    mask_values: list[tuple[int, ...]] = []
     for group in groups:
         basis = [0] * operator.nqubits
         group_masks = []
@@ -231,12 +256,12 @@ def group_operator(
                             "native QWC grouping returned incompatible terms"
                         )
             group_masks.append(mask)
-        bases.append(tuple(basis))
-        masks.append(tuple(group_masks))
+        basis_values.append(tuple(basis))
+        mask_values.append(tuple(group_masks))
     return QWCGroupingResult(
         operator.nqubits,
         groups,
-        tuple(bases),
-        tuple(masks),
+        tuple(basis_values),
+        tuple(mask_values),
         algorithm,
     )

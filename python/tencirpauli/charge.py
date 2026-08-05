@@ -1699,6 +1699,26 @@ def analyze_charge(
     if not isinstance(charge, AdditiveCharge):
         raise TypeError("charge must be an AdditiveCharge")
     _validate_max_bytes(max_bytes)
+    if isinstance(operator, PauliOperator):
+        if charge.space != OperatorSpace(qubits=operator.nqubits):
+            raise ValueError("operator and charge layouts are incompatible")
+        handle = operator._native_handle
+        if handle is None:
+            raise RuntimeError("Pauli charge analysis requires a native handle")
+        conserved, term_count = _native.pauli_analyze_charge_handle(
+            handle,
+            tuple(
+                (float(level_zero), float(level_one))
+                for level_zero, level_one in charge.qubit_levels
+            ),
+            _effective_max_bytes(max_bytes),
+        )
+        return AdditiveSymmetryAnalysis(
+            charge,
+            bool(conserved),
+            int(term_count),
+            method="native_float_selection_rules",
+        )
     is_conserved, commutator_term_count = _exact_charge_commutator(
         operator, charge, max_bytes
     )

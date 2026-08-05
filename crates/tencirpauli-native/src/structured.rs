@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
@@ -360,6 +361,46 @@ impl NativeFermionOperatorHandle {
     fn to_hybrid(&self, py: Python<'_>) -> NativeHybridOperatorHandle {
         py.allow_threads(|| self.to_hybrid_result())
     }
+
+    fn is_hermitian(&self, py: Python<'_>, tolerance: f64) -> bool {
+        py.allow_threads(|| {
+            let factors = self
+                .annihilation
+                .iter()
+                .zip(&self.creation)
+                .map(|(annihilation, creation)| {
+                    annihilation
+                        .iter()
+                        .rev()
+                        .map(|&mode| (mode as usize, 0))
+                        .chain(creation.iter().rev().map(|&mode| (mode as usize, 1)))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let coefficients = self
+                .coefficients
+                .iter()
+                .map(|value| value.conj())
+                .collect::<Vec<_>>();
+            let Ok((creation, annihilation, adjoint_coefficients)) = canonicalize_fermion_terms(
+                self.n_modes,
+                &factors,
+                &coefficients,
+                usize::MAX as u128,
+            ) else {
+                return false;
+            };
+            same_structured_coefficients(
+                &self.creation,
+                &self.annihilation,
+                &self.coefficients,
+                &creation,
+                &annihilation,
+                &adjoint_coefficients,
+                tolerance,
+            )
+        })
+    }
 }
 
 #[pyclass(module = "tencirpauli._native")]
@@ -438,6 +479,91 @@ fn check_native_output(
         });
     }
     Ok(())
+}
+
+fn coefficient_close(left: Complex64, right: Complex64, tolerance: f64) -> bool {
+    (left.re - right.re).abs() <= tolerance && (left.im - right.im).abs() <= tolerance
+}
+
+fn same_coefficient_maps<K: Ord>(
+    left: &BTreeMap<K, Complex64>,
+    right: &BTreeMap<K, Complex64>,
+    tolerance: f64,
+) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, value)| {
+            right
+                .get(key)
+                .is_some_and(|other| coefficient_close(*value, *other, tolerance))
+        })
+}
+
+fn same_structured_coefficients(
+    left_creation: &[Vec<u32>],
+    left_annihilation: &[Vec<u32>],
+    left_coefficients: &[Complex64],
+    right_creation: &[Vec<u32>],
+    right_annihilation: &[Vec<u32>],
+    right_coefficients: &[Complex64],
+    tolerance: f64,
+) -> bool {
+    if left_creation.len() != right_creation.len()
+        || left_annihilation.len() != right_annihilation.len()
+        || left_coefficients.len() != right_coefficients.len()
+    {
+        return false;
+    }
+    left_creation
+        .iter()
+        .zip(left_annihilation)
+        .zip(left_coefficients)
+        .zip(
+            right_creation
+                .iter()
+                .zip(right_annihilation)
+                .zip(right_coefficients),
+        )
+        .all(
+            |(((left_c, left_a), left_value), ((right_c, right_a), right_value))| {
+                left_c == right_c
+                    && left_a == right_a
+                    && coefficient_close(*left_value, *right_value, tolerance)
+            },
+        )
+}
+
+fn boson_adjoint(input: &NativeBosonOperatorHandle) -> NativeBosonOperatorHandle {
+    NativeBosonOperatorHandle {
+        n_modes: input.n_modes,
+        blocks: input
+            .blocks
+            .iter()
+            .map(|word| {
+                word.iter()
+                    .map(|&(mode, creation, annihilation)| (mode, annihilation, creation))
+                    .collect()
+            })
+            .collect(),
+        coefficients: input
+            .coefficients
+            .iter()
+            .map(|value| value.conj())
+            .collect(),
+    }
+}
+
+fn same_hybrid_coefficients(
+    left: &NativeHybridOperatorHandle,
+    right: &NativeHybridOperatorHandle,
+    tolerance: f64,
+) -> bool {
+    let left_map = (0..left.term_count())
+        .map(|index| (left.key_at(index), left.result.coefficients[index]))
+        .collect::<BTreeMap<_, _>>();
+    let right_map = (0..right.term_count())
+        .map(|index| (right.key_at(index), right.result.coefficients[index]))
+        .collect::<BTreeMap<_, _>>();
+    same_coefficient_maps(&left_map, &right_map, tolerance)
 }
 
 fn merge_fermion_handles(
@@ -1063,6 +1189,14 @@ impl NativeHybridOperatorHandle {
             .map_err(PyValueError::new_err)
     }
 
+    fn is_hermitian(&self, py: Python<'_>, tolerance: f64) -> PyResult<bool> {
+        py.allow_threads(|| {
+            let adjoint = self.adjoint_result()?;
+            Ok::<bool, String>(same_hybrid_coefficients(self, &adjoint, tolerance))
+        })
+        .map_err(PyValueError::new_err)
+    }
+
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyHybridOutput<'py> {
         let parts = py.allow_threads(|| self.flat_parts());
         (
@@ -1184,20 +1318,27 @@ impl NativeBosonOperatorHandle {
         Ok(Self::from_result(self.n_modes, result))
     }
 
-    fn adjoint(&self) -> Self {
-        Self {
-            n_modes: self.n_modes,
-            blocks: self
+    fn adjoint(&self, py: Python<'_>) -> Self {
+        py.allow_threads(|| boson_adjoint(self))
+    }
+
+    fn is_hermitian(&self, py: Python<'_>, tolerance: f64) -> bool {
+        py.allow_threads(|| {
+            let adjoint = boson_adjoint(self);
+            let left = self
                 .blocks
                 .iter()
-                .map(|word| {
-                    word.iter()
-                        .map(|&(mode, creation, annihilation)| (mode, annihilation, creation))
-                        .collect()
-                })
-                .collect(),
-            coefficients: self.coefficients.iter().map(|value| value.conj()).collect(),
-        }
+                .zip(&self.coefficients)
+                .map(|(key, value)| (key.clone(), *value))
+                .collect::<BTreeMap<_, _>>();
+            let right = adjoint
+                .blocks
+                .iter()
+                .zip(&adjoint.coefficients)
+                .map(|(key, value)| (key.clone(), *value))
+                .collect::<BTreeMap<_, _>>();
+            same_coefficient_maps(&left, &right, tolerance)
+        })
     }
 
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyBosonOutput<'py> {

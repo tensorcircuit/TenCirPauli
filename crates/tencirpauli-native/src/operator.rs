@@ -264,20 +264,6 @@ fn check_native_operator_limit(
 }
 
 #[pyfunction]
-pub(crate) fn pauli_canonicalize(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-) -> PyResult<CanonicalizeOutput> {
-    let operator = py.allow_threads(|| {
-        build_operator(nqubits, &structures, &coefficients_re, &coefficients_im)
-    })?;
-    Ok(operator_output(&operator))
-}
-
-#[pyfunction]
 pub(crate) fn pauli_canonicalize_batch(
     py: Python<'_>,
     nqubits: usize,

@@ -908,11 +908,17 @@ class PauliOperator:
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
-        structures, _, _ = self._arrays()
-        values = _native.pauli_compatibility_matrix(
-            self.nqubits, structures, mode_code, max_entries
-        )
-        size = len(structures)
+        if self._native_handle is not None:
+            values = _native.pauli_compatibility_matrix_handle(
+                self._native_handle, mode_code, max_entries
+            )
+            size = self.term_count
+        else:
+            structures, _, _ = self._arrays()
+            values = _native.pauli_compatibility_matrix(
+                self.nqubits, structures, mode_code, max_entries
+            )
+            size = len(structures)
         matrix: np.ndarray[Any, Any] = np.asarray(values, dtype=np.bool_).reshape(
             (size, size)
         )
@@ -926,13 +932,16 @@ class PauliOperator:
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
-        structures, _, _ = self._arrays()
-        return tuple(
-            (left, right)
-            for left, right in _native.pauli_incompatibility_edges(
+        if self._native_handle is not None:
+            values = _native.pauli_incompatibility_edges_handle(
+                self._native_handle, mode_code, max_edges
+            )
+        else:
+            structures, _, _ = self._arrays()
+            values = _native.pauli_incompatibility_edges(
                 self.nqubits, structures, mode_code, max_edges
             )
-        )
+        return tuple((left, right) for left, right in values)
 
     def dense(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -942,12 +951,10 @@ class PauliOperator:
 
         _validate_max_bytes(max_bytes)
         if self._native_handle is not None:
-            dimension, real, imaginary = _native.pauli_dense_handle(
+            dimension, values = _native.pauli_dense_handle(
                 self._native_handle, _effective_max_bytes(max_bytes)
             )
-            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
-                imaginary, dtype=np.float64
-            )
+            values = np.asarray(values, dtype=np.complex128)
         else:
             structures, coefficients_re, coefficients_im = self._arrays()
             dimension, values = _native.pauli_dense_array(
@@ -972,12 +979,10 @@ class PauliOperator:
         columns: Any
         values: Any
         if self._native_handle is not None:
-            dimension, rows, columns, real, imaginary = _native.pauli_coo_handle(
+            dimension, rows, columns, values = _native.pauli_coo_handle(
                 self._native_handle, _effective_max_bytes(max_bytes)
             )
-            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
-                imaginary, dtype=np.float64
-            )
+            values = np.asarray(values, dtype=np.complex128)
         else:
             structures, coefficients_re, coefficients_im = self._arrays()
             dimension, rows, columns, values = _native.pauli_coo_array(
@@ -1004,12 +1009,10 @@ class PauliOperator:
         indices: Any
         values: Any
         if self._native_handle is not None:
-            dimension, indptr, indices, real, imaginary = _native.pauli_csr_handle(
+            dimension, indptr, indices, values = _native.pauli_csr_handle(
                 self._native_handle, _effective_max_bytes(max_bytes)
             )
-            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
-                imaginary, dtype=np.float64
-            )
+            values = np.asarray(values, dtype=np.complex128)
         else:
             structures, coefficients_re, coefficients_im = self._arrays()
             dimension, indptr, indices, values = _native.pauli_csr_array(

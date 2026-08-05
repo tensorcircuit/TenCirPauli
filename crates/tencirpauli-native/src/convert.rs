@@ -6,9 +6,6 @@ use tencir_pauli_core::{Complex64, PauliError, PauliOperator};
 pub(crate) type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 pub(crate) type CanonicalizeBatchOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>, Vec<usize>, Vec<u8>);
 pub(crate) type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
-pub(crate) type DenseOutput = (usize, Vec<f64>, Vec<f64>);
-pub(crate) type CooOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
-pub(crate) type CsrOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 pub(crate) type BackendPlanOutput = (u8, usize, usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
 pub(crate) type NumpySparseOutput<'py> = (
     usize,

@@ -236,17 +236,14 @@ impl PropagationEngine {
                 checkpoints.push((boundary, current.clone()));
             }
         }
-        let value = expectation_from_dynamic_terms(
-            &current,
-            &self.program.initial_state,
-            self.program.nqubits,
-        );
-        let mut lambda = current
-            .iter()
-            .map(|term| {
-                expectation_of_key(&term.key, &self.program.initial_state, self.program.nqubits)
-            })
-            .collect::<Vec<_>>();
+        let mut value = 0.0;
+        let mut lambda = Vec::with_capacity(current.len());
+        for term in &current {
+            let expectation =
+                expectation_of_key(&term.key, &self.program.initial_state, self.program.nqubits);
+            value += term.coefficient.re * expectation;
+            lambda.push(expectation);
+        }
         let gradient_bytes = self
             .program
             .nparameters
@@ -260,6 +257,8 @@ impl PropagationEngine {
             "reverse gradient storage",
         )?;
         let mut gradient = vec![0.0; self.program.nparameters];
+        let mut output_indices =
+            FxHashMap::with_capacity_and_hasher(current.len(), Default::default());
 
         for checkpoint_index in (0..checkpoints.len().saturating_sub(1)).rev() {
             let (start, block_start) = &checkpoints[checkpoint_index];
@@ -275,6 +274,7 @@ impl PropagationEngine {
                     parameters,
                     cutoff,
                     &lambda,
+                    &mut output_indices,
                     &mut gradient,
                 )?;
                 continue;
@@ -318,6 +318,7 @@ impl PropagationEngine {
                     parameters,
                     cutoff,
                     &lambda,
+                    &mut output_indices,
                     &mut gradient,
                 )?;
             }
@@ -1373,9 +1374,11 @@ fn reverse_frame(
     parameters: &[f64],
     cutoff: Option<usize>,
     output_lambda: &[f64],
+    output_indices: &mut FxHashMap<PackedKey, usize>,
     gradient: &mut [f64],
 ) -> Result<Vec<f64>, PauliError> {
-    let mut output_indices = FxHashMap::with_capacity_and_hasher(output.len(), Default::default());
+    output_indices.clear();
+    output_indices.reserve(output.len());
     for (index, term) in output.iter().enumerate() {
         output_indices.insert(term.key.clone(), index);
     }
@@ -1387,7 +1390,7 @@ fn reverse_frame(
             term,
             parameters,
             cutoff,
-            &output_indices,
+            output_indices,
             |output_index, multiplier, derivative, slot| {
                 let output_adjoint = output_lambda[output_index];
                 input_lambda[input_index] += multiplier * output_adjoint;

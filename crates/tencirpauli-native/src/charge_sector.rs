@@ -11,7 +11,7 @@ use tencir_pauli_core::{
     FastFermionMvpPlan, PauliError, PreparedChargeTransitionPlanLayout,
 };
 
-use crate::convert::{map_error, split_complex};
+use crate::convert::map_error;
 
 type ChargeCsrArrays<'py> = (
     Bound<'py, PyArray1<u64>>,
@@ -458,16 +458,10 @@ impl NativeChargeEagerMvpPlan {
     fn csr<'py>(&self, py: Python<'py>) -> ChargeCsrArrays<'py> {
         let indptr = self.indptr.iter().map(|&value| value as u64).collect();
         let columns = self.columns.iter().map(|&value| value as u64).collect();
-        let (real, imaginary) = split_complex(&self.values);
-        let values = real
-            .into_iter()
-            .zip(imaginary)
-            .map(|(re, im)| NumpyComplex128::new(re, im))
-            .collect();
         (
             PyArray1::from_vec(py, indptr),
             PyArray1::from_vec(py, columns),
-            PyArray1::from_vec(py, values),
+            PyArray1::from_vec(py, self.values.clone()),
         )
     }
 
@@ -487,16 +481,10 @@ impl NativeChargeEagerMvpPlan {
             rows.extend(std::iter::repeat_n(row as u64, end - start));
         }
         let columns = self.columns.iter().map(|&value| value as u64).collect();
-        let (real, imaginary) = split_complex(&self.values);
-        let values = real
-            .into_iter()
-            .zip(imaginary)
-            .map(|(re, im)| NumpyComplex128::new(re, im))
-            .collect();
         Ok((
             PyArray1::from_vec(py, rows),
             PyArray1::from_vec(py, columns),
-            PyArray1::from_vec(py, values),
+            PyArray1::from_vec(py, self.values.clone()),
         ))
     }
 

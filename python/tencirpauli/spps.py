@@ -98,10 +98,12 @@ class SPPSEngine:
             raise ValueError("smoothing must be a finite positive float")
         _validate_max_bytes(max_bytes)
         kind, bits, values = _state_payload(initial_state, tape.nqubits)
-        self._native = _native.pauli_spps_engine(
+        if observable._native_handle is None:
+            raise RuntimeError("SPPS observables must retain a native Pauli handle")
+        self._native = _native.pauli_spps_engine_handle(
             tape.nqubits,
             tape._native_operations(),
-            *observable._arrays(),
+            observable._native_handle,
             kind,
             bits,
             values,

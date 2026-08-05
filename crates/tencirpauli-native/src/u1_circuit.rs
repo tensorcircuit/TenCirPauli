@@ -8,6 +8,7 @@ use tencir_pauli_core::{
 };
 
 use crate::convert::{build_canonical_operator, map_error};
+use crate::operator::NativePauliOperatorHandle;
 
 type NativeExpressionNode = (u8, usize, usize, f64);
 type NativeGate = (u8, usize, usize, usize, Vec<usize>, Vec<f64>, Vec<f64>);
@@ -207,6 +208,50 @@ impl NativeU1CircuitPlan {
         })?;
         Ok((value, PyArray1::from_vec(py, gradient)))
     }
+
+    fn expectation_handle(
+        &self,
+        py: Python<'_>,
+        initial_state: PyReadonlyArray1<'_, NumpyComplex128>,
+        observable: &NativePauliOperatorHandle,
+        parameters: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<(f64, f64)> {
+        let initial = initial_state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("initial_state must be C-contiguous"))?;
+        let parameters = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let value = py
+            .allow_threads(|| {
+                self.plan
+                    .expectation(initial, observable.core(), parameters)
+            })
+            .map_err(map_error)?;
+        Ok((value.re, value.im))
+    }
+
+    fn value_and_grad_handle<'py>(
+        &self,
+        py: Python<'py>,
+        initial_state: PyReadonlyArray1<'py, NumpyComplex128>,
+        observable: &NativePauliOperatorHandle,
+        parameters: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+        let initial = initial_state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("initial_state must be C-contiguous"))?;
+        let parameters = parameters
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
+        let (value, gradient) = py
+            .allow_threads(|| {
+                self.plan
+                    .value_and_grad(initial, observable.core(), parameters)
+            })
+            .map_err(map_error)?;
+        Ok((value, PyArray1::from_vec(py, gradient)))
+    }
 }
 
 #[pymethods]
@@ -278,6 +323,37 @@ impl NativeU1FinalState {
                 .value_and_grad_from_state(&self.state, &observable, &self.parameters)
                 .map_err(map_error)
         })?;
+        Ok((value, PyArray1::from_vec(py, gradient)))
+    }
+
+    fn expectation_handle(
+        &self,
+        py: Python<'_>,
+        observable: &NativePauliOperatorHandle,
+    ) -> PyResult<(f64, f64)> {
+        let value = py
+            .allow_threads(|| {
+                self.plan
+                    .expectation_from_state(&self.state, observable.core())
+            })
+            .map_err(map_error)?;
+        Ok((value.re, value.im))
+    }
+
+    fn value_and_grad_handle<'py>(
+        &self,
+        py: Python<'py>,
+        observable: &NativePauliOperatorHandle,
+    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+        let (value, gradient) = py
+            .allow_threads(|| {
+                self.plan.value_and_grad_from_state(
+                    &self.state,
+                    observable.core(),
+                    &self.parameters,
+                )
+            })
+            .map_err(map_error)?;
         Ok((value, PyArray1::from_vec(py, gradient)))
     }
 }

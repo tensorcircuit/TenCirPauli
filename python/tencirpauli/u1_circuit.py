@@ -320,9 +320,11 @@ class U1CircuitPlan:
             raise TypeError(
                 "initial_state must be provided for a standalone U1CircuitPlan"
             )
-        real, imaginary = self._native.expectation(
+        if observable._native_handle is None:
+            raise RuntimeError("U1 observables must retain a native Pauli handle")
+        real, imaginary = self._native.expectation_handle(
             _state_array(selected_state, self.dimension),
-            *observable._arrays(),
+            observable._native_handle,
             self._params(parameters),
         )
         return complex(float(real), float(imaginary))
@@ -347,9 +349,11 @@ class U1CircuitPlan:
             raise TypeError(
                 "initial_state must be provided for a standalone U1CircuitPlan"
             )
-        value, gradient = self._native.value_and_grad(
+        if observable._native_handle is None:
+            raise RuntimeError("U1 observables must retain a native Pauli handle")
+        value, gradient = self._native.value_and_grad_handle(
             _state_array(selected_state, self.dimension),
-            *observable._arrays(),
+            observable._native_handle,
             self._params(parameters),
         )
         return U1CircuitValueAndGradient(
@@ -604,8 +608,10 @@ class U1Circuit:
         """Return a complex expectation for an arbitrary Pauli observable."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
-        real, imaginary = self._cached_final(parameters).native.expectation(
-            *observable._arrays()
+        if observable._native_handle is None:
+            raise RuntimeError("U1 observables must retain a native Pauli handle")
+        real, imaginary = self._cached_final(parameters).native.expectation_handle(
+            observable._native_handle
         )
         return complex(float(real), float(imaginary))
 
@@ -624,8 +630,10 @@ class U1Circuit:
             raise TypeError("observable must be a PauliOperator")
         if not observable._exact_hermitian_value():
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
-        value, gradient = self._cached_final(parameters).native.value_and_grad(
-            *observable._arrays()
+        if observable._native_handle is None:
+            raise RuntimeError("U1 observables must retain a native Pauli handle")
+        value, gradient = self._cached_final(parameters).native.value_and_grad_handle(
+            observable._native_handle
         )
         return U1CircuitValueAndGradient(
             float(value), _readonly(np.asarray(gradient, dtype=np.float64))

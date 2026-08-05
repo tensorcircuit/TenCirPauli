@@ -424,9 +424,10 @@ class U1RestrictedOperator:
                     construction_budget = remaining - target_floor
                 else:
                     construction_budget = None
-                native = _native.pauli_restrict_u1(
-                    self._operator.nqubits,
-                    *self._operator._arrays(),
+                if self._operator._native_handle is None:
+                    raise RuntimeError("U1 eager cache requires a native Pauli handle")
+                native = _native.pauli_restrict_u1_handle(
+                    self._operator._native_handle,
                     self.sector.particle_number,
                     _effective_max_bytes(construction_budget),
                 )
@@ -780,17 +781,17 @@ def _restrict_u1(
         )
     native_operator = None
     native_lazy_plan = None
+    if operator._native_handle is None:
+        raise RuntimeError("U1 restriction requires a native Pauli handle")
     if storage == "eager":
-        native_operator = _native.pauli_restrict_u1(
-            operator.nqubits,
-            *operator._arrays(),
+        native_operator = _native.pauli_restrict_u1_handle(
+            operator._native_handle,
             sector.particle_number,
             _effective_max_bytes(max_bytes),
         )
     else:
-        native_lazy_plan = _native.pauli_restrict_u1_lazy(
-            operator.nqubits,
-            *operator._arrays(),
+        native_lazy_plan = _native.pauli_restrict_u1_lazy_handle(
+            operator._native_handle,
             sector.particle_number,
             _effective_max_bytes(max_bytes),
         )
