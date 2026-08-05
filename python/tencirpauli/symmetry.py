@@ -94,10 +94,10 @@ class Z2TaperingPlan:
         """Transform a compatible operator and substitute the selected sector."""
         if not isinstance(operator, PauliOperator):
             raise TypeError(f"expected PauliOperator, got {type(operator).__name__}")
-        result = self._native_plan.transform_operator(
-            operator.nqubits, *operator._arrays()
-        )
-        return PauliOperator._from_native(self.nqubits_after, result)
+        if operator._native_handle is None:
+            raise RuntimeError("PauliOperator must retain a native handle")
+        result = self._native_plan.transform_operator_handle(operator._native_handle)
+        return PauliOperator._from_native_handle(result)
 
 
 @dataclass(frozen=True)

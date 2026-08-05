@@ -23,6 +23,20 @@ pub(crate) type NumpyCanonicalizeBatchOutput<'py> = (
     Bound<'py, PyArray1<usize>>,
     Bound<'py, PyArray1<u8>>,
 );
+pub(crate) type NumpyPauliPackedOutput<'py> = (
+    usize,
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+pub(crate) type NumpyPauliCodesOutput<'py> = (
+    usize,
+    usize,
+    Bound<'py, PyArray1<u8>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+pub(crate) type NumpyPauliStringsOutput<'py> = (Vec<String>, Bound<'py, PyArray1<NumpyComplex128>>);
 
 pub(crate) fn numpy_complex_array<'py>(
     py: Python<'py>,
@@ -65,6 +79,68 @@ pub(crate) fn operator_output(operator: &PauliOperator) -> CanonicalizeOutput {
         result_im.push(term.coefficient.im);
     }
     (result_structures, result_re, result_im)
+}
+
+pub(crate) fn operator_packed_flat_output(
+    operator: &PauliOperator,
+) -> (usize, usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
+    let word_count = operator.nqubits().div_ceil(64);
+    let mut x_words = Vec::with_capacity(operator.terms().len() * word_count);
+    let mut z_words = Vec::with_capacity(operator.terms().len() * word_count);
+    let mut coefficients = Vec::with_capacity(operator.terms().len());
+    for term in operator.terms() {
+        x_words.extend_from_slice(term.word.x_words());
+        z_words.extend_from_slice(term.word.z_words());
+        coefficients.push(term.coefficient);
+    }
+    (
+        operator.terms().len(),
+        word_count,
+        x_words,
+        z_words,
+        coefficients,
+    )
+}
+
+pub(crate) fn operator_codes_flat_output(
+    operator: &PauliOperator,
+) -> (usize, usize, Vec<u8>, Vec<Complex64>) {
+    let mut codes = Vec::with_capacity(operator.terms().len() * operator.nqubits());
+    let mut coefficients = Vec::with_capacity(operator.terms().len());
+    for term in operator.terms() {
+        codes.extend(term.word.codes());
+        coefficients.push(term.coefficient);
+    }
+    (
+        operator.terms().len(),
+        operator.nqubits(),
+        codes,
+        coefficients,
+    )
+}
+
+pub(crate) fn operator_strings_flat_output(
+    operator: &PauliOperator,
+) -> (Vec<String>, Vec<Complex64>) {
+    let mut strings = Vec::with_capacity(operator.terms().len());
+    let mut coefficients = Vec::with_capacity(operator.terms().len());
+    for term in operator.terms() {
+        strings.push(
+            term.word
+                .codes()
+                .into_iter()
+                .map(|code| match code {
+                    0 => 'I',
+                    1 => 'X',
+                    2 => 'Y',
+                    3 => 'Z',
+                    _ => unreachable!("canonical Pauli code must be in IXYZ"),
+                })
+                .collect(),
+        );
+        coefficients.push(term.coefficient);
+    }
+    (strings, coefficients)
 }
 
 pub(crate) fn phase_code(phase: tencir_pauli_core::PauliPhase) -> u8 {

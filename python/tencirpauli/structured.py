@@ -656,7 +656,7 @@ class OperatorSpace:
         if operator.space == self and not any(maps.values()):
             return operator
         terms: List[_Term] = []
-        for term in operator._terms:
+        for term in operator._materialized_terms():
             coefficient = term.coefficient
             fermion = (
                 None
@@ -747,6 +747,48 @@ class _Factory:
         self.space = space
 
 
+def _factory_native_operator(
+    space: OperatorSpace,
+    *,
+    fermion_creation: Sequence[int] = (),
+    fermion_annihilation: Sequence[int] = (),
+    boson_blocks: Sequence[Tuple[int, int, int]] = (),
+    qubit_codes: Optional[Sequence[int]] = None,
+    qudit_triples: Optional[Sequence[Tuple[int, int, int]]] = None,
+) -> "HybridOperator":
+    """Build one factory result from native canonical hybrid arrays."""
+    result = _native.structured_hybrid_canonicalize(
+        space.fermions,
+        space.bosons,
+        space.qubits,
+        len(space.qudits),
+        space.qudits[0] if space.qudits else 0,
+        (
+            [
+                list((mode, 0) for mode in fermion_creation)
+                + list((mode, 1) for mode in fermion_annihilation)
+            ],
+            [
+                list(
+                    (mode, 0) for mode, create, _ in boson_blocks for _ in range(create)
+                )
+                + list(
+                    (mode, 1)
+                    for mode, _, annihilate in boson_blocks
+                    for _ in range(annihilate)
+                )
+            ],
+            [list(qubit_codes or (0,) * space.qubits)],
+            [qudit_triples is not None],
+            [list(qudit_triples or ())],
+            [1.0],
+            [0.0],
+        ),
+        _effective_max_bytes(DEFAULT_MAX_BYTES),
+    )
+    return _hybrid_from_native(space, result)
+
+
 class _FermionFactory(_Factory):
     @property
     def annihilate(self) -> Callable[[object], "HybridOperator"]:
@@ -760,13 +802,10 @@ class _FermionFactory(_Factory):
 
     def _make(self, mode: object, action: str) -> "HybridOperator":
         mode_value = _positive_mode(mode, self.space.fermions)
-        word = FermionWord(
-            self.space.fermions,
-            (mode_value,) if action == "create" else (),
-            (mode_value,) if action == "annihilate" else (),
-        )
-        return HybridOperator._from_terms(
-            self.space, ((_Term(word, None, (), None, None, 1.0),))
+        return _factory_native_operator(
+            self.space,
+            fermion_creation=(mode_value,) if action == "create" else (),
+            fermion_annihilation=(mode_value,) if action == "annihilate" else (),
         )
 
 
@@ -783,12 +822,11 @@ class _BosonFactory(_Factory):
 
     def _make(self, mode: object, action: str) -> "HybridOperator":
         mode_value = _positive_mode(mode, self.space.bosons)
-        word = BosonWord(
-            self.space.bosons,
-            ((mode_value, int(action == "create"), int(action == "annihilate")),),
-        )
-        return HybridOperator._from_terms(
-            self.space, ((_Term(None, word, (), None, None, 1.0),))
+        return _factory_native_operator(
+            self.space,
+            boson_blocks=(
+                (mode_value, int(action == "create"), int(action == "annihilate")),
+            ),
         )
 
 
@@ -812,9 +850,7 @@ class _QubitFactory(_Factory):
         index_value = _positive_mode(index, self.space.qubits, "qubit")
         codes = [0] * self.space.qubits
         codes[index_value] = code
-        return HybridOperator._from_terms(
-            self.space, ((_Term(None, None, tuple(codes), None, None, 1.0),))
-        )
+        return _factory_native_operator(self.space, qubit_codes=codes)
 
 
 class _QuditFactory(_Factory):
@@ -825,12 +861,15 @@ class _QuditFactory(_Factory):
 
     def _make(self, site: object, a: object, b: object) -> "HybridOperator":
         site_value = _positive_mode(site, len(self.space.qudits), "site")
-        word = QuditWeylWord(
-            self.space.qudits[0],
-            ((site_value, _nonnegative_int(a, "a"), _nonnegative_int(b, "b")),),
-        )
-        return HybridOperator._from_terms(
-            self.space, ((_Term(None, None, (), word, None, 1.0),))
+        return _factory_native_operator(
+            self.space,
+            qudit_triples=(
+                (
+                    site_value,
+                    _nonnegative_int(a, "a") % self.space.qudits[0],
+                    _nonnegative_int(b, "b") % self.space.qudits[0],
+                ),
+            ),
         )
 
 
@@ -858,18 +897,33 @@ class _Term:
 
 HybridTerm = _Term
 
+StructuredNativeHandle = Union[
+    _native.NativeFermionOperatorHandle,
+    _native.NativeBosonOperatorHandle,
+    _native.NativeHybridOperatorHandle,
+]
+
 
 class _StructuredOperator:
     _domain = "hybrid"
     space: OperatorSpace
-    _terms: Tuple[_Term, ...]
+    _terms: Optional[Tuple[_Term, ...]]
+    _native_handle: Optional[StructuredNativeHandle]
     _locked: bool
 
-    def __init__(self, space: OperatorSpace, terms: Sequence[_Term]) -> None:
+    def __init__(
+        self,
+        space: OperatorSpace,
+        terms: Optional[Sequence[_Term]] = None,
+        native_handle: Optional[StructuredNativeHandle] = None,
+    ) -> None:
         if not isinstance(space, OperatorSpace):
             raise TypeError("space must be an OperatorSpace")
+        if sum(value is not None for value in (terms, native_handle)) != 1:
+            raise ValueError("provide exactly one structured operator storage form")
         object.__setattr__(self, "space", space)
-        object.__setattr__(self, "_terms", tuple(terms))
+        object.__setattr__(self, "_terms", None if terms is None else tuple(terms))
+        object.__setattr__(self, "_native_handle", native_handle)
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -882,8 +936,9 @@ class _StructuredOperator:
         self,
     ) -> Tuple[Union[FermionTerm, BosonTerm, QuditWeylTerm, HybridTerm], ...]:
         """Return immutable typed canonical terms in deterministic order."""
+        terms = self._materialized_terms()
         result: List[Union[FermionTerm, BosonTerm, QuditWeylTerm, HybridTerm]] = []
-        for term in self._terms:
+        for term in terms:
             if self._domain == "fermion":
                 assert term.fermion is not None
                 result.append(FermionTerm(term.fermion, term.coefficient))
@@ -900,7 +955,12 @@ class _StructuredOperator:
     @property
     def term_count(self) -> int:
         """Return the number of nonzero canonical terms."""
-        return len(self._terms)
+        if self._native_handle is not None:
+            return self._native_handle.term_count
+        terms = self._terms
+        if terms is None:
+            raise RuntimeError("structured operator has no term storage")
+        return len(terms)
 
     def __len__(self) -> int:
         return self.term_count
@@ -911,6 +971,63 @@ class _StructuredOperator:
         if self.space != other.space:
             raise ValueError("operators use incompatible OperatorSpace layouts")
         return other
+
+    def _materialized_terms(self) -> Tuple[_Term, ...]:
+        cached = self._terms
+        if cached is not None:
+            return cached
+        if self._native_handle is not None:
+            cached = _terms_from_native_handle(
+                self.space, self._domain, self._native_handle
+            )
+            object.__setattr__(self, "_terms", cached)
+            return cached
+        terms = self._terms
+        if terms is None:
+            raise RuntimeError("structured operator has no native storage")
+        return terms
+
+    def _native_or_terms(self) -> Tuple[_Term, ...]:
+        return self._materialized_terms()
+
+    def to_dict(self) -> Dict[Any, complex]:
+        """Return plain canonical word data without constructing typed terms."""
+        if self._domain == "fermion":
+            creation, annihilation, real, imaginary = _fermion_arrays(
+                cast(FermionOperator, self)
+            )
+            return {
+                tuple(
+                    [(int(mode), "create") for mode in left]
+                    + [(int(mode), "annihilate") for mode in right]
+                ): complex(re, im)
+                for left, right, re, im in zip(creation, annihilation, real, imaginary)
+            }
+        if self._domain == "boson":
+            blocks, real, imaginary = _boson_arrays(cast(BosonOperator, self))
+            return {
+                tuple(tuple(block) for block in word): complex(re, im)
+                for word, re, im in zip(blocks, real, imaginary)
+            }
+        data = _hybrid_arrays(self)
+        real, imaginary = data[-2], data[-1]
+        if self._domain == "qudit":
+            return {
+                tuple(tuple(triple) for triple in data[9][index]): complex(re, im)
+                for index, (re, im) in enumerate(zip(real, imaginary))
+            }
+        result: Dict[Any, complex] = {}
+        for index, (re, im) in enumerate(zip(real, imaginary)):
+            key = (
+                tuple(data[1][index]) if data[0][index] else (),
+                tuple(data[2][index]) if data[0][index] else (),
+                tuple(data[4][index]) if data[3][index] else (),
+                tuple(data[5][index]),
+                tuple(data[7][index]) if data[6][index] else (),
+                tuple(data[9][index]) if data[8][index] else (),
+            )
+            result[key] = complex(re, im)
+        return result
 
     @classmethod
     def _from_terms(
@@ -950,13 +1067,28 @@ class _StructuredOperator:
     ) -> "_StructuredOperator":
         """Return the exact structural sum of two compatible operators."""
         other = self._check_other(other)
-        return _make_operator(self.space, self._terms + other._terms, max_bytes)
+        if self._native_handle is not None and other._native_handle is not None:
+            _guard_terms(
+                self.term_count + other.term_count,
+                max_bytes,
+                "operator addition",
+            )
+            return _add_native_handles(self, other, max_bytes)
+        return _make_operator(
+            self.space,
+            self._materialized_terms() + other._materialized_terms(),
+            max_bytes,
+        )
 
     def scale(
         self, coefficient: complex, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "_StructuredOperator":
         """Return a copy with every coefficient multiplied by ``coefficient``."""
         scalar = _finite_complex(coefficient, "scale")
+        if self._native_handle is not None:
+            _guard_terms(self.term_count, max_bytes, "operator scaling")
+            return _scale_native_handle(self, scalar)
+        assert self._terms is not None
         return _make_operator(
             self.space,
             (
@@ -974,6 +1106,32 @@ class _StructuredOperator:
     ) -> MappedOperator:
         """Return the exact ordered product of compatible operators."""
         other = self._check_other(other)
+        if isinstance(
+            self._native_handle, _native.NativeHybridOperatorHandle
+        ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
+            if (
+                isinstance(self, HybridOperator)
+                and isinstance(other, HybridOperator)
+                and _requires_eager_fermion_mapping(self, other)
+            ):
+                mapped_left = self.map_fermions(max_bytes=max_bytes)
+                mapped_right = other.map_fermions(max_bytes=max_bytes)
+                if isinstance(mapped_left, PauliOperator):
+                    if not isinstance(mapped_right, PauliOperator):
+                        raise TypeError(
+                            "mapped fermion operands have incompatible types"
+                        )
+                    return mapped_left.multiply(mapped_right, max_bytes=max_bytes)
+                if not isinstance(mapped_right, _StructuredOperator):
+                    raise TypeError("mapped fermion operands have incompatible types")
+                return mapped_left.multiply(mapped_right, max_bytes=max_bytes)
+            return _hybrid_from_native(
+                self.space,
+                self._native_handle.multiply(
+                    other._native_handle, _effective_max_bytes(max_bytes)
+                ),
+                _native_result_class(self, other),
+            )
         if isinstance(self, HybridOperator) and isinstance(other, HybridOperator):
             if _requires_eager_fermion_mapping(self, other):
                 # A canonical term cannot encode whether its raw fermion word
@@ -1004,8 +1162,11 @@ class _StructuredOperator:
                 _effective_max_bytes(max_bytes),
             )
             return _hybrid_from_native(self.space, result)
-        if not isinstance(self, QuditWeylOperator) or not isinstance(
-            other, QuditWeylOperator
+        if (
+            not isinstance(self, QuditWeylOperator)
+            or not isinstance(other, QuditWeylOperator)
+            or not isinstance(self._native_handle, _native.NativeHybridOperatorHandle)
+            or not isinstance(other._native_handle, _native.NativeHybridOperatorHandle)
         ):
             left_arrays = _hybrid_arrays(self)
             right_arrays = _hybrid_arrays(other)
@@ -1021,7 +1182,9 @@ class _StructuredOperator:
             )
             return _hybrid_from_native(self.space, result)
         products: List[_Term] = []
-        for left_term, right_term in product(self._terms, other._terms):
+        for left_term, right_term in product(
+            self._materialized_terms(), other._materialized_terms()
+        ):
             products.extend(_multiply_terms(left_term, right_term, self.space))
             _guard_terms(len(products), max_bytes, "operator multiplication")
         return _make_operator(self.space, products, max_bytes)
@@ -1033,6 +1196,43 @@ class _StructuredOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> MappedOperator:
         """Return ``self * other - other * self``."""
+        other = self._check_other(other)
+        if self._native_handle is not None and other._native_handle is not None:
+            if isinstance(
+                self._native_handle, _native.NativeFermionOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeFermionOperatorHandle):
+                return _fermion_from_native(
+                    FermionOperator,
+                    self.space.fermions,
+                    self._native_handle.commutator(
+                        other._native_handle, _effective_max_bytes(max_bytes)
+                    ),
+                )
+            if isinstance(
+                self._native_handle, _native.NativeBosonOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeBosonOperatorHandle):
+                return _boson_from_native(
+                    BosonOperator,
+                    self.space.bosons,
+                    self._native_handle.commutator(
+                        other._native_handle, _effective_max_bytes(max_bytes)
+                    ),
+                )
+            if isinstance(
+                self._native_handle, _native.NativeHybridOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
+                if not (
+                    isinstance(self, HybridOperator)
+                    and isinstance(other, HybridOperator)
+                    and _requires_eager_fermion_mapping(self, other)
+                ):
+                    return _hybrid_from_native(
+                        self.space,
+                        self._native_handle.commutator(
+                            other._native_handle, _effective_max_bytes(max_bytes)
+                        ),
+                        _native_result_class(self, other),
+                    )
         left = self.multiply(other, max_bytes=max_bytes)
         right = other.multiply(self, max_bytes=max_bytes)
         if isinstance(left, PauliOperator):
@@ -1053,6 +1253,43 @@ class _StructuredOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> MappedOperator:
         """Return ``self * other + other * self``."""
+        other = self._check_other(other)
+        if self._native_handle is not None and other._native_handle is not None:
+            if isinstance(
+                self._native_handle, _native.NativeFermionOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeFermionOperatorHandle):
+                return _fermion_from_native(
+                    FermionOperator,
+                    self.space.fermions,
+                    self._native_handle.anticommutator(
+                        other._native_handle, _effective_max_bytes(max_bytes)
+                    ),
+                )
+            if isinstance(
+                self._native_handle, _native.NativeBosonOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeBosonOperatorHandle):
+                return _boson_from_native(
+                    BosonOperator,
+                    self.space.bosons,
+                    self._native_handle.anticommutator(
+                        other._native_handle, _effective_max_bytes(max_bytes)
+                    ),
+                )
+            if isinstance(
+                self._native_handle, _native.NativeHybridOperatorHandle
+            ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
+                if not (
+                    isinstance(self, HybridOperator)
+                    and isinstance(other, HybridOperator)
+                    and _requires_eager_fermion_mapping(self, other)
+                ):
+                    return _hybrid_from_native(
+                        self.space,
+                        self._native_handle.anticommutator(
+                            other._native_handle, _effective_max_bytes(max_bytes)
+                        ),
+                        _native_result_class(self, other),
+                    )
         left = self.multiply(other, max_bytes=max_bytes)
         right = other.multiply(self, max_bytes=max_bytes)
         if isinstance(left, PauliOperator):
@@ -1069,6 +1306,9 @@ class _StructuredOperator:
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "_StructuredOperator":
         """Return the coefficient-conjugated structural adjoint."""
+        if self._native_handle is not None:
+            return _adjoint_native_handle(self, max_bytes)
+        assert self._terms is not None
         output: List[_Term] = []
         for term in self._terms:
             if _term_has_raw_and_mapped_fermions(term):
@@ -1127,8 +1367,8 @@ class _StructuredOperator:
         ):
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
         other = self.adjoint()
-        keys = {term.key(): term.coefficient for term in self._terms}
-        other_keys = {term.key(): term.coefficient for term in other._terms}
+        keys = self.to_dict()
+        other_keys = other.to_dict()
         if keys.keys() != other_keys.keys():
             return False
         return all(abs(keys[key] - other_keys[key]) <= tolerance for key in keys)
@@ -1173,7 +1413,7 @@ class _StructuredOperator:
         ):
             as_pauli = PauliOperator.from_terms(
                 len(self.space._axes),
-                ((term.qubit, term.coefficient) for term in self._terms),
+                ((term.qubit, term.coefficient) for term in self._materialized_terms()),
             )
             return _restrict_u1(
                 as_pauli,
@@ -1213,7 +1453,9 @@ class _StructuredOperator:
         )
         space = OperatorSpace._from_axes(axes)
         terms: List[_Term] = []
-        for left, right in product(self._terms, other._terms):
+        for left, right in product(
+            self._materialized_terms(), other._materialized_terms()
+        ):
             left_shifted = _shift_term(
                 left,
                 {"fermion": 0, "boson": 0, "qubit": 0, "qudit": 0},
@@ -1288,7 +1530,33 @@ class _StructuredOperator:
             return plan.map_hybrid(self, max_bytes=max_bytes)
         if self.space.fermions == 0:
             return self
-        if any(_term_has_raw_and_mapped_fermions(term) for term in self._terms):
+        if isinstance(self._native_handle, _native.NativeHybridOperatorHandle):
+            if self._native_handle.has_mixed_fermion_roles():
+                raise ValueError(
+                    "cannot map a term containing both raw and mapped fermion factors"
+                )
+            if isinstance(self, HybridOperator):
+                result = self._native_handle.jordan_wigner(
+                    _effective_max_bytes(max_bytes)
+                )
+                if all(
+                    axis.domain in ("fermion", "qubit") for axis in self.space._axes
+                ):
+                    return PauliOperator._from_native_handle(
+                        result.to_pauli(
+                            _pauli_axis_descriptor(self.space),
+                            _effective_max_bytes(max_bytes),
+                        )
+                    )
+                return _hybrid_from_native(self.space, result)
+        if isinstance(self._native_handle, _native.NativeFermionOperatorHandle):
+            return PauliOperator._from_native_handle(
+                self._native_handle.jordan_wigner(_effective_max_bytes(max_bytes))
+            )
+        if any(
+            _term_has_raw_and_mapped_fermions(term)
+            for term in self._materialized_terms()
+        ):
             raise ValueError(
                 "cannot map a term containing both raw and mapped fermion factors"
             )
@@ -1302,16 +1570,14 @@ class _StructuredOperator:
                 _hybrid_arrays(self),
                 _effective_max_bytes(max_bytes),
             )
-            mapped_operator = _hybrid_from_native(self.space, result)
             if all(axis.domain in ("fermion", "qubit") for axis in self.space._axes):
-                return PauliOperator.from_terms(
-                    len(self.space._axes),
-                    (
-                        (_codes_on_space_axes(term, self.space), term.coefficient)
-                        for term in mapped_operator._terms
-                    ),
+                return PauliOperator._from_native_handle(
+                    result.to_pauli(
+                        _pauli_axis_descriptor(self.space),
+                        _effective_max_bytes(max_bytes),
+                    )
                 )
-            return mapped_operator
+            return _hybrid_from_native(self.space, result)
         raise TypeError(
             "raw fermion mapping requires a FermionOperator or HybridOperator"
         )
@@ -1339,7 +1605,7 @@ class _StructuredOperator:
                 return _with_plan_metadata(
                     result,
                     mapping=(_mapping_name(mapping) if self.space.fermions else None),
-                    source_term_count=len(self._terms),
+                    source_term_count=self.term_count,
                 )
             return result
         cutoffs = boson_cutoffs
@@ -1656,7 +1922,17 @@ def _requires_eager_fermion_mapping(
     left: "HybridOperator", right: "HybridOperator"
 ) -> bool:
     """Detect a product whose operands do not share one fermion encoding."""
-    terms = left._terms + right._terms
+    if isinstance(
+        left._native_handle, _native.NativeHybridOperatorHandle
+    ) and isinstance(right._native_handle, _native.NativeHybridOperatorHandle):
+        return (
+            left._native_handle.has_raw_fermions()
+            and right._native_handle.has_mapped_fermions()
+        ) or (
+            left._native_handle.has_mapped_fermions()
+            and right._native_handle.has_raw_fermions()
+        )
+    terms = left._materialized_terms() + right._materialized_terms()
     has_raw = any(term.fermion is not None for term in terms)
     has_mapped = any(term.mapped_fermion is not None for term in terms)
     return has_raw and has_mapped
@@ -1776,13 +2052,19 @@ def _codes_on_space_axes(term: _Term, space: OperatorSpace) -> Tuple[int, ...]:
     return tuple(result)
 
 
+def _pauli_axis_descriptor(space: OperatorSpace) -> List[Tuple[int, int]]:
+    """Encode ordered fermion/qubit axes for native Hybrid-to-Pauli lowering."""
+    domains = {"fermion": 0, "qubit": 1}
+    if any(axis.domain not in domains for axis in space._axes):
+        raise ValueError("Pauli projection requires only fermion and qubit axes")
+    return [(domains[axis.domain], axis.index) for axis in space._axes]
+
+
 def _native_fermion_raw(
     n_modes: int,
     terms: Iterable[Tuple[Sequence[Tuple[int, str]], complex]],
     max_bytes: Optional[int],
-) -> Tuple[
-    Tuple[Tuple[int, ...], ...], Tuple[Tuple[int, ...], ...], Tuple[complex, ...]
-]:
+) -> _native.NativeFermionOperatorHandle:
     n_modes = _nonnegative_int(n_modes, "n_modes")
     factors: List[List[Tuple[int, int]]] = []
     coefficients: List[complex] = []
@@ -1800,19 +2082,14 @@ def _native_fermion_raw(
         [value.imag for value in coefficients],
         _effective_max_bytes(max_bytes),
     )
-    creation, annihilation, real, imaginary = result
-    return (
-        tuple(tuple(int(mode) for mode in word) for word in creation),
-        tuple(tuple(int(mode) for mode in word) for word in annihilation),
-        tuple(complex(re, im) for re, im in zip(real, imaginary)),
-    )
+    return result
 
 
 def _native_boson_raw(
     n_modes: int,
     terms: Iterable[Tuple[Sequence[Tuple[int, str]], complex]],
     max_bytes: Optional[int],
-) -> Tuple[Tuple[Tuple[Tuple[int, int, int], ...], ...], Tuple[complex, ...]]:
+) -> _native.NativeBosonOperatorHandle:
     n_modes = _nonnegative_int(n_modes, "n_modes")
     factors: List[List[Tuple[int, int]]] = []
     coefficients: List[complex] = []
@@ -1823,38 +2100,59 @@ def _native_boson_raw(
             normalized.append((mode, int(action == "annihilate")))
         factors.append(normalized)
         coefficients.append(_finite_complex(coefficient))
-    blocks_raw, real, imaginary = _native.structured_boson_canonicalize(
+    return _native.structured_boson_canonicalize(
         n_modes,
         factors,
         [value.real for value in coefficients],
         [value.imag for value in coefficients],
         _effective_max_bytes(max_bytes),
     )
-    blocks = cast(Sequence[Sequence[Tuple[int, int, int]]], blocks_raw)
-    return (
-        tuple(
-            tuple((int(block[0]), int(block[1]), int(block[2])) for block in word)
-            for word in blocks
-        ),
-        tuple(complex(re, im) for re, im in zip(real, imaginary)),
-    )
 
 
 def _fermion_arrays(
     operator: "FermionOperator",
 ) -> Tuple[List[List[int]], List[List[int]], List[float], List[float]]:
-    fermion_terms = [term for term in operator._terms if term.fermion is not None]
-    creation = [
+    if isinstance(operator._native_handle, _native.NativeFermionOperatorHandle):
+        (
+            _,
+            creation_flat,
+            creation_offsets,
+            annihilation_flat,
+            annihilation_offsets,
+            coefficients,
+        ) = operator._native_handle.materialize()
+        creation_values = np.asarray(creation_flat, dtype=np.uint32)
+        annihilation_values = np.asarray(annihilation_flat, dtype=np.uint32)
+        creation_stops = np.asarray(creation_offsets, dtype=np.uintp)
+        annihilation_stops = np.asarray(annihilation_offsets, dtype=np.uintp)
+        creation_rows = [
+            [int(mode) for mode in creation_values[start:stop]]
+            for start, stop in zip(creation_stops[:-1], creation_stops[1:])
+        ]
+        annihilation_rows = [
+            [int(mode) for mode in annihilation_values[start:stop]]
+            for start, stop in zip(annihilation_stops[:-1], annihilation_stops[1:])
+        ]
+        values = np.asarray(coefficients, dtype=np.complex128)
+        return (
+            creation_rows,
+            annihilation_rows,
+            [float(value.real) for value in values],
+            [float(value.imag) for value in values],
+        )
+    terms = operator._materialized_terms()
+    fermion_terms = [term for term in terms if term.fermion is not None]
+    creation_words: List[List[int]] = [
         list(cast(FermionWord, term.fermion).creation_modes) for term in fermion_terms
     ]
-    annihilation = [
+    annihilation_words: List[List[int]] = [
         list(cast(FermionWord, term.fermion).annihilation_modes)
         for term in fermion_terms
     ]
     coefficients = [complex(term.coefficient) for term in fermion_terms]
     return (
-        creation,
-        annihilation,
+        creation_words,
+        annihilation_words,
         [value.real for value in coefficients],
         [value.imag for value in coefficients],
     )
@@ -1863,11 +2161,33 @@ def _fermion_arrays(
 def _boson_arrays(
     operator: "BosonOperator",
 ) -> Tuple[List[List[Tuple[int, int, int]]], List[float], List[float]]:
-    boson_terms = [term for term in operator._terms if term.boson is not None]
-    blocks = [list(cast(BosonWord, term.boson).blocks) for term in boson_terms]
+    if isinstance(operator._native_handle, _native.NativeBosonOperatorHandle):
+        _, blocks_flat, block_offsets, coefficients = (
+            operator._native_handle.materialize()
+        )
+        blocks_values = np.asarray(blocks_flat, dtype=np.uint32).reshape((-1, 3))
+        offsets = np.asarray(block_offsets, dtype=np.uintp)
+        block_rows: List[List[Tuple[int, int, int]]] = [
+            [
+                cast(Tuple[int, int, int], tuple(int(value) for value in block))
+                for block in blocks_values[start:stop]
+            ]
+            for start, stop in zip(offsets[:-1], offsets[1:])
+        ]
+        values = np.asarray(coefficients, dtype=np.complex128)
+        return (
+            block_rows,
+            [float(value.real) for value in values],
+            [float(value.imag) for value in values],
+        )
+    terms = operator._materialized_terms()
+    boson_terms = [term for term in terms if term.boson is not None]
+    block_words: List[List[Tuple[int, int, int]]] = [
+        list(cast(BosonWord, term.boson).blocks) for term in boson_terms
+    ]
     coefficients = [complex(term.coefficient) for term in boson_terms]
     return (
-        blocks,
+        block_words,
         [value.real for value in coefficients],
         [value.imag for value in coefficients],
     )
@@ -1889,157 +2209,442 @@ def _hybrid_arrays(
     List[float],
     List[float],
 ]:
-    fermion_present: List[bool] = []
-    fermion_creation: List[List[int]] = []
-    fermion_annihilation: List[List[int]] = []
-    boson_present: List[bool] = []
-    boson_blocks: List[List[Tuple[int, int, int]]] = []
-    qubit_codes: List[List[int]] = []
-    mapped_present: List[bool] = []
-    mapped_codes: List[List[int]] = []
-    qudit_present: List[bool] = []
-    qudit_triples: List[List[Tuple[int, int, int]]] = []
-    coefficients: List[complex] = []
-    for term in operator._terms:
-        fermion_present.append(term.fermion is not None)
-        fermion_creation.append(
+    if isinstance(operator._native_handle, _native.NativeHybridOperatorHandle):
+        (
+            term_count,
+            nqubits,
+            structural_arrays,
+            fixed_arrays,
+        ) = operator._native_handle.materialize()
+        (
+            flags,
+            fermion_creation,
+            fermion_creation_offsets,
+            fermion_annihilation,
+            fermion_annihilation_offsets,
+            boson_blocks,
+            boson_offsets,
+        ) = structural_arrays
+        qubit_codes, mapped_codes, qudit_triples, qudit_offsets, coefficients = (
+            fixed_arrays
+        )
+        flags_array = np.asarray(flags, dtype=np.uint8).reshape((int(term_count), 4))
+        f_creation_values = np.asarray(fermion_creation, dtype=np.uint32)
+        f_creation_stops = np.asarray(fermion_creation_offsets, dtype=np.uintp)
+        f_annihilation_values = np.asarray(fermion_annihilation, dtype=np.uint32)
+        f_annihilation_stops = np.asarray(fermion_annihilation_offsets, dtype=np.uintp)
+        boson_values = np.asarray(boson_blocks, dtype=np.uint32).reshape((-1, 3))
+        boson_stops = np.asarray(boson_offsets, dtype=np.uintp)
+        qudit_values = np.asarray(qudit_triples, dtype=np.uint32).reshape((-1, 3))
+        qudit_stops = np.asarray(qudit_offsets, dtype=np.uintp)
+        f_creation_rows = [
+            [int(value) for value in f_creation_values[start:stop]]
+            for start, stop in zip(f_creation_stops[:-1], f_creation_stops[1:])
+        ]
+        f_annihilation_rows = [
+            [int(value) for value in f_annihilation_values[start:stop]]
+            for start, stop in zip(f_annihilation_stops[:-1], f_annihilation_stops[1:])
+        ]
+        boson_rows: List[List[Tuple[int, int, int]]] = [
+            [
+                cast(Tuple[int, int, int], tuple(int(value) for value in block))
+                for block in boson_values[start:stop]
+            ]
+            for start, stop in zip(boson_stops[:-1], boson_stops[1:])
+        ]
+        qudit_rows: List[List[Tuple[int, int, int]]] = [
+            [
+                cast(Tuple[int, int, int], tuple(int(value) for value in triple))
+                for triple in qudit_values[start:stop]
+            ]
+            for start, stop in zip(qudit_stops[:-1], qudit_stops[1:])
+        ]
+        values = np.asarray(coefficients, dtype=np.complex128)
+        qubit_values = np.asarray(qubit_codes, dtype=np.uint8).reshape(
+            (int(term_count), int(nqubits))
+        )
+        mapped_values = np.asarray(mapped_codes, dtype=np.uint8).reshape(
+            (int(term_count), int(operator.space.fermions))
+        )
+        return (
+            [bool(row[0]) for row in flags_array],
+            f_creation_rows,
+            f_annihilation_rows,
+            [bool(row[1]) for row in flags_array],
+            boson_rows,
+            [list(row) for row in qubit_values],
+            [bool(row[2]) for row in flags_array],
+            [list(row) for row in mapped_values],
+            [bool(row[3]) for row in flags_array],
+            qudit_rows,
+            [float(value.real) for value in values],
+            [float(value.imag) for value in values],
+        )
+    fallback_fermion_present: List[bool] = []
+    fallback_fermion_creation: List[List[int]] = []
+    fallback_fermion_annihilation: List[List[int]] = []
+    fallback_boson_present: List[bool] = []
+    fallback_boson_blocks: List[List[Tuple[int, int, int]]] = []
+    fallback_qubit_codes: List[List[int]] = []
+    fallback_mapped_present: List[bool] = []
+    fallback_mapped_codes: List[List[int]] = []
+    fallback_qudit_present: List[bool] = []
+    fallback_qudit_triples: List[List[Tuple[int, int, int]]] = []
+    fallback_coefficients: List[complex] = []
+    for term in operator._materialized_terms():
+        fallback_fermion_present.append(term.fermion is not None)
+        fallback_fermion_creation.append(
             list(term.fermion.creation_modes) if term.fermion is not None else []
         )
-        fermion_annihilation.append(
+        fallback_fermion_annihilation.append(
             list(term.fermion.annihilation_modes) if term.fermion is not None else []
         )
-        boson_present.append(term.boson is not None)
-        boson_blocks.append(list(term.boson.blocks) if term.boson is not None else [])
-        qubit_codes.append(
+        fallback_boson_present.append(term.boson is not None)
+        fallback_boson_blocks.append(
+            list(term.boson.blocks) if term.boson is not None else []
+        )
+        fallback_qubit_codes.append(
             list(term.qubit)
             if len(term.qubit) == operator.space.qubits
             else [0] * operator.space.qubits
         )
-        mapped_present.append(term.mapped_fermion is not None)
-        mapped_codes.append(
+        fallback_mapped_present.append(term.mapped_fermion is not None)
+        fallback_mapped_codes.append(
             list(term.mapped_fermion)
             if term.mapped_fermion is not None
             else [0] * operator.space.fermions
         )
-        qudit_present.append(term.qudit is not None)
-        qudit_triples.append(list(term.qudit.triples) if term.qudit is not None else [])
-        coefficients.append(complex(term.coefficient))
+        fallback_qudit_present.append(term.qudit is not None)
+        fallback_qudit_triples.append(
+            list(term.qudit.triples) if term.qudit is not None else []
+        )
+        fallback_coefficients.append(complex(term.coefficient))
     return (
-        fermion_present,
-        fermion_creation,
-        fermion_annihilation,
-        boson_present,
-        boson_blocks,
-        qubit_codes,
-        mapped_present,
-        mapped_codes,
-        qudit_present,
-        qudit_triples,
-        [value.real for value in coefficients],
-        [value.imag for value in coefficients],
+        fallback_fermion_present,
+        fallback_fermion_creation,
+        fallback_fermion_annihilation,
+        fallback_boson_present,
+        fallback_boson_blocks,
+        fallback_qubit_codes,
+        fallback_mapped_present,
+        fallback_mapped_codes,
+        fallback_qudit_present,
+        fallback_qudit_triples,
+        [value.real for value in fallback_coefficients],
+        [value.imag for value in fallback_coefficients],
     )
+
+
+def _terms_from_native_handle(
+    space: OperatorSpace, domain: str, handle: StructuredNativeHandle
+) -> Tuple[_Term, ...]:
+    """Materialize typed structural words at the explicit ``terms`` boundary."""
+    native: Any = handle
+    if domain == "fermion":
+        (
+            _term_count,
+            creation_flat,
+            creation_offsets,
+            annihilation_flat,
+            annihilation_offsets,
+            coefficients,
+        ) = native.materialize()
+        creation_values = np.asarray(creation_flat, dtype=np.uint32)
+        creation_stops = np.asarray(creation_offsets, dtype=np.uintp)
+        annihilation_values = np.asarray(annihilation_flat, dtype=np.uint32)
+        annihilation_stops = np.asarray(annihilation_offsets, dtype=np.uintp)
+        values = np.asarray(coefficients, dtype=np.complex128)
+        return tuple(
+            _Term(
+                FermionWord(
+                    space.fermions,
+                    tuple(int(value) for value in creation_values[start:stop]),
+                    tuple(
+                        int(value) for value in annihilation_values[ann_start:ann_stop]
+                    ),
+                ),
+                None,
+                (),
+                None,
+                None,
+                complex(value),
+            )
+            for (start, stop), (ann_start, ann_stop), value in zip(
+                zip(creation_stops[:-1], creation_stops[1:]),
+                zip(annihilation_stops[:-1], annihilation_stops[1:]),
+                values,
+            )
+        )
+    if domain == "boson":
+        _term_count, blocks_flat, block_offsets, coefficients = native.materialize()
+        blocks_values = np.asarray(blocks_flat, dtype=np.uint32).reshape((-1, 3))
+        offsets = np.asarray(block_offsets, dtype=np.uintp)
+        values = np.asarray(coefficients, dtype=np.complex128)
+        return tuple(
+            _Term(
+                None,
+                BosonWord(
+                    space.bosons,
+                    tuple(
+                        cast(Tuple[int, int, int], tuple(int(value) for value in block))
+                        for block in blocks_values[start:stop]
+                    ),
+                ),
+                (),
+                None,
+                None,
+                complex(value),
+            )
+            for (start, stop), value in zip(zip(offsets[:-1], offsets[1:]), values)
+        )
+    (
+        term_count,
+        nqubits,
+        structural_arrays,
+        fixed_arrays,
+    ) = native.materialize()
+    (
+        flags,
+        fermion_creation,
+        fermion_creation_offsets,
+        fermion_annihilation,
+        fermion_annihilation_offsets,
+        boson_blocks,
+        boson_offsets,
+    ) = structural_arrays
+    qubit_codes, mapped_codes, qudit_triples, qudit_offsets, coefficients = fixed_arrays
+    flags_array = np.asarray(flags, dtype=np.uint8).reshape((int(term_count), 4))
+    creation_values = np.asarray(fermion_creation, dtype=np.uint32)
+    creation_stops = np.asarray(fermion_creation_offsets, dtype=np.uintp)
+    annihilation_values = np.asarray(fermion_annihilation, dtype=np.uint32)
+    annihilation_stops = np.asarray(fermion_annihilation_offsets, dtype=np.uintp)
+    boson_values = np.asarray(boson_blocks, dtype=np.uint32).reshape((-1, 3))
+    boson_stops = np.asarray(boson_offsets, dtype=np.uintp)
+    qudit_values = np.asarray(qudit_triples, dtype=np.uint32).reshape((-1, 3))
+    qudit_stops = np.asarray(qudit_offsets, dtype=np.uintp)
+    qubit_values = np.asarray(qubit_codes, dtype=np.uint8).reshape(
+        (int(term_count), int(nqubits))
+    )
+    mapped_values = np.asarray(mapped_codes, dtype=np.uint8).reshape(
+        (int(term_count), int(space.fermions))
+    )
+    values = np.asarray(coefficients, dtype=np.complex128)
+    qudit_dimension = space.qudits[0] if space.qudits else 0
+    return tuple(
+        _Term(
+            (
+                FermionWord(
+                    space.fermions,
+                    tuple(int(value) for value in creation_values[start:stop]),
+                    tuple(
+                        int(value) for value in annihilation_values[ann_start:ann_stop]
+                    ),
+                )
+                if flags_array[index, 0]
+                else None
+            ),
+            (
+                BosonWord(
+                    space.bosons,
+                    tuple(
+                        cast(Tuple[int, int, int], tuple(int(value) for value in block))
+                        for block in boson_values[b_start:b_stop]
+                    ),
+                )
+                if flags_array[index, 1]
+                else None
+            ),
+            tuple(int(code) for code in qubit_values[index]),
+            (
+                QuditWeylWord(
+                    qudit_dimension,
+                    tuple(
+                        cast(
+                            Tuple[int, int, int], tuple(int(value) for value in triple)
+                        )
+                        for triple in qudit_values[q_start:q_stop]
+                    ),
+                )
+                if flags_array[index, 3]
+                else None
+            ),
+            (
+                tuple(int(code) for code in mapped_values[index])
+                if flags_array[index, 2]
+                else None
+            ),
+            complex(value),
+        )
+        for index, (
+            (start, stop),
+            (ann_start, ann_stop),
+            (b_start, b_stop),
+            (q_start, q_stop),
+            value,
+        ) in enumerate(
+            zip(
+                zip(creation_stops[:-1], creation_stops[1:]),
+                zip(annihilation_stops[:-1], annihilation_stops[1:]),
+                zip(boson_stops[:-1], boson_stops[1:]),
+                zip(qudit_stops[:-1], qudit_stops[1:]),
+                values,
+            )
+        )
+    )
+
+
+def _add_native_handles(
+    left: _StructuredOperator,
+    right: _StructuredOperator,
+    max_bytes: Optional[int],
+) -> _StructuredOperator:
+    left_handle = left._native_handle
+    right_handle = right._native_handle
+    if left_handle is None or right_handle is None:
+        raise RuntimeError("native handle addition requires native handles")
+    if isinstance(left_handle, _native.NativeFermionOperatorHandle) and isinstance(
+        right_handle, _native.NativeFermionOperatorHandle
+    ):
+        return _fermion_from_native(
+            type(left),
+            left.space.fermions,
+            left_handle.add(right_handle, _effective_max_bytes(max_bytes)),
+        )
+    if isinstance(left_handle, _native.NativeBosonOperatorHandle) and isinstance(
+        right_handle, _native.NativeBosonOperatorHandle
+    ):
+        return _boson_from_native(
+            type(left),
+            left.space.bosons,
+            left_handle.add(right_handle, _effective_max_bytes(max_bytes)),
+        )
+    if isinstance(left_handle, _native.NativeHybridOperatorHandle) and isinstance(
+        right_handle, _native.NativeHybridOperatorHandle
+    ):
+        result = left_handle.add(right_handle, _effective_max_bytes(max_bytes))
+        return _hybrid_from_native(
+            left.space, result, _native_result_class(left, right)
+        )
+    if isinstance(left_handle, _native.NativeFermionOperatorHandle) and isinstance(
+        right_handle, _native.NativeHybridOperatorHandle
+    ):
+        result = left_handle.to_hybrid().add(
+            right_handle, _effective_max_bytes(max_bytes)
+        )
+        return _hybrid_from_native(left.space, result)
+    if isinstance(left_handle, _native.NativeHybridOperatorHandle) and isinstance(
+        right_handle, _native.NativeFermionOperatorHandle
+    ):
+        result = left_handle.add(
+            right_handle.to_hybrid(), _effective_max_bytes(max_bytes)
+        )
+        return _hybrid_from_native(left.space, result)
+    if isinstance(left_handle, _native.NativeBosonOperatorHandle) and isinstance(
+        right_handle, _native.NativeHybridOperatorHandle
+    ):
+        result = left_handle.to_hybrid().add(
+            right_handle, _effective_max_bytes(max_bytes)
+        )
+        return _hybrid_from_native(left.space, result)
+    if isinstance(left_handle, _native.NativeHybridOperatorHandle) and isinstance(
+        right_handle, _native.NativeBosonOperatorHandle
+    ):
+        result = left_handle.add(
+            right_handle.to_hybrid(), _effective_max_bytes(max_bytes)
+        )
+        return _hybrid_from_native(left.space, result)
+    raise TypeError("native structured handles have incompatible families")
+
+
+def _scale_native_handle(
+    operator: _StructuredOperator, scalar: complex
+) -> _StructuredOperator:
+    handle = operator._native_handle
+    if handle is None:
+        raise RuntimeError("native handle scaling requires native storage")
+    if isinstance(handle, _native.NativeFermionOperatorHandle):
+        return _fermion_from_native(
+            type(operator),
+            operator.space.fermions,
+            handle.scale(scalar.real, scalar.imag),
+        )
+    if isinstance(handle, _native.NativeBosonOperatorHandle):
+        return _boson_from_native(
+            type(operator),
+            operator.space.bosons,
+            handle.scale(scalar.real, scalar.imag),
+        )
+    return _hybrid_from_native(
+        operator.space, handle.scale(scalar.real, scalar.imag), type(operator)
+    )
+
+
+def _adjoint_native_handle(
+    operator: _StructuredOperator, max_bytes: Optional[int]
+) -> _StructuredOperator:
+    handle = operator._native_handle
+    if handle is None:
+        raise RuntimeError("native handle adjoint requires native storage")
+    if isinstance(handle, _native.NativeFermionOperatorHandle):
+        return _fermion_from_native(
+            type(operator),
+            operator.space.fermions,
+            handle.adjoint(_effective_max_bytes(max_bytes)),
+        )
+    if isinstance(handle, _native.NativeBosonOperatorHandle):
+        return _boson_from_native(
+            type(operator), operator.space.bosons, handle.adjoint()
+        )
+    return _hybrid_from_native(operator.space, handle.adjoint(), type(operator))
 
 
 def _fermion_from_native(
     cls: Any,
     n_modes: int,
-    result: Tuple[Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[complex]],
+    result: _native.NativeFermionOperatorHandle,
 ) -> "FermionOperator":
-    creation, annihilation, coefficients = result
-    terms = tuple(
-        _Term(
-            FermionWord(n_modes, tuple(left), tuple(right)),
-            None,
-            (),
-            None,
-            None,
-            complex(coefficient),
-        )
-        for left, right, coefficient in zip(creation, annihilation, coefficients)
-    )
     instance = object.__new__(cls)
-    _StructuredOperator.__init__(instance, OperatorSpace(fermions=n_modes), terms)
+    _StructuredOperator.__init__(
+        instance,
+        OperatorSpace(fermions=n_modes),
+        native_handle=result,
+    )
     return cast("FermionOperator", instance)
 
 
 def _boson_from_native(
     cls: Any,
     n_modes: int,
-    result: Tuple[Sequence[Sequence[Tuple[int, int, int]]], Sequence[complex]],
+    result: _native.NativeBosonOperatorHandle,
 ) -> "BosonOperator":
-    blocks, coefficients = result
-    terms = tuple(
-        _Term(
-            None,
-            BosonWord(
-                n_modes,
-                tuple((int(block[0]), int(block[1]), int(block[2])) for block in word),
-            ),
-            (),
-            None,
-            None,
-            complex(coefficient),
-        )
-        for word, coefficient in zip(blocks, coefficients)
-    )
     instance = object.__new__(cls)
-    _StructuredOperator.__init__(instance, OperatorSpace(bosons=n_modes), terms)
+    _StructuredOperator.__init__(
+        instance,
+        OperatorSpace(bosons=n_modes),
+        native_handle=result,
+    )
     return cast("BosonOperator", instance)
 
 
 def _hybrid_from_native(
     space: OperatorSpace,
-    result: Tuple[Any, ...],
+    result: _native.NativeHybridOperatorHandle,
+    cls: Any = None,
 ) -> "HybridOperator":
-    (
-        fermion_present,
-        fermion_creation,
-        fermion_annihilation,
-        boson_present,
-        boson_blocks,
-        qubit_codes,
-        mapped_present,
-        mapped_codes,
-        qudit_present,
-        qudit_triples,
-        real,
-        imaginary,
-    ) = result
-    qudit_dimension = space.qudits[0] if space.qudits else 0
-    terms = []
-    for index in range(len(real)):
-        fermion = (
-            FermionWord(
-                space.fermions,
-                tuple(fermion_creation[index]),
-                tuple(fermion_annihilation[index]),
-            )
-            if fermion_present[index]
-            else None
-        )
-        boson = (
-            BosonWord(space.bosons, tuple(boson_blocks[index]))
-            if boson_present[index]
-            else None
-        )
-        qudit = (
-            QuditWeylWord(qudit_dimension, tuple(qudit_triples[index]))
-            if qudit_present[index]
-            else None
-        )
-        terms.append(
-            _Term(
-                fermion,
-                boson,
-                tuple(qubit_codes[index]),
-                qudit,
-                tuple(mapped_codes[index]) if mapped_present[index] else None,
-                complex(real[index], imaginary[index]),
-            )
-        )
-    instance = object.__new__(HybridOperator)
-    _StructuredOperator.__init__(instance, space, tuple(terms))
-    return instance
+    if cls is None:
+        cls = HybridOperator
+    instance = object.__new__(cls)
+    _StructuredOperator.__init__(instance, space, native_handle=result)
+    return cast("HybridOperator", instance)
+
+
+def _native_result_class(left: _StructuredOperator, right: _StructuredOperator) -> Any:
+    """Keep pure-family facades while promoting genuinely mixed results."""
+    if type(left) is type(right) and isinstance(
+        left, (QuditWeylOperator, HybridOperator)
+    ):
+        return type(left)
+    return HybridOperator
 
 
 class FermionOperator(_StructuredOperator):
@@ -2059,17 +2664,7 @@ class FermionOperator(_StructuredOperator):
         _StructuredOperator.__init__(
             self,
             OperatorSpace(fermions=_nonnegative_int(n_modes, "n_modes")),
-            tuple(
-                _Term(
-                    FermionWord(n_modes, left, right),
-                    None,
-                    (),
-                    None,
-                    None,
-                    coefficient,
-                )
-                for left, right, coefficient in zip(*result)
-            ),
+            native_handle=result,
         )
 
     @classmethod
@@ -2091,10 +2686,34 @@ class FermionOperator(_StructuredOperator):
         terms: Iterable[_Term],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionOperator":
-        canonical = _canonical_terms(space, terms, max_bytes)
-        instance = object.__new__(cls)
-        _StructuredOperator.__init__(instance, space, canonical)
-        return instance
+        raw_terms = []
+        for term in terms:
+            if (
+                term.fermion is None
+                or any(
+                    value is not None
+                    for value in (term.boson, term.qudit, term.mapped_fermion)
+                )
+                or term.qubit
+            ):
+                raise ValueError("fermion terms must contain only fermion factors")
+            raw_terms.append(
+                (
+                    tuple(
+                        [(mode, "create") for mode in term.fermion.creation_modes]
+                        + [
+                            (mode, "annihilate")
+                            for mode in term.fermion.annihilation_modes
+                        ]
+                    ),
+                    term.coefficient,
+                )
+            )
+        return _fermion_from_native(
+            cls,
+            space.fermions,
+            _native_fermion_raw(space.fermions, raw_terms, max_bytes),
+        )
 
     @classmethod
     def from_terms(
@@ -2144,22 +2763,25 @@ class FermionOperator(_StructuredOperator):
             return cast(
                 "_StructuredOperator", super().multiply(other, max_bytes=max_bytes)
             )
-        left = _fermion_arrays(self)
-        right = _fermion_arrays(other)
-        creation, annihilation, real, imaginary = _native.structured_fermion_multiply(
-            self.space.fermions,
-            left,
-            right,
-            _effective_max_bytes(max_bytes),
-        )
+        if self._native_handle is not None and other._native_handle is not None:
+            assert isinstance(self._native_handle, _native.NativeFermionOperatorHandle)
+            assert isinstance(other._native_handle, _native.NativeFermionOperatorHandle)
+            result = self._native_handle.multiply(
+                other._native_handle, _effective_max_bytes(max_bytes)
+            )
+        else:
+            left = _fermion_arrays(self)
+            right = _fermion_arrays(other)
+            result = _native.structured_fermion_multiply(
+                self.space.fermions,
+                left,
+                right,
+                _effective_max_bytes(max_bytes),
+            )
         return _fermion_from_native(
             FermionOperator,
             self.space.fermions,
-            (
-                creation,
-                annihilation,
-                tuple(complex(re, im) for re, im in zip(real, imaginary)),
-            ),
+            result,
         )
 
     def map_fermions(
@@ -2188,6 +2810,10 @@ class FermionOperator(_StructuredOperator):
             return FermionQubitMapping.from_name(
                 mapping, self.space.fermions, max_bytes=max_bytes
             ).map_fermion_operator(self, max_bytes=max_bytes)
+        if isinstance(self._native_handle, _native.NativeFermionOperatorHandle):
+            return PauliOperator._from_native_handle(
+                self._native_handle.jordan_wigner(_effective_max_bytes(max_bytes))
+            )
         creation, annihilation, real, imaginary = _fermion_arrays(self)
         structures, mapped_real, mapped_imaginary = (
             _native.structured_fermion_jordan_wigner(
@@ -2223,7 +2849,7 @@ class FermionOperator(_StructuredOperator):
             return _with_plan_metadata(
                 result,
                 mapping=_mapping_name(mapping),
-                source_term_count=len(self._terms),
+                source_term_count=self.term_count,
             )
         return result
 
@@ -2283,22 +2909,25 @@ class BosonOperator(_StructuredOperator):
             return cast(
                 "_StructuredOperator", super().multiply(other, max_bytes=max_bytes)
             )
-        left = _boson_arrays(self)
-        right = _boson_arrays(other)
-        blocks, real, imaginary = _native.structured_boson_multiply(
-            self.space.bosons,
-            left,
-            right,
-            _effective_max_bytes(max_bytes),
-        )
-        typed_blocks = cast(Sequence[Sequence[Tuple[int, int, int]]], blocks)
+        if self._native_handle is not None and other._native_handle is not None:
+            assert isinstance(self._native_handle, _native.NativeBosonOperatorHandle)
+            assert isinstance(other._native_handle, _native.NativeBosonOperatorHandle)
+            result = self._native_handle.multiply(
+                other._native_handle, _effective_max_bytes(max_bytes)
+            )
+        else:
+            left = _boson_arrays(self)
+            right = _boson_arrays(other)
+            result = _native.structured_boson_multiply(
+                self.space.bosons,
+                left,
+                right,
+                _effective_max_bytes(max_bytes),
+            )
         return _boson_from_native(
             BosonOperator,
             self.space.bosons,
-            (
-                typed_blocks,
-                tuple(complex(re, im) for re, im in zip(real, imaginary)),
-            ),
+            result,
         )
 
     @classmethod
@@ -2308,11 +2937,39 @@ class BosonOperator(_StructuredOperator):
         terms: Iterable[_Term],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "BosonOperator":
-        instance = object.__new__(cls)
-        _StructuredOperator.__init__(
-            instance, space, _canonical_terms(space, terms, max_bytes)
+        raw_terms = []
+        for term in terms:
+            if (
+                term.boson is None
+                or any(
+                    value is not None
+                    for value in (term.fermion, term.qudit, term.mapped_fermion)
+                )
+                or term.qubit
+            ):
+                raise ValueError("boson terms must contain only boson factors")
+            raw_terms.append(
+                (
+                    tuple(
+                        [
+                            (mode, "create")
+                            for mode, create, _ in term.boson.blocks
+                            for _ in range(create)
+                        ]
+                        + [
+                            (mode, "annihilate")
+                            for mode, _, annihilate in term.boson.blocks
+                            for _ in range(annihilate)
+                        ]
+                    ),
+                    term.coefficient,
+                )
+            )
+        return _boson_from_native(
+            cls,
+            space.bosons,
+            _native_boson_raw(space.bosons, raw_terms, max_bytes),
         )
-        return instance
 
     def compile(  # type: ignore[override]
         self,
@@ -2355,11 +3012,12 @@ class QuditWeylOperator(_StructuredOperator):
         if not 3 <= dimension <= _U32_MAX:
             raise ValueError("qudit dimension must satisfy 3 <= dimension <= 2**32-1")
         input_terms = tuple(terms)
-        raw: List[_Term] = []
+        raw_triples: List[List[Tuple[int, int, int]]] = []
+        raw_coefficients: List[complex] = []
         max_site = -1
         for factors, coefficient in input_terms:
             value = _finite_complex(coefficient)
-            word = QuditWeylWord(dimension)
+            current: Dict[int, Tuple[int, int]] = {}
             phase = 0
             for factor in factors:
                 if not isinstance(factor, (tuple, list)) or len(factor) != 3:
@@ -2370,21 +3028,20 @@ class QuditWeylOperator(_StructuredOperator):
                     _nonnegative_int(factor[2], "b"),
                 )
                 max_site = max(max_site, site)
-                next_word = QuditWeylWord(
-                    dimension, ((site, a % dimension, b % dimension),)
-                )
-                result = word.multiply(next_word)
-                word, phase = result.word, (phase + result.phase_exponent) % dimension
-            raw.append(
-                _Term(
-                    None,
-                    None,
-                    (),
-                    word,
-                    None,
-                    value * cmath.exp(2j * math.pi * phase / dimension),
-                )
+                a %= dimension
+                b %= dimension
+                previous_a, previous_b = current.get(site, (0, 0))
+                phase = (phase + previous_b * a) % dimension
+                combined_a = (previous_a + a) % dimension
+                combined_b = (previous_b + b) % dimension
+                if combined_a or combined_b:
+                    current[site] = (combined_a, combined_b)
+                else:
+                    current.pop(site, None)
+            raw_triples.append(
+                [(site, a, b) for site, (a, b) in sorted(current.items())]
             )
+            raw_coefficients.append(value * cmath.exp(2j * math.pi * phase / dimension))
         if n_sites is not None:
             n_sites = _nonnegative_int(n_sites, "n_sites")
             if n_sites <= max_site:
@@ -2394,7 +3051,24 @@ class QuditWeylOperator(_StructuredOperator):
         space = OperatorSpace._from_axes(
             tuple(_Axis("qudit", i, dimension) for i in range(n_sites))
         )
-        return cls._from_terms(space, raw, max_bytes)
+        result = _native.structured_hybrid_canonicalize(
+            0,
+            0,
+            0,
+            n_sites,
+            dimension,
+            (
+                [[] for _ in raw_triples],
+                [[] for _ in raw_triples],
+                [[] for _ in raw_triples],
+                [True for _ in raw_triples],
+                raw_triples,
+                [value.real for value in raw_coefficients],
+                [value.imag for value in raw_coefficients],
+            ),
+            _effective_max_bytes(max_bytes),
+        )
+        return cast("QuditWeylOperator", _hybrid_from_native(space, result, cls))
 
     @classmethod
     def _from_terms(
@@ -2403,11 +3077,38 @@ class QuditWeylOperator(_StructuredOperator):
         terms: Iterable[_Term],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "QuditWeylOperator":
-        instance = object.__new__(cls)
-        _StructuredOperator.__init__(
-            instance, space, _canonical_terms(space, terms, max_bytes)
+        raw_terms = tuple(terms)
+        triples: List[List[Tuple[int, int, int]]] = []
+        coefficients: List[complex] = []
+        for term in raw_terms:
+            if (
+                term.qudit is None
+                or term.fermion is not None
+                or term.boson is not None
+                or term.qubit
+                or term.mapped_fermion is not None
+            ):
+                raise ValueError("qudit terms must contain only qudit factors")
+            triples.append(list(term.qudit.triples))
+            coefficients.append(term.coefficient)
+        result = _native.structured_hybrid_canonicalize(
+            0,
+            0,
+            0,
+            len(space.qudits),
+            space.qudits[0] if space.qudits else 0,
+            (
+                [[] for _ in raw_terms],
+                [[] for _ in raw_terms],
+                [[] for _ in raw_terms],
+                [bool(word) for word in triples],
+                triples,
+                [value.real for value in coefficients],
+                [value.imag for value in coefficients],
+            ),
+            _effective_max_bytes(max_bytes),
         )
-        return instance
+        return cast("QuditWeylOperator", _hybrid_from_native(space, result, cls))
 
     def compile(  # type: ignore[override]
         self,
@@ -2436,11 +3137,62 @@ class HybridOperator(_StructuredOperator):
         terms: Iterable[_Term],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "HybridOperator":
-        instance = object.__new__(cls)
-        _StructuredOperator.__init__(
-            instance, space, _canonical_terms(space, terms, max_bytes)
+        raw_terms = tuple(terms)
+        if any(term.mapped_fermion is not None for term in raw_terms):
+            instance = object.__new__(cls)
+            _StructuredOperator.__init__(
+                instance, space, _canonical_terms(space, raw_terms, max_bytes)
+            )
+            return instance
+        fermion_factors: List[List[Tuple[int, int]]] = []
+        boson_factors: List[List[Tuple[int, int]]] = []
+        qubit_codes: List[List[int]] = []
+        qudit_present: List[bool] = []
+        qudit_triples: List[List[Tuple[int, int, int]]] = []
+        coefficients: List[complex] = []
+        for term in raw_terms:
+            fermion_factors.append(
+                []
+                if term.fermion is None
+                else [(mode, 0) for mode in term.fermion.creation_modes]
+                + [(mode, 1) for mode in term.fermion.annihilation_modes]
+            )
+            boson_factors.append(
+                []
+                if term.boson is None
+                else [
+                    (mode, 0)
+                    for mode, create, _ in term.boson.blocks
+                    for _ in range(create)
+                ]
+                + [
+                    (mode, 1)
+                    for mode, _, annihilate in term.boson.blocks
+                    for _ in range(annihilate)
+                ]
+            )
+            qubit_codes.append(list(term.qubit))
+            qudit_present.append(term.qudit is not None)
+            qudit_triples.append([] if term.qudit is None else list(term.qudit.triples))
+            coefficients.append(term.coefficient)
+        result = _native.structured_hybrid_canonicalize(
+            space.fermions,
+            space.bosons,
+            space.qubits,
+            len(space.qudits),
+            space.qudits[0] if space.qudits else 0,
+            (
+                fermion_factors,
+                boson_factors,
+                qubit_codes,
+                qudit_present,
+                qudit_triples,
+                [value.real for value in coefficients],
+                [value.imag for value in coefficients],
+            ),
+            _effective_max_bytes(max_bytes),
         )
-        return instance
+        return _hybrid_from_native(space, result, cls)
 
     def compile(
         self,
@@ -2636,7 +3388,7 @@ def _compile_finite(
         qudit_dimension = operator.space.qudits[0] if operator.space.qudits else None
         return NativeMVPPlan(
             0,
-            len(operator._terms),
+            operator.term_count,
             "structured_mvp_native",
             native_plan,
             storage=storage,
@@ -2654,15 +3406,8 @@ def _compile_finite(
         _check_allocation(
             dimension * dimension * 16, max_bytes, "dense structured matrix"
         )
-        operations, coefficients_re, coefficients_im = _native_term_arrays(
-            operator, dimensions, cutoffs
-        )
-        native_dimension, values = _native.structured_dense(
-            list(dimensions),
-            operations,
-            coefficients_re,
-            coefficients_im,
-            _effective_max_bytes(max_bytes),
+        native_dimension, values = _native_structured_dense(
+            operator, dimensions, cutoffs, max_bytes
         )
         return cast(
             np.ndarray[Any, Any],
@@ -2719,14 +3464,17 @@ def _direct_weyl_backend_plan(
             "finite basis dimension cannot be represented by platform indices"
         )
     dimension = dimensions[0]
-    term_count = len(operator._terms)
+    term_count = operator.term_count
     a_exponents = np.zeros((term_count, len(dimensions)), dtype=np.uint32)
     b_exponents = np.zeros_like(a_exponents)
     coefficients: np.ndarray[Any, Any] = np.empty(term_count, dtype=np.complex128)
-    for term_index, term in enumerate(operator._terms):
-        coefficients[term_index] = term.coefficient
-        if term.qudit is not None:
-            for site, a, b in term.qudit.triples:
+    native_data = _hybrid_arrays(operator)
+    for term_index, triples in enumerate(native_data[9]):
+        coefficients[term_index] = complex(
+            native_data[-2][term_index], native_data[-1][term_index]
+        )
+        if native_data[8][term_index]:
+            for site, a, b in triples:
                 a_exponents[term_index, site] = a
                 b_exponents[term_index, site] = b
     estimated_bytes = int(
@@ -2769,20 +3517,25 @@ def _native_term_arrays(
     operations: List[List[Tuple[int, int, int, int]]] = []
     real: List[float] = []
     imaginary: List[float] = []
-    for term in operator._terms:
+    native_data = _hybrid_arrays(operator)
+    for term_index in range(len(native_data[-2])):
         term_operations: List[Tuple[int, int, int, int]] = []
-        fcodes = term.mapped_fermion or (0,) * operator.space.fermions
+        fcodes = (
+            native_data[7][term_index]
+            if native_data[6][term_index]
+            else (0,) * operator.space.fermions
+        )
         boson_blocks = (
             {
                 mode: (creation, annihilation)
-                for mode, creation, annihilation in term.boson.blocks
+                for mode, creation, annihilation in native_data[4][term_index]
             }
-            if term.boson is not None
+            if native_data[3][term_index]
             else {}
         )
         qudit_triples = (
-            {site: (a, b) for site, a, b in term.qudit.triples}
-            if term.qudit is not None
+            {site: (a, b) for site, a, b in native_data[9][term_index]}
+            if native_data[8][term_index]
             else {}
         )
         for position, axis in enumerate(operator.space._axes):
@@ -2790,10 +3543,12 @@ def _native_term_arrays(
                 term_operations.append((position, 0, fcodes[axis.index], 0))
             elif (
                 axis.domain == "qubit"
-                and axis.index < len(term.qubit)
-                and term.qubit[axis.index]
+                and axis.index < len(native_data[5][term_index])
+                and native_data[5][term_index][axis.index]
             ):
-                term_operations.append((position, 0, term.qubit[axis.index], 0))
+                term_operations.append(
+                    (position, 0, native_data[5][term_index][axis.index], 0)
+                )
             elif axis.domain == "boson" and axis.index in boson_blocks:
                 creation, annihilation = boson_blocks[axis.index]
                 term_operations.append((position, 1, creation, annihilation))
@@ -2801,8 +3556,8 @@ def _native_term_arrays(
                 a, b = qudit_triples[axis.index]
                 term_operations.append((position, 2, a, b))
         operations.append(term_operations)
-        real.append(term.coefficient.real)
-        imaginary.append(term.coefficient.imag)
+        real.append(native_data[-2][term_index])
+        imaginary.append(native_data[-1][term_index])
     return operations, real, imaginary
 
 
@@ -2812,6 +3567,23 @@ def _native_structured_sparse(
     cutoffs: Mapping[int, int],
     max_bytes: Optional[int],
 ) -> Tuple[int, np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    compile_handle = _compile_native_hybrid_handle(operator)
+    if compile_handle is not None:
+        native_dimension, rows, columns, real, imaginary = (
+            _native.structured_sparse_handle(
+                compile_handle,
+                list(dimensions),
+                _structured_axis_descriptor(operator.space),
+                _effective_max_bytes(max_bytes),
+            )
+        )
+        return (
+            native_dimension,
+            np.asarray(rows, dtype=np.uint64),
+            np.asarray(columns, dtype=np.uint64),
+            np.asarray(real, dtype=np.float64)
+            + 1j * np.asarray(imaginary, dtype=np.float64),
+        )
     operations, coefficients_re, coefficients_im = _native_term_arrays(
         operator, dimensions, cutoffs
     )
@@ -2837,6 +3609,14 @@ def _native_structured_mvp_plan(
     cutoffs: Mapping[int, int],
     max_bytes: Optional[int],
 ) -> Any:
+    compile_handle = _compile_native_hybrid_handle(operator)
+    if compile_handle is not None:
+        return _native.structured_sparse_plan_handle(
+            compile_handle,
+            list(dimensions),
+            _structured_axis_descriptor(operator.space),
+            _effective_max_bytes(max_bytes),
+        )
     operations, coefficients_re, coefficients_im = _native_term_arrays(
         operator, dimensions, cutoffs
     )
@@ -2847,6 +3627,48 @@ def _native_structured_mvp_plan(
         coefficients_im,
         _effective_max_bytes(max_bytes),
     )
+
+
+def _structured_axis_descriptor(space: OperatorSpace) -> List[Tuple[int, int]]:
+    domains = {"fermion": 0, "boson": 1, "qubit": 2, "qudit": 3}
+    return [(domains[axis.domain], axis.index) for axis in space._axes]
+
+
+def _native_structured_dense(
+    operator: _StructuredOperator,
+    dimensions: Tuple[int, ...],
+    cutoffs: Mapping[int, int],
+    max_bytes: Optional[int],
+) -> Tuple[int, Any]:
+    compile_handle = _compile_native_hybrid_handle(operator)
+    if compile_handle is not None:
+        return _native.structured_dense_handle(
+            compile_handle,
+            list(dimensions),
+            _structured_axis_descriptor(operator.space),
+            _effective_max_bytes(max_bytes),
+        )
+    operations, coefficients_re, coefficients_im = _native_term_arrays(
+        operator, dimensions, cutoffs
+    )
+    return _native.structured_dense(
+        list(dimensions),
+        operations,
+        coefficients_re,
+        coefficients_im,
+        _effective_max_bytes(max_bytes),
+    )
+
+
+def _compile_native_hybrid_handle(
+    operator: _StructuredOperator,
+) -> Optional[_native.NativeHybridOperatorHandle]:
+    """Promote specialized native storage without exporting operator terms."""
+    if isinstance(operator._native_handle, _native.NativeHybridOperatorHandle):
+        return operator._native_handle
+    if isinstance(operator._native_handle, _native.NativeBosonOperatorHandle):
+        return operator._native_handle.to_hybrid()
+    return None
 
 
 __all__ = [

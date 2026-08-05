@@ -172,6 +172,88 @@ impl MappingPlan {
         PauliOperator::from_terms(self.n_modes, &transformed, &transformed_coefficients)
     }
 
+    /// Transform an already-owned Pauli operator without exporting its terms
+    /// through the Python boundary.
+    pub fn map_pauli_operator(
+        &self,
+        operator: &PauliOperator,
+        max_bytes: u128,
+    ) -> Result<PauliOperator, PauliError> {
+        if operator.nqubits() != self.n_modes {
+            return Err(PauliError::IncompatibleQubitCounts {
+                left: operator.nqubits(),
+                right: self.n_modes,
+            });
+        }
+        let requested = (operator.terms().len().max(1) as u128)
+            .checked_mul((self.n_modes + 4) as u128)
+            .and_then(|value| value.checked_mul(MAPPING_TERM_BYTES))
+            .ok_or(PauliError::Overflow {
+                context: "estimating mapped Pauli output",
+            })?;
+        if requested > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested,
+                limit: max_bytes,
+            });
+        }
+        let mut structures = Vec::with_capacity(operator.terms().len());
+        let mut coefficients = Vec::with_capacity(operator.terms().len());
+        for (index, term) in operator.terms().iter().enumerate() {
+            let (structure, phase) = self.transform_codes(&term.word.codes())?;
+            let coefficient = term.coefficient * phase;
+            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index });
+            }
+            structures.push(structure);
+            coefficients.push(coefficient);
+        }
+        PauliOperator::from_terms(self.n_modes, &structures, &coefficients)
+    }
+
+    /// Transform only the leading fermion-axis prefix and retain trailing
+    /// mixed-domain axes in their original order.
+    pub fn map_pauli_operator_prefix(
+        &self,
+        operator: &PauliOperator,
+        prefix_length: usize,
+        max_bytes: u128,
+    ) -> Result<PauliOperator, PauliError> {
+        if prefix_length != self.n_modes || operator.nqubits() < prefix_length {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.n_modes,
+                actual: prefix_length,
+            });
+        }
+        let requested = (operator.terms().len().max(1) as u128)
+            .checked_mul((operator.nqubits() + 4) as u128)
+            .and_then(|value| value.checked_mul(MAPPING_TERM_BYTES))
+            .ok_or(PauliError::Overflow {
+                context: "estimating mapped Pauli output",
+            })?;
+        if requested > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested,
+                limit: max_bytes,
+            });
+        }
+        let mut structures = Vec::with_capacity(operator.terms().len());
+        let mut coefficients = Vec::with_capacity(operator.terms().len());
+        for (index, term) in operator.terms().iter().enumerate() {
+            let codes = term.word.codes();
+            let (prefix, phase) = self.transform_codes(&codes[..prefix_length])?;
+            let mut structure = prefix;
+            structure.extend_from_slice(&codes[prefix_length..]);
+            let coefficient = term.coefficient * phase;
+            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index });
+            }
+            structures.push(structure);
+            coefficients.push(coefficient);
+        }
+        PauliOperator::from_terms(operator.nqubits(), &structures, &coefficients)
+    }
+
     fn transform_codes(&self, codes: &[u8]) -> Result<(Vec<u8>, Complex64), PauliError> {
         let word = PauliWord::from_codes(self.n_modes, codes)?;
         let x_words = self.x_transform.transform(word.x_words());

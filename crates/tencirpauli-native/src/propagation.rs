@@ -4,11 +4,12 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    Clifford1, Clifford2, GateOperation, ParameterRef, ProductState, PropagationBatch,
-    PropagationEngine, PropagationStats, RotationAxis,
+    Clifford1, Clifford2, GateOperation, ParameterRef, PauliOperator, ProductState,
+    PropagationBatch, PropagationEngine, PropagationStats, RotationAxis,
 };
 
-use crate::convert::{build_canonical_operator, map_error, CanonicalizeOutput};
+use crate::convert::{build_canonical_operator, map_error};
+use crate::operator::NativePauliOperatorHandle;
 
 type ProfileOutput = (f64, usize, usize, usize, usize, Vec<usize>, f64);
 type BatchValueAndGradientOutput<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>);
@@ -92,14 +93,26 @@ impl NativePropagationEngine {
         &self,
         py: Python<'_>,
         parameters: PyReadonlyArray1<'_, f64>,
-    ) -> PyResult<CanonicalizeOutput> {
+    ) -> PyResult<NativePauliOperatorHandle> {
         let values = parameters
             .as_slice()
             .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
-        let result = py
-            .allow_threads(|| self.engine.propagate(values))
-            .map_err(map_error)?;
-        Ok(materialize(result.terms))
+        let operator = py.allow_threads(|| {
+            let result = self.engine.propagate(values).map_err(map_error)?;
+            let structures = result
+                .terms
+                .iter()
+                .map(|term| term.word.codes())
+                .collect::<Vec<_>>();
+            let coefficients = result
+                .terms
+                .iter()
+                .map(|term| term.coefficient)
+                .collect::<Vec<_>>();
+            PauliOperator::from_terms(self.engine.nqubits(), &structures, &coefficients)
+                .map_err(map_error)
+        })?;
+        Ok(NativePauliOperatorHandle::from_operator(operator))
     }
 
     fn profile(
@@ -237,6 +250,42 @@ pub(crate) fn pauli_propagation_engine(
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
+#[pyo3(signature = (nqubits, operations, observable, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
+pub(crate) fn pauli_propagation_engine_handle(
+    py: Python<'_>,
+    nqubits: usize,
+    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    observable: &NativePauliOperatorHandle,
+    state_kind: u8,
+    state_bits: Vec<u8>,
+    state_values: Vec<f64>,
+    max_weight: Option<usize>,
+    max_bytes: Option<usize>,
+) -> PyResult<NativePropagationEngine> {
+    let operator = observable.core();
+    let engine = py.allow_threads(|| {
+        let compiled = operations
+            .into_iter()
+            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
+                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
+        PropagationEngine::new(
+            nqubits,
+            compiled,
+            operator.clone(),
+            state,
+            max_weight,
+            max_bytes.map(|value| value as u128),
+        )
+        .map_err(map_error)
+    })?;
+    Ok(NativePropagationEngine { engine })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
 #[pyo3(signature = (nqubits, operations, observable_offsets, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
 pub(crate) fn pauli_propagation_batch(
     py: Python<'_>,
@@ -295,6 +344,45 @@ pub(crate) fn pauli_propagation_batch(
             nqubits,
             compiled,
             observables,
+            state,
+            max_weight,
+            max_bytes.map(|value| value as u128),
+        )
+        .map_err(map_error)
+    })?;
+    Ok(NativePropagationBatch { batch })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (nqubits, operations, observables, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
+pub(crate) fn pauli_propagation_batch_handles(
+    py: Python<'_>,
+    nqubits: usize,
+    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    observables: Vec<Py<NativePauliOperatorHandle>>,
+    state_kind: u8,
+    state_bits: Vec<u8>,
+    state_values: Vec<f64>,
+    max_weight: Option<usize>,
+    max_bytes: Option<usize>,
+) -> PyResult<NativePropagationBatch> {
+    let operators = observables
+        .iter()
+        .map(|observable| observable.borrow(py).core().clone())
+        .collect::<Vec<_>>();
+    let batch = py.allow_threads(|| {
+        let compiled = operations
+            .into_iter()
+            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
+                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
+        PropagationBatch::new(
+            nqubits,
+            compiled,
+            operators,
             state,
             max_weight,
             max_bytes.map(|value| value as u128),
@@ -405,16 +493,4 @@ pub(crate) fn compile_state(
         }
         _ => Err(PyValueError::new_err("unknown product-state kind")),
     }
-}
-
-fn materialize(terms: Vec<tencir_pauli_core::PauliTerm>) -> CanonicalizeOutput {
-    let mut structures = Vec::with_capacity(terms.len());
-    let mut real = Vec::with_capacity(terms.len());
-    let mut imaginary = Vec::with_capacity(terms.len());
-    for term in terms {
-        structures.push(term.word.codes());
-        real.push(term.coefficient.re);
-        imaginary.push(term.coefficient.im);
-    }
-    (structures, real, imaginary)
 }

@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use tencir_pauli_core::{find_z2_symmetries, CliffordOperation, U1Sector, Z2TaperingPlan};
 
 use crate::convert::{build_canonical_operator, map_error, operator_output, CanonicalizeOutput};
+use crate::operator::NativePauliOperatorHandle;
 
 type U1CsrOutput<'py> = (
     usize,
@@ -90,6 +91,17 @@ impl NativeZ2TaperingPlan {
         })?;
         Ok(operator_output(&result))
     }
+
+    fn transform_operator_handle(
+        &self,
+        py: Python<'_>,
+        operator: &NativePauliOperatorHandle,
+    ) -> PyResult<NativePauliOperatorHandle> {
+        let result = py
+            .allow_threads(|| self.plan.transform_operator(operator.core()))
+            .map_err(map_error)?;
+        Ok(NativePauliOperatorHandle::from_operator(result))
+    }
 }
 
 #[pyfunction]
@@ -105,6 +117,25 @@ pub(crate) fn pauli_find_z2_symmetries(
         let operator =
             build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
         let analysis = find_z2_symmetries(&operator, max_bytes as u128).map_err(map_error)?;
+        Ok((
+            analysis
+                .generators
+                .iter()
+                .map(|word| word.codes())
+                .collect(),
+            analysis.constraint_rank,
+        ))
+    })
+}
+
+#[pyfunction]
+pub(crate) fn pauli_find_z2_symmetries_handle(
+    py: Python<'_>,
+    operator: &NativePauliOperatorHandle,
+    max_bytes: usize,
+) -> PyResult<(Vec<Vec<u8>>, usize)> {
+    py.allow_threads(|| {
+        let analysis = find_z2_symmetries(operator.core(), max_bytes as u128).map_err(map_error)?;
         Ok((
             analysis
                 .generators

@@ -192,6 +192,7 @@ def main() -> None:
         },
     }
     if args.eigsh:
+        rss_before_eigsh = peak_rss_bytes()
         linear = LinearOperator(
             (restricted.dimension, restricted.dimension),
             matvec=lambda vector: restricted.apply(vector),
@@ -218,6 +219,10 @@ def main() -> None:
                 "eigsh_seconds": eigsh_seconds,
                 "ground_energy": energy,
                 "ground_residual": float(residual),
+                # ru_maxrss is a high-water mark, so sampling after eigsh
+                # captures the ARPACK workspace that the pre-eigsh baseline misses.
+                "peak_rss_before_eigsh_bytes": rss_before_eigsh,
+                "peak_rss_bytes": peak_rss_bytes(),
             }
         )
     print(json.dumps(output, sort_keys=True))

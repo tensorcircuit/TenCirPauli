@@ -376,10 +376,12 @@ class PropagationEngine:
             raise ValueError("max_weight must be a non-negative integer or None")
         _validate_max_bytes(max_bytes)
         kind, bits, values = _state_payload(initial_state, tape.nqubits)
-        self._native = _native.pauli_propagation_engine(
+        if observable._native_handle is None:
+            raise RuntimeError("PauliOperator must retain a native handle")
+        self._native = _native.pauli_propagation_engine_handle(
             tape.nqubits,
             tape._native_operations(),
-            *observable._arrays(),
+            observable._native_handle,
             kind,
             bits,
             values,
@@ -448,7 +450,7 @@ class PropagationEngine:
         more memory than :meth:`expectation`.
         """
         result = self._native.propagate_operator(self._parameters(parameters))
-        return PauliOperator._from_native(self.nqubits, result)
+        return PauliOperator._from_native_handle(result)
 
     def profile(
         self, parameters: Sequence[float] | np.ndarray[Any, Any]
@@ -509,23 +511,15 @@ class PropagationBatch:
             raise ValueError("max_weight must be a non-negative integer or None")
         _validate_max_bytes(max_bytes)
         kind, bits, values = _state_payload(initial_state, tape.nqubits)
-        offsets = [0]
-        structures: list[tuple[int, ...]] = []
-        coefficients_re: list[float] = []
-        coefficients_im: list[float] = []
+        handles = []
         for observable in normalized_observables:
-            observable_structures, real, imaginary = observable._arrays()
-            structures.extend(observable_structures)
-            coefficients_re.extend(real)
-            coefficients_im.extend(imaginary)
-            offsets.append(len(structures))
-        self._native = _native.pauli_propagation_batch(
+            if observable._native_handle is None:
+                raise RuntimeError("PauliOperator must retain a native handle")
+            handles.append(observable._native_handle)
+        self._native = _native.pauli_propagation_batch_handles(
             tape.nqubits,
             tape._native_operations(),
-            offsets,
-            structures,
-            coefficients_re,
-            coefficients_im,
+            handles,
             kind,
             bits,
             values,

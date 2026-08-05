@@ -453,6 +453,84 @@ pub fn multiply_majorana_terms(
     finish(aggregate)
 }
 
+/// Compute a Majorana commutator or anticommutator in one aggregate.
+///
+/// For supports `A` and `B`, the two ordered products have the same XOR
+/// support and differ by the graded sign
+/// `(-1)^(|A||B|-|A intersection B|)`.  This lets the fused kernel skip pairs
+/// that cancel before inserting anything into the aggregate.
+pub fn binary_majorana_terms(
+    n_modes: usize,
+    left: MajoranaBatch<'_>,
+    right: MajoranaBatch<'_>,
+    max_bytes: u128,
+    reverse_sign: i8,
+) -> Result<MajoranaCanonicalResult, PauliError> {
+    if left.indices.len() != left.coefficients.len()
+        || right.indices.len() != right.coefficients.len()
+    {
+        return Err(PauliError::InvalidStructureLength {
+            expected: left.indices.len(),
+            actual: left.coefficients.len(),
+        });
+    }
+    let pair_count =
+        left.indices
+            .len()
+            .checked_mul(right.indices.len())
+            .ok_or(PauliError::Overflow {
+                context: "estimating Majorana binary expansion",
+            })?;
+    check_bytes(pair_count, 192, max_bytes)?;
+    let left_words = left
+        .indices
+        .iter()
+        .map(|word| PackedSupport::from_canonical(n_modes, word))
+        .collect::<Result<Vec<_>, _>>()?;
+    let right_words = right
+        .indices
+        .iter()
+        .map(|word| PackedSupport::from_canonical(n_modes, word))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut aggregate = FxHashMap::default();
+    for (left_index, &left_coefficient) in left.coefficients.iter().enumerate() {
+        if !left_coefficient.re.is_finite() || !left_coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index: left_index });
+        }
+        let left_degree = left.indices[left_index].len();
+        for (right_index, &right_coefficient) in right.coefficients.iter().enumerate() {
+            if !right_coefficient.re.is_finite() || !right_coefficient.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index: right_index });
+            }
+            let overlap = left_words[left_index]
+                .limbs
+                .iter()
+                .zip(&right_words[right_index].limbs)
+                .map(|(&left_limb, &right_limb)| (left_limb & right_limb).count_ones() as usize)
+                .sum::<usize>();
+            let graded_odd = (left_degree * right.indices[right_index].len() - overlap) & 1;
+            let reverse_relation = if graded_odd == 0 { 1_i8 } else { -1_i8 };
+            let (word, product_sign) =
+                multiply_words(&left_words[left_index], &right_words[right_index]);
+            let factor = if reverse_sign == 0 {
+                product_sign
+            } else {
+                product_sign * (1 + reverse_sign * reverse_relation)
+            };
+            if factor == 0 {
+                continue;
+            }
+            let value = left_coefficient * right_coefficient * f64::from(factor);
+            if !value.re.is_finite() || !value.im.is_finite() {
+                return Err(PauliError::NonFiniteCoefficient { index: left_index });
+            }
+            *aggregate.entry(word).or_insert(Complex64::new(0.0, 0.0)) += value;
+            check_bytes(aggregate.len(), 192, max_bytes)?;
+        }
+    }
+    finish(aggregate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

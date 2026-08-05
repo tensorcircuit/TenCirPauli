@@ -9,6 +9,7 @@ from enum import IntEnum
 from typing import (
     TYPE_CHECKING,
     Any,
+    Dict,
     Iterable,
     Literal,
     Optional,
@@ -271,9 +272,7 @@ def _ensure_compatible(left: PauliWord, right: object) -> None:
 
 
 PauliInput = Union[PauliWord, str, Sequence[int]]
-_OperatorArrays = Tuple[
-    Tuple[Tuple[int, ...], ...], Tuple[float, ...], Tuple[float, ...]
-]
+_OperatorArrays = Tuple[Any, Any, Any]
 
 
 @dataclass(frozen=True)
@@ -304,7 +303,7 @@ class CanonicalizationArrayResult:
     phase_multipliers: np.ndarray[Any, Any]
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True, init=False, eq=False)
 class PauliOperator:
     """Deterministic sparse Pauli operator with exact-zero aggregation.
 
@@ -315,13 +314,20 @@ class PauliOperator:
     """
 
     nqubits: int
-    terms: Tuple[PauliTerm, ...]
-    _canonical_structures: Tuple[Tuple[int, ...], ...] = field(
-        repr=False, compare=False
+    _terms: Optional[Tuple[PauliTerm, ...]] = field(
+        default=None, repr=False, compare=False
     )
-    _coefficient_reals: Tuple[float, ...] = field(repr=False, compare=False)
-    _coefficient_imaginaries: Tuple[float, ...] = field(repr=False, compare=False)
+    _canonical_structures: Optional[Any] = field(
+        default=None, repr=False, compare=False
+    )
+    _coefficient_reals: Optional[Any] = field(default=None, repr=False, compare=False)
+    _coefficient_imaginaries: Optional[Any] = field(
+        default=None, repr=False, compare=False
+    )
     _hermitian_exact: Optional[bool] = field(default=None, repr=False, compare=False)
+    _native_handle: Optional[_native.NativePauliOperatorHandle] = field(
+        default=None, repr=False, compare=False
+    )
 
     def __init__(
         self, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
@@ -332,20 +338,39 @@ class PauliOperator:
             structures, coefficients_re, coefficients_im = _normalize_operator_inputs(
                 nqubits, normalized_terms
             )
-            result = _native.pauli_canonicalize(
+            handle = _native.pauli_operator_native(
                 nqubits,
                 structures,
                 coefficients_re,
                 coefficients_im,
+                _effective_max_bytes(DEFAULT_MAX_BYTES),
             )
+            _initialize_native_handle(self, handle)
         else:
-            result = _native.pauli_canonicalize_array(nqubits, *array_input)
-        _initialize_operator(self, nqubits, result)
+            handle = _native.pauli_operator_native_array(
+                nqubits,
+                array_input[0],
+                array_input[1],
+                _effective_max_bytes(DEFAULT_MAX_BYTES),
+            )
+            _initialize_native_handle(self, handle)
 
     @classmethod
     def empty(cls, nqubits: int) -> "PauliOperator":
         """Construct the additive identity on ``nqubits``."""
         return cls(nqubits, ())
+
+    @property
+    def terms(self) -> Tuple[PauliTerm, ...]:
+        """Return canonical terms, materializing a native result on demand."""
+        cached = self._terms
+        if cached is None:
+            handle = self._native_handle
+            if handle is None:
+                raise RuntimeError("PauliOperator has no term storage")
+            cached = _terms_from_packed_native(self.nqubits, handle.materialize())
+            object.__setattr__(self, "_terms", cached)
+        return cached
 
     @classmethod
     def from_terms(
@@ -380,11 +405,14 @@ class PauliOperator:
         """
         code_array, coefficient_array = _normalize_code_arrays(structures, coefficients)
         nqubits = int(code_array.shape[1])
-        result = _native.pauli_canonicalize_array(
-            nqubits, code_array, coefficient_array
+        handle = _native.pauli_operator_native_array(
+            nqubits,
+            code_array,
+            coefficient_array,
+            _effective_max_bytes(DEFAULT_MAX_BYTES),
         )
         instance = object.__new__(cls)
-        _initialize_operator(instance, nqubits, result)
+        _initialize_native_handle(instance, handle)
         return instance
 
     @classmethod
@@ -500,23 +528,116 @@ class PauliOperator:
         result: Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
     ) -> "PauliOperator":
         instance = object.__new__(cls)
-        _initialize_operator(instance, nqubits, result)
+        structures, coefficients_re, coefficients_im = result
+        handle = _native.pauli_operator_canonical(
+            nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            _effective_max_bytes(DEFAULT_MAX_BYTES),
+        )
+        _initialize_native_handle(instance, handle)
+        return instance
+
+    @classmethod
+    def _from_native_handle(
+        cls, handle: _native.NativePauliOperatorHandle
+    ) -> "PauliOperator":
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "nqubits", int(handle.nqubits))
+        object.__setattr__(instance, "_terms", None)
+        object.__setattr__(instance, "_canonical_structures", None)
+        object.__setattr__(instance, "_coefficient_reals", None)
+        object.__setattr__(instance, "_coefficient_imaginaries", None)
+        object.__setattr__(instance, "_hermitian_exact", None)
+        object.__setattr__(instance, "_native_handle", handle)
         return instance
 
     def _arrays(self) -> _OperatorArrays:
+        structures = self._canonical_structures
+        coefficients_re = self._coefficient_reals
+        coefficients_im = self._coefficient_imaginaries
+        if structures is None or coefficients_re is None or coefficients_im is None:
+            handle = self._native_handle
+            if handle is None:
+                raise RuntimeError("PauliOperator has no array storage")
+            term_count, width, raw_codes, raw_coefficients = handle.materialize_arrays()
+            structures = np.asarray(raw_codes, dtype=np.uint8).reshape(
+                (int(term_count), int(width))
+            )
+            coefficients = np.asarray(raw_coefficients, dtype=np.complex128)
+            coefficients_re = np.asarray(coefficients.real, dtype=np.float64)
+            coefficients_im = np.asarray(coefficients.imag, dtype=np.float64)
+            object.__setattr__(self, "_canonical_structures", structures)
+            object.__setattr__(self, "_coefficient_reals", coefficients_re)
+            object.__setattr__(self, "_coefficient_imaginaries", coefficients_im)
         return (
-            self._canonical_structures,
-            self._coefficient_reals,
-            self._coefficient_imaginaries,
+            structures,
+            coefficients_re,
+            coefficients_im,
+        )
+
+    def _as_native_handle(
+        self, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> _native.NativePauliOperatorHandle:
+        handle = self._native_handle
+        if handle is not None:
+            return handle
+        _validate_max_bytes(max_bytes)
+        structures, coefficients_re, coefficients_im = self._arrays()
+        return _native.pauli_operator_native(
+            self.nqubits,
+            structures,
+            coefficients_re,
+            coefficients_im,
+            _effective_max_bytes(max_bytes),
         )
 
     @property
     def term_count(self) -> int:
         """Return the number of nonzero canonical algebraic terms."""
-        return len(self.terms)
+        handle = self._native_handle
+        if handle is not None:
+            return int(handle.term_count)
+        terms = self._terms
+        if terms is None:
+            raise RuntimeError("PauliOperator has no term storage")
+        return len(terms)
 
     def __len__(self) -> int:
         return self.term_count
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PauliOperator):
+            return NotImplemented
+        return self.nqubits == other.nqubits and self.terms == other.terms
+
+    def __hash__(self) -> int:
+        return hash((self.nqubits, self.terms))
+
+    def __repr__(self) -> str:
+        storage = "native" if self._native_handle is not None else "python"
+        return (
+            f"PauliOperator(nqubits={self.nqubits}, "
+            f"term_count={self.term_count}, storage={storage!r})"
+        )
+
+    def to_dict(self) -> Dict[str, complex]:
+        """Return canonical Pauli strings and coefficients without term objects."""
+        handle = self._native_handle
+        if handle is not None:
+            strings, coefficients = handle.materialize_strings()
+            values = np.asarray(coefficients, dtype=np.complex128)
+            return {string: complex(value) for string, value in zip(strings, values)}
+        structures, coefficients_re, coefficients_im = self._arrays()
+        return {
+            "".join(_PAULI_CODE_TO_CHAR[int(code)] for code in structure): complex(
+                real, imaginary
+            )
+            for structure, real, imaginary in zip(
+                structures, coefficients_re, coefficients_im
+            )
+        }
 
     def add(
         self,
@@ -527,16 +648,22 @@ class PauliOperator:
         """Add two operators and aggregate exact duplicate keys."""
         _validate_max_bytes(max_bytes)
         _ensure_operator_compatible(self, other)
+        if self._native_handle is not None or other._native_handle is not None:
+            handle_result = self._as_native_handle(max_bytes).add(
+                other._as_native_handle(max_bytes),
+                _effective_max_bytes(max_bytes),
+            )
+            return self._from_native_handle(handle_result)
         left = self._arrays()
         right = other._arrays()
-        result = _native.pauli_operator_binary(
+        array_result = _native.pauli_operator_binary(
             self.nqubits,
             left,
             right,
             0,
             _effective_max_bytes(max_bytes),
         )
-        return self._from_native(self.nqubits, result)
+        return self._from_native(self.nqubits, array_result)
 
     def scale(
         self,
@@ -549,6 +676,10 @@ class PauliOperator:
         normalized = complex(scalar)
         if not math.isfinite(normalized.real) or not math.isfinite(normalized.imag):
             raise ValueError("scale must be a finite complex128 value")
+        if self._native_handle is not None:
+            return self._from_native_handle(
+                self._native_handle.scale(normalized.real, normalized.imag)
+            )
         structures, coefficients_re, coefficients_im = self._arrays()
         result = _native.pauli_operator_scale(
             self.nqubits,
@@ -595,6 +726,8 @@ class PauliOperator:
     ) -> "PauliOperator":
         """Return the coefficient-conjugated adjoint operator."""
         _validate_max_bytes(max_bytes)
+        if self._native_handle is not None:
+            return self._from_native_handle(self._native_handle.adjoint())
         structures, coefficients_re, coefficients_im = self._arrays()
         result = _native.pauli_operator_adjoint(
             self.nqubits, structures, coefficients_re, coefficients_im
@@ -605,6 +738,8 @@ class PauliOperator:
         """Validate Hermiticity using an explicit non-negative tolerance."""
         if not math.isfinite(tolerance) or tolerance < 0.0:
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
+        if self._native_handle is not None:
+            return bool(self._native_handle.is_hermitian(tolerance))
         if tolerance == 0.0:
             return self._exact_hermitian_value()
         structures, coefficients_re, coefficients_im = self._arrays()
@@ -717,8 +852,10 @@ class PauliOperator:
         from .symmetry import Z2SymmetryAnalysis
 
         _validate_max_bytes(max_bytes)
-        generators, constraint_rank = _native.pauli_find_z2_symmetries(
-            self.nqubits, *self._arrays(), _effective_max_bytes(max_bytes)
+        if self._native_handle is None:
+            raise RuntimeError("PauliOperator must retain a native handle")
+        generators, constraint_rank = _native.pauli_find_z2_symmetries_handle(
+            self._native_handle, _effective_max_bytes(max_bytes)
         )
         return Z2SymmetryAnalysis(
             self.nqubits,
@@ -771,7 +908,7 @@ class PauliOperator:
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
-        structures = self._canonical_structures
+        structures, _, _ = self._arrays()
         values = _native.pauli_compatibility_matrix(
             self.nqubits, structures, mode_code, max_entries
         )
@@ -789,7 +926,7 @@ class PauliOperator:
         mode_code = {"qubit_wise": 0, "general": 1}.get(mode)
         if mode_code is None:
             raise ValueError("mode must be 'qubit_wise' or 'general'")
-        structures = self._canonical_structures
+        structures, _, _ = self._arrays()
         return tuple(
             (left, right)
             for left, right in _native.pauli_incompatibility_edges(
@@ -803,15 +940,23 @@ class PauliOperator:
         """Materialize a bounded complex128 dense Hamiltonian matrix."""
         from . import _native
 
-        structures, coefficients_re, coefficients_im = self._arrays()
         _validate_max_bytes(max_bytes)
-        dimension, values = _native.pauli_dense_array(
-            self.nqubits,
-            structures,
-            coefficients_re,
-            coefficients_im,
-            _effective_max_bytes(max_bytes),
-        )
+        if self._native_handle is not None:
+            dimension, real, imaginary = _native.pauli_dense_handle(
+                self._native_handle, _effective_max_bytes(max_bytes)
+            )
+            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
+                imaginary, dtype=np.float64
+            )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            dimension, values = _native.pauli_dense_array(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                _effective_max_bytes(max_bytes),
+            )
         result: np.ndarray[Any, Any] = np.asarray(values, dtype=np.complex128).reshape(
             (dimension, dimension)
         )
@@ -822,15 +967,26 @@ class PauliOperator:
         from . import _native
         from .hamiltonian import COOMatrix
 
-        structures, coefficients_re, coefficients_im = self._arrays()
         _validate_max_bytes(max_bytes)
-        dimension, rows, columns, values = _native.pauli_coo_array(
-            self.nqubits,
-            structures,
-            coefficients_re,
-            coefficients_im,
-            _effective_max_bytes(max_bytes),
-        )
+        rows: Any
+        columns: Any
+        values: Any
+        if self._native_handle is not None:
+            dimension, rows, columns, real, imaginary = _native.pauli_coo_handle(
+                self._native_handle, _effective_max_bytes(max_bytes)
+            )
+            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
+                imaginary, dtype=np.float64
+            )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            dimension, rows, columns, values = _native.pauli_coo_array(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                _effective_max_bytes(max_bytes),
+            )
         return COOMatrix(
             np.asarray(rows, dtype=np.uint64),
             np.asarray(columns, dtype=np.uint64),
@@ -843,15 +999,26 @@ class PauliOperator:
         from . import _native
         from .hamiltonian import CSRMatrix
 
-        structures, coefficients_re, coefficients_im = self._arrays()
         _validate_max_bytes(max_bytes)
-        dimension, indptr, indices, values = _native.pauli_csr_array(
-            self.nqubits,
-            structures,
-            coefficients_re,
-            coefficients_im,
-            _effective_max_bytes(max_bytes),
-        )
+        indptr: Any
+        indices: Any
+        values: Any
+        if self._native_handle is not None:
+            dimension, indptr, indices, real, imaginary = _native.pauli_csr_handle(
+                self._native_handle, _effective_max_bytes(max_bytes)
+            )
+            values = np.asarray(real, dtype=np.float64) + 1j * np.asarray(
+                imaginary, dtype=np.float64
+            )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            dimension, indptr, indices, values = _native.pauli_csr_array(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                _effective_max_bytes(max_bytes),
+            )
         return CSRMatrix(
             np.asarray(indptr, dtype=np.uint64),
             np.asarray(indices, dtype=np.uint64),
@@ -872,21 +1039,23 @@ class PauliOperator:
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1:
             raise ValueError(f"state must be one-dimensional, got shape {values.shape}")
-        structures, coefficients_re, coefficients_im = self._arrays()
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(
-                _native.pauli_mvp_array(
-                    self.nqubits,
-                    structures,
-                    coefficients_re,
-                    coefficients_im,
-                    np.ascontiguousarray(values),
-                    _effective_max_bytes(max_bytes),
-                ),
-                dtype=np.complex128,
-            ),
-        )
+        if self._native_handle is not None:
+            result = _native.pauli_mvp_handle(
+                self._native_handle,
+                np.ascontiguousarray(values),
+                _effective_max_bytes(max_bytes),
+            )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            result = _native.pauli_mvp_array(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                np.ascontiguousarray(values),
+                _effective_max_bytes(max_bytes),
+            )
+        return cast(np.ndarray[Any, Any], np.asarray(result, dtype=np.complex128))
 
     def backend_mvp_plan(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -896,16 +1065,23 @@ class PauliOperator:
         from .hamiltonian import BackendMVPPlan
 
         _validate_max_bytes(max_bytes)
-        structures, coefficients_re, coefficients_im = self._arrays()
-        schema, nqubits, word_count, x_words, z_words, real, imaginary = (
-            _native.pauli_backend_plan(
-                self.nqubits,
-                structures,
-                coefficients_re,
-                coefficients_im,
-                _effective_max_bytes(max_bytes),
+        if self._native_handle is not None:
+            schema, nqubits, word_count, x_words, z_words, real, imaginary = (
+                _native.pauli_backend_plan_handle(
+                    self._native_handle, _effective_max_bytes(max_bytes)
+                )
             )
-        )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            schema, nqubits, word_count, x_words, z_words, real, imaginary = (
+                _native.pauli_backend_plan(
+                    self.nqubits,
+                    structures,
+                    coefficients_re,
+                    coefficients_im,
+                    _effective_max_bytes(max_bytes),
+                )
+            )
         return BackendMVPPlan(
             schema,
             nqubits,
@@ -931,29 +1107,40 @@ class PauliOperator:
         from .hamiltonian import NativeMVPPlan
 
         _validate_max_bytes(max_bytes)
-        structures, coefficients_re, coefficients_im = self._arrays()
-        native_plan = _native.pauli_mvp_plan(
-            self.nqubits,
-            structures,
-            coefficients_re,
-            coefficients_im,
-            _effective_max_bytes(max_bytes),
-            storage,
-        )
+        if self._native_handle is not None:
+            native_plan = _native.pauli_mvp_plan_handle(
+                self._native_handle,
+                _effective_max_bytes(max_bytes),
+                storage,
+            )
+        else:
+            structures, coefficients_re, coefficients_im = self._arrays()
+            native_plan = _native.pauli_mvp_plan(
+                self.nqubits,
+                structures,
+                coefficients_re,
+                coefficients_im,
+                _effective_max_bytes(max_bytes),
+                storage,
+            )
         if native_plan.nqubits != self.nqubits:
             raise RuntimeError("native MVP plan has incompatible qubit count")
-        if native_plan.term_count != len(self.terms):
+        if native_plan.term_count != self.term_count:
             raise RuntimeError("native MVP plan has incompatible term count")
         word_count = (self.nqubits + 63) // 64
-        term_bytes = len(self.terms) * (word_count * 16 + 16)
+        term_bytes = self.term_count * (word_count * 16 + 16)
         if native_plan.strategy == "x_mask_diagonal":
-            x_masks = {term.word.x_words for term in self.terms}
-            estimated_bytes = term_bytes + len(x_masks) * (1 << self.nqubits) * 16
+            x_mask_count = (
+                self._native_handle.distinct_x_mask_count()
+                if self._native_handle is not None
+                else len(set(self._packed_x_words()))
+            )
+            estimated_bytes = term_bytes + x_mask_count * (1 << self.nqubits) * 16
         else:
             estimated_bytes = term_bytes
         return NativeMVPPlan(
             self.nqubits,
-            len(self.terms),
+            self.term_count,
             native_plan.strategy,
             native_plan,
             storage=storage,
@@ -998,6 +1185,20 @@ class PauliOperator:
     ) -> "PauliOperator":
         _validate_max_bytes(max_bytes)
         _ensure_operator_compatible(self, other)
+        if self._native_handle is not None or other._native_handle is not None:
+            left = self._as_native_handle(max_bytes)
+            right = other._as_native_handle(max_bytes)
+            operation_name = {
+                1: "multiply",
+                2: "commutator",
+                3: "anticommutator",
+            }.get(operation)
+            if operation_name is None:
+                raise ValueError(f"unknown Pauli operator operation {operation}")
+            result = getattr(left, operation_name)(
+                right, _effective_max_bytes(max_bytes)
+            )
+            return self._from_native_handle(result)
         result = _native.pauli_operator_binary(
             self.nqubits,
             self._arrays(),
@@ -1006,6 +1207,16 @@ class PauliOperator:
             _effective_max_bytes(max_bytes),
         )
         return self._from_native(self.nqubits, result)
+
+    def _packed_x_words(self) -> Tuple[Tuple[int, ...], ...]:
+        handle = self._native_handle
+        if handle is not None:
+            term_count, word_count, x_words, _, _ = handle.materialize()
+            values = np.asarray(x_words, dtype=np.uint64).reshape(
+                (int(term_count), int(word_count))
+            )
+            return tuple(tuple(int(word) for word in row) for row in values)
+        return tuple(term.word.x_words for term in self.terms)
 
     def __add__(self, other: object) -> "PauliOperator":
         if not isinstance(other, PauliOperator):
@@ -1065,7 +1276,9 @@ class PauliOperator:
                 right_coefficient = complex(
                     right_reals[right_index], right_imaginaries[right_index]
                 )
-                structures[pair_index, :] = left_structure + right_structure
+                structures[pair_index, :] = np.concatenate(
+                    (left_structure, right_structure)
+                )
                 coefficients[pair_index] = left_coefficient * right_coefficient
                 pair_index += 1
         return PauliOperator.from_code_arrays(
@@ -1188,42 +1401,58 @@ def _codes_from_word(word: PauliWord) -> Tuple[int, ...]:
     )
 
 
-def _word_from_codes(nqubits: int, structure: Sequence[int]) -> PauliWord:
-    word_count = (nqubits + 63) // 64
-    x_words = [0] * word_count
-    z_words = [0] * word_count
-    for qubit, code in enumerate(structure):
-        word_index, bit_index = divmod(qubit, 64)
-        if code in (1, 2):
-            x_words[word_index] |= 1 << bit_index
-        if code in (2, 3):
-            z_words[word_index] |= 1 << bit_index
-    return PauliWord(nqubits, tuple(x_words), tuple(z_words))
-
-
 def _initialize_operator(
     instance: PauliOperator,
     nqubits: int,
     result: Tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
 ) -> None:
     structures, coefficients_re, coefficients_im = result
-    canonical_structures = tuple(
-        tuple(int(code) for code in structure) for structure in structures
+    handle = _native.pauli_operator_canonical(
+        nqubits,
+        structures,
+        coefficients_re,
+        coefficients_im,
+        _effective_max_bytes(DEFAULT_MAX_BYTES),
     )
-    real_values = tuple(float(value) for value in coefficients_re)
-    imaginary_values = tuple(float(value) for value in coefficients_im)
-    terms = tuple(
-        PauliTerm(_word_from_codes(nqubits, structure), complex(real, imaginary))
-        for structure, real, imaginary in zip(
-            canonical_structures, real_values, imaginary_values
-        )
-    )
-    object.__setattr__(instance, "nqubits", nqubits)
-    object.__setattr__(instance, "terms", terms)
-    object.__setattr__(instance, "_canonical_structures", canonical_structures)
-    object.__setattr__(instance, "_coefficient_reals", real_values)
-    object.__setattr__(instance, "_coefficient_imaginaries", imaginary_values)
+    _initialize_native_handle(instance, handle)
+
+
+def _initialize_native_handle(
+    instance: PauliOperator,
+    handle: _native.NativePauliOperatorHandle,
+) -> None:
+    object.__setattr__(instance, "nqubits", int(handle.nqubits))
+    object.__setattr__(instance, "_terms", None)
+    object.__setattr__(instance, "_canonical_structures", None)
+    object.__setattr__(instance, "_coefficient_reals", None)
+    object.__setattr__(instance, "_coefficient_imaginaries", None)
     object.__setattr__(instance, "_hermitian_exact", None)
+    object.__setattr__(instance, "_native_handle", handle)
+
+
+def _terms_from_packed_native(
+    nqubits: int,
+    result: Tuple[int, int, object, object, object],
+) -> Tuple[PauliTerm, ...]:
+    term_count, word_count, x_words, z_words, coefficients = result
+    canonical_x_words = np.asarray(x_words, dtype=np.uint64).reshape(
+        (int(term_count), int(word_count))
+    )
+    canonical_z_words = np.asarray(z_words, dtype=np.uint64).reshape(
+        (int(term_count), int(word_count))
+    )
+    values = np.asarray(coefficients, dtype=np.complex128)
+    return tuple(
+        PauliTerm(
+            PauliWord(
+                nqubits,
+                tuple(int(word) for word in x),
+                tuple(int(word) for word in z),
+            ),
+            complex(value),
+        )
+        for x, z, value in zip(canonical_x_words, canonical_z_words, values)
+    )
 
 
 def _ensure_operator_compatible(left: PauliOperator, right: object) -> None:

@@ -2,7 +2,7 @@
 
 TenCirPauli benchmarks are intentionally local and informational. They do not run as CI performance gates. The committed benchmark code defines stable workloads, while machine-specific measurements live under the ignored `.benchmarks/` directory.
 
-The standard automated benchmark suite lives under `benchmarks/python/`. Scripts under `benchmarks/manual/` are opt-in workloads that may require an external TensorCircuit checkout, a release build, or a deliberately chosen large input; they are not part of the default pytest collection or commit smoke check.
+The standard automated benchmark suite lives under `benchmarks/python/`. The algebra suites include eager Pauli BCH, native-backed lazy Pauli BCH, native Fermion/Boson BCH, plain export, explicit Python term materialization, and eager/materialized Structured BCH as separate cases. The Phase 9 boundary suite records flat construction, handle-native mapping and conversion, and dense/COO/CSR/native-MVP terminal compilation with input/output term metadata. Scripts under `benchmarks/manual/` are opt-in workloads that may require an external TensorCircuit checkout, a release build, or a deliberately chosen large input; they are not part of the default pytest collection or commit smoke check.
 
 The manual U1 execution A/B cases are defined in `benchmarks/manual/u1_execution_ab.py`. Run `conda run -p .conda python benchmarks/manual/u1_execution_ab.py --output /private/tmp/u1_execution_ab.json` after a release extension build; it covers repeated same-pair blocks, diagonal-heavy static runs, adjoint gradients, facade cache versus stateless terminals, and grouped projected observables. Keep before/after outputs on the same machine and compare numerical metadata alongside medians.
 

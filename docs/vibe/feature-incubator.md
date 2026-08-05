@@ -58,6 +58,8 @@ Promotion criteria: an identified qubit-simulation workload and owner decisions 
 
 Status: `deferred`.
 
+> **Example candidate**: mark for a future `examples/research/` algebra-simplification demo built from existing primitives (`PauliOperator.commutator`, `PauliWord.multiply`, `commutes_with`, `symplectic_inner_product`). Scope to the easy packed word-level closure plus a small Pauli-sum case, producing a structure-constant table and verifying it numerically against the Jacobi identity. This demonstrates native commutator speed and term explosion without advancing the deferred universal polynomial engine.
+
 Motivation: analyze dynamical Lie algebras, controllability, reachable operator spaces, and symmetry-induced reductions from user-supplied Hamiltonian generators.
 
 Current design: closure of individual Pauli words is comparatively simple because a nonzero commutator produces one Pauli word up to scalar, allowing a packed symplectic set closure. That restricted feature is not the desired endpoint. The target use case accepts Pauli sums or general operator polynomials, for which commutators are sparse vectors and new generators must be tested for linear independence in the real anti-Hermitian Lie algebra.
@@ -69,6 +71,8 @@ Promotion criteria: a concrete control workload, a frozen coefficient/rank contr
 ### Arbitrary-order BCH and formal operator series
 
 Status: `deferred`.
+
+> **Example candidate**: mark for a future `examples/research/` demo of fixed-order (order ≤ 4) truncated BCH using only the existing `commutator`/`add`/`scale` primitives. Validate by exponential-error convergence against `exp(A) exp(B)` and contrast against a plain-Python Pauli simplifier to expose native speed. Fixed-order tables deliberately avoid the deferred arbitrary-order free-Lie work; take care with the exact BCH coefficients (e.g. the fourth-order term has two contributions).
 
 Motivation: effective Hamiltonians, composition of exponentials, canonical transformations, Floquet/Magnus calculations, and symbolic perturbation theory.
 

@@ -14,6 +14,19 @@ def _bit_count(value: int) -> int:
     return bin(value).count("1")
 
 
+def test_majorana_operator_keeps_native_handle_until_terms_are_requested() -> None:
+    operator = tcp.MajoranaOperator.from_terms(2, [((0, 3), 0.5), ((1,), -0.2j)])
+    assert operator._terms is None
+    assert isinstance(operator._native_handle, tcp._native.NativeMajoranaOperatorHandle)
+    assert operator.term_count == 2
+    assert operator.to_dict() == {(0, 3): 0.5 + 0j, (1,): -0.2j}
+    assert operator._terms is None
+    assert operator.multiply(operator)._terms is None
+    assert operator.scale(2.0)._terms is None
+    assert operator.adjoint()._terms is None
+    assert operator.terms
+
+
 def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
     dimension = 1 << n_modes
     result = np.eye(dimension, dtype=np.complex128)
@@ -120,6 +133,25 @@ def test_majorana_anticommutation_adjoint_and_fock_differential() -> None:
         )
     assert tcp.MajoranaOperator.from_terms(2, [((0, 1), 1.0)]).is_hermitian() is False
     assert tcp.MajoranaOperator.from_terms(2, [((0,), 1.0)]).is_hermitian()
+
+
+def test_majorana_fused_operations_match_independent_dense_reference() -> None:
+    left = tcp.MajoranaOperator.from_terms(2, [((0,), 0.7), ((1, 2), -0.2j)])
+    right = tcp.MajoranaOperator.from_terms(2, [((1,), -0.4), ((0, 3), 0.3j)])
+    left_dense = left.to_fermion().compile("dense")
+    right_dense = right.to_fermion().compile("dense")
+    expected_product = left_dense @ right_dense
+    np.testing.assert_allclose(
+        left.multiply(right).to_fermion().compile("dense"), expected_product
+    )
+    np.testing.assert_allclose(
+        left.commutator(right).to_fermion().compile("dense"),
+        expected_product - right_dense @ left_dense,
+    )
+    np.testing.assert_allclose(
+        left.anticommutator(right).to_fermion().compile("dense"),
+        expected_product + right_dense @ left_dense,
+    )
 
 
 def test_native_majorana_fermion_expansion_matches_python_reference() -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import threading
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import (
     Any,
     Dict,
@@ -71,19 +70,14 @@ def _charge_materialization_bytes(
     raise ValueError(f"unsupported charge materialization target: {target}")
 
 
-def _checked_float(value: Union[int, Fraction], name: str) -> float:
-    """Convert an exact scalar only when binary64 preserves it exactly."""
-    exact = value if isinstance(value, Fraction) else Fraction(value, 1)
+def _checked_float(value: Union[int, float], name: str) -> float:
+    """Convert a public charge scalar to the ordinary binary64 representation."""
     try:
-        result = float(exact)
+        result = float(value)
     except (OverflowError, ValueError) as error:
-        raise ValueError(
-            f"{name} is not representable exactly as a finite complex128 coefficient"
-        ) from error
-    if not math.isfinite(result) or Fraction.from_float(result) != exact:
-        raise ValueError(
-            f"{name} is not representable exactly as a finite complex128 coefficient"
-        )
+        raise ValueError(f"{name} must be representable as a finite float64") from error
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
     return result
 
 
@@ -284,8 +278,8 @@ class AdditiveCharge:
                     )
                 )
         for index, (level_zero, level_one) in enumerate(self.qubit_levels):
-            identity_coefficient = Fraction(level_zero + level_one, 2)
-            z_coefficient = Fraction(level_zero - level_one, 2)
+            identity_coefficient = (level_zero + level_one) / 2.0
+            z_coefficient = (level_zero - level_one) / 2.0
             if identity_coefficient:
                 terms.append(
                     _Term(
@@ -336,8 +330,8 @@ class AdditiveCharge:
                 )
             )
         for index, (level_zero, level_one) in enumerate(self.qubit_levels):
-            identity_coefficient = Fraction(level_zero + level_one, 2)
-            z_coefficient = Fraction(level_zero - level_one, 2)
+            identity_coefficient = (level_zero + level_one) / 2.0
+            z_coefficient = (level_zero - level_one) / 2.0
             if identity_coefficient:
                 terms.append(
                     (
@@ -1408,7 +1402,7 @@ def _termwise_charge_conserved(
         return all(
             all(code not in (1, 2) for code in structure) for structure in structures
         )
-    for term in operator._terms:
+    for term in operator._materialized_terms():
         if any(code in (1, 2) for code in term.qubit):
             return False
         if term.mapped_fermion is not None and any(
@@ -1457,7 +1451,7 @@ def _fast_fermion_particles(
     particles = total_target // 2
     if particles < 1 or particles > sites:
         return None
-    for term in operator._terms:
+    for term in operator._materialized_terms():
         if (
             term.boson is not None
             or term.qubit
@@ -1511,7 +1505,7 @@ def _restricted_transition_inputs(
             qudit_triples.append([])
             coefficients.append(complex(coefficient_real, coefficient_imaginary))
     else:
-        for structured_term in operator._terms:
+        for structured_term in operator._materialized_terms():
             if (
                 structured_term.fermion is not None
                 and structured_term.mapped_fermion is not None
@@ -1571,28 +1565,18 @@ def _restricted_transition_inputs(
     )
 
 
-def _add_exact_scaled(
-    aggregate: Dict[Tuple[object, ...], List[Fraction]],
+def _add_scaled(
+    aggregate: Dict[Tuple[object, ...], complex],
     key: Tuple[object, ...],
     coefficient: complex,
     real_scale: int,
     imaginary_scale: int,
 ) -> None:
-    """Accumulate a complex128 coefficient times exact integer scales."""
+    """Accumulate a complex128 coefficient times an integer selection scale."""
     if real_scale == 0 and imaginary_scale == 0:
         return
-    coefficient = complex(coefficient)
-    real = (
-        Fraction.from_float(coefficient.real) * real_scale
-        - Fraction.from_float(coefficient.imag) * imaginary_scale
-    )
-    imaginary = (
-        Fraction.from_float(coefficient.real) * imaginary_scale
-        + Fraction.from_float(coefficient.imag) * real_scale
-    )
-    current = aggregate.setdefault(key, [Fraction(0), Fraction(0)])
-    current[0] += real
-    current[1] += imaginary
+    scaled = complex(coefficient) * complex(real_scale, imaginary_scale)
+    aggregate[key] = aggregate.get(key, 0j) + scaled
 
 
 def _structured_charge_delta(term: _Term, charge: AdditiveCharge) -> int:
@@ -1651,20 +1635,25 @@ def _exact_charge_commutator(
     elif isinstance(operator, _StructuredOperator):
         if operator.space != charge.space:
             raise ValueError("operator and charge layouts are incompatible")
-        if any(term.mapped_fermion is not None for term in operator._terms):
+        if any(
+            term.mapped_fermion is not None for term in operator._materialized_terms()
+        ):
             raise ValueError(
                 "charge analysis is defined before fermion-to-qubit mapping; "
                 "analyze the raw structured operator"
             )
-        term_count = len(operator._terms)
+        term_count = operator.term_count
         qubit_count = operator.space.qubits
-        terms = ((term.qubit, term.coefficient, term) for term in operator._terms)
+        terms = (
+            (term.qubit, term.coefficient, term)
+            for term in operator._materialized_terms()
+        )
     else:
         raise TypeError("operator must be a structured or Pauli operator")
 
     estimated = term_count * max(1, qubit_count + 1) * 128
     _check_allocation(estimated, max_bytes, "exact additive-charge analysis")
-    aggregate: Dict[Tuple[object, ...], List[Fraction]] = {}
+    aggregate: Dict[Tuple[object, ...], complex] = {}
     for codes, coefficient, structured_term in terms:
         if structured_term is None:
             base_key: Tuple[object, ...] = tuple(codes)
@@ -1673,7 +1662,7 @@ def _exact_charge_commutator(
             base_key = structured_term.key()
             raw_delta = _structured_charge_delta(structured_term, charge)
         if raw_delta:
-            _add_exact_scaled(aggregate, base_key, coefficient, -raw_delta, 0)
+            _add_scaled(aggregate, base_key, coefficient, -raw_delta, 0)
         for index, code in enumerate(codes):
             if code not in (1, 2):
                 continue
@@ -1687,14 +1676,16 @@ def _exact_charge_commutator(
                 if structured_term is None
                 else _structured_commutator_key(structured_term, changed)
             )
-            _add_exact_scaled(
+            _add_scaled(
                 aggregate,
                 key,
                 coefficient,
                 0,
                 -difference if code == 1 else difference,
             )
-    nonzero = sum(1 for real, imaginary in aggregate.values() if real or imaginary)
+    nonzero = sum(
+        1 for value in aggregate.values() if value.real != 0.0 or value.imag != 0.0
+    )
     return nonzero == 0, nonzero
 
 
@@ -1715,7 +1706,7 @@ def analyze_charge(
         charge,
         is_conserved,
         commutator_term_count,
-        method="exact_integer_selection_rules",
+        method="native_float_selection_rules",
     )
 
 

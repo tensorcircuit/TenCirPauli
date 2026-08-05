@@ -7,10 +7,119 @@ use crate::convert::{
     build_canonical_operator, map_error, numpy_complex_array, split_complex, BackendPlanOutput,
     CooOutput, CsrOutput, DenseOutput, NumpySparseOutput,
 };
+use crate::operator::NativePauliOperatorHandle;
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeMvpPlan {
     plan: MvpPlan,
+}
+
+#[pyfunction]
+pub(crate) fn pauli_dense_handle(
+    py: Python<'_>,
+    handle: &NativePauliOperatorHandle,
+    max_bytes: usize,
+) -> PyResult<DenseOutput> {
+    let (dimension, values) = py
+        .allow_threads(|| handle.core().dense_matrix(max_bytes as u128))
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&values);
+    Ok((dimension, real, imaginary))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_coo_handle(
+    py: Python<'_>,
+    handle: &NativePauliOperatorHandle,
+    max_bytes: usize,
+) -> PyResult<CooOutput> {
+    let matrix = py
+        .allow_threads(|| handle.core().coo_matrix(max_bytes as u128))
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.rows,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_csr_handle(
+    py: Python<'_>,
+    handle: &NativePauliOperatorHandle,
+    max_bytes: usize,
+) -> PyResult<CsrOutput> {
+    let matrix = py
+        .allow_threads(|| handle.core().csr_matrix(max_bytes as u128))
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&matrix.values);
+    Ok((
+        matrix.dimension,
+        matrix.indptr,
+        matrix.columns,
+        real,
+        imaginary,
+    ))
+}
+
+#[pyfunction]
+pub(crate) fn pauli_mvp_handle<'py>(
+    py: Python<'py>,
+    handle: &NativePauliOperatorHandle,
+    state: PyReadonlyArray1<'py, NumpyComplex128>,
+    max_bytes: usize,
+) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+    let state_slice = state
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+    let values = py
+        .allow_threads(|| handle.core().mvp(state_slice, max_bytes as u128))
+        .map_err(map_error)?;
+    Ok(PyArray1::from_vec(py, values))
+}
+
+#[pyfunction]
+#[pyo3(signature = (handle, max_bytes, storage="lazy"))]
+pub(crate) fn pauli_mvp_plan_handle(
+    py: Python<'_>,
+    handle: &NativePauliOperatorHandle,
+    max_bytes: usize,
+    storage: &str,
+) -> PyResult<NativeMvpPlan> {
+    let plan = py
+        .allow_threads(|| match storage {
+            "lazy" => tencir_pauli_core::MvpPlan::from_operator(handle.core()),
+            "eager" => handle.core().mvp_plan(max_bytes as u128),
+            _ => Err(tencir_pauli_core::PauliError::InvalidSector {
+                context: "storage must be either 'eager' or 'lazy'",
+            }),
+        })
+        .map_err(map_error)?;
+    Ok(NativeMvpPlan { plan })
+}
+
+#[pyfunction]
+pub(crate) fn pauli_backend_plan_handle(
+    py: Python<'_>,
+    handle: &NativePauliOperatorHandle,
+    max_bytes: usize,
+) -> PyResult<BackendPlanOutput> {
+    let plan = py
+        .allow_threads(|| handle.core().backend_mvp_plan(max_bytes as u128))
+        .map_err(map_error)?;
+    let (real, imaginary) = split_complex(&plan.coefficients);
+    Ok((
+        1,
+        plan.nqubits,
+        plan.word_count,
+        plan.x_words,
+        plan.z_words,
+        real,
+        imaginary,
+    ))
 }
 
 #[pymethods]

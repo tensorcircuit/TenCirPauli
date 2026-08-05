@@ -436,11 +436,17 @@ class FermionQubitMapping:
             raise ValueError("mapping plan and Pauli qubit count are incompatible")
         _validate_max_bytes(max_bytes)
         _check_allocation(
-            max(1, len(operator.terms)) * (self.n_modes + 4) * 16,
+            max(1, operator.term_count) * (self.n_modes + 4) * 16,
             max_bytes,
             "mapped Pauli operator",
         )
         if self._native_plan is not None:
+            if operator._native_handle is not None:
+                result = self._native_plan.transform_pauli_handle(
+                    operator._native_handle,
+                    _effective_max_bytes(max_bytes),
+                )
+                return PauliOperator._from_native_handle(result)
             structures, coefficients_re, coefficients_im = operator._arrays()
             result = self._native_plan.transform(
                 structures,
@@ -503,6 +509,14 @@ class FermionQubitMapping:
             raise ValueError("mapping plan and Majorana mode counts are incompatible")
         _validate_max_bytes(max_bytes)
         if self._native_plan is not None:
+            if isinstance(
+                operator._native_handle, _native.NativeMajoranaOperatorHandle
+            ):
+                result = self._native_plan.transform_majorana_handle(
+                    operator._native_handle,
+                    _effective_max_bytes(max_bytes),
+                )
+                return PauliOperator._from_native_handle(result)
             result = self._native_plan.transform_majorana(
                 [list(term.word.indices) for term in operator.terms],
                 [term.coefficient.real for term in operator.terms],
@@ -557,42 +571,41 @@ class FermionQubitMapping:
             raise ValueError("mapping plan and fermion axis counts are incompatible")
         jordan_wigner = operator.map_fermions("jordan_wigner", max_bytes=max_bytes)
         if isinstance(jordan_wigner, PauliOperator):
-            _check_allocation(
-                max(1, len(jordan_wigner.terms))
-                * (operator.space.fermions + len(operator.space._axes) + 4)
-                * 16,
-                max_bytes,
-                "mapped hybrid Pauli operator",
-            )
-            return PauliOperator.from_terms(
-                jordan_wigner.nqubits,
-                (
-                    (
-                        transformed,
-                        term.coefficient * phase,
-                    )
-                    for term in jordan_wigner.terms
-                    for transformed, phase in (
-                        self._transform_prefix(term.word.to_codes(), self.n_modes),
-                    )
-                ),
-            )
+            if (
+                self._native_plan is not None
+                and jordan_wigner._native_handle is not None
+            ):
+                result = self._native_plan.transform_pauli_handle_prefix(
+                    jordan_wigner._native_handle,
+                    self.n_modes,
+                    _effective_max_bytes(max_bytes),
+                )
+                return PauliOperator._from_native_handle(result)
+            return self.map_pauli(jordan_wigner, max_bytes=max_bytes)
         if self._native_plan is not None:
             if not isinstance(jordan_wigner, HybridOperator):
                 raise TypeError(
                     "native hybrid mapping received an incompatible operator"
                 )
-            result = self._native_plan.transform_hybrid(
-                operator.space.bosons,
-                operator.space.qubits,
-                len(operator.space.qudits),
-                operator.space.qudits[0] if operator.space.qudits else 0,
-                _hybrid_arrays(jordan_wigner),
-                _effective_max_bytes(max_bytes),
-            )
+            if isinstance(
+                jordan_wigner._native_handle, _native.NativeHybridOperatorHandle
+            ):
+                result = self._native_plan.transform_hybrid_handle(
+                    jordan_wigner._native_handle,
+                    _effective_max_bytes(max_bytes),
+                )
+            else:
+                result = self._native_plan.transform_hybrid(
+                    operator.space.bosons,
+                    operator.space.qubits,
+                    len(operator.space.qudits),
+                    operator.space.qudits[0] if operator.space.qudits else 0,
+                    _hybrid_arrays(jordan_wigner),
+                    _effective_max_bytes(max_bytes),
+                )
             return _hybrid_from_native(jordan_wigner.space, result)
         terms = []
-        for term in jordan_wigner._terms:
+        for term in jordan_wigner._materialized_terms():
             mapped = term.mapped_fermion
             if mapped is None:
                 transformed = None

@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Any, Sequence
 
 __version__: str
 
@@ -9,6 +9,147 @@ class StructuredMvpPlan:
     def estimated_bytes(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
     def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
+
+class NativePauliOperatorHandle:
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def term_count(self) -> int: ...
+    def distinct_x_mask_count(self) -> int: ...
+    def add(
+        self, other: "NativePauliOperatorHandle", max_bytes: int
+    ) -> "NativePauliOperatorHandle": ...
+    def scale(
+        self, scalar_re: float, scalar_im: float
+    ) -> "NativePauliOperatorHandle": ...
+    def multiply(
+        self, other: "NativePauliOperatorHandle", max_bytes: int
+    ) -> "NativePauliOperatorHandle": ...
+    def commutator(
+        self, other: "NativePauliOperatorHandle", max_bytes: int
+    ) -> "NativePauliOperatorHandle": ...
+    def anticommutator(
+        self, other: "NativePauliOperatorHandle", max_bytes: int
+    ) -> "NativePauliOperatorHandle": ...
+    def materialize(
+        self,
+    ) -> tuple[int, int, object, object, object]: ...
+    def materialize_arrays(
+        self,
+    ) -> tuple[int, int, object, object]: ...
+    def materialize_strings(
+        self,
+    ) -> tuple[Sequence[str], object]: ...
+    def adjoint(self) -> "NativePauliOperatorHandle": ...
+    def is_hermitian(self, tolerance: float) -> bool: ...
+
+class NativeFermionOperatorHandle:
+    @property
+    def n_modes(self) -> int: ...
+    @property
+    def term_count(self) -> int: ...
+    def add(
+        self, other: "NativeFermionOperatorHandle", max_bytes: int
+    ) -> "NativeFermionOperatorHandle": ...
+    def scale(
+        self, scalar_re: float, scalar_im: float
+    ) -> "NativeFermionOperatorHandle": ...
+    def multiply(
+        self, other: "NativeFermionOperatorHandle", max_bytes: int
+    ) -> "NativeFermionOperatorHandle": ...
+    def adjoint(self, max_bytes: int) -> "NativeFermionOperatorHandle": ...
+    def jordan_wigner(self, max_bytes: int) -> "NativePauliOperatorHandle": ...
+    def commutator(
+        self, other: "NativeFermionOperatorHandle", max_bytes: int
+    ) -> "NativeFermionOperatorHandle": ...
+    def anticommutator(
+        self, other: "NativeFermionOperatorHandle", max_bytes: int
+    ) -> "NativeFermionOperatorHandle": ...
+    def to_majorana(self, max_bytes: int) -> "NativeMajoranaOperatorHandle": ...
+    def to_hybrid(self) -> "NativeHybridOperatorHandle": ...
+    def materialize(
+        self,
+    ) -> tuple[int, object, object, object, object, object]: ...
+
+class NativeBosonOperatorHandle:
+    @property
+    def n_modes(self) -> int: ...
+    @property
+    def term_count(self) -> int: ...
+    def add(
+        self, other: "NativeBosonOperatorHandle", max_bytes: int
+    ) -> "NativeBosonOperatorHandle": ...
+    def scale(
+        self, scalar_re: float, scalar_im: float
+    ) -> "NativeBosonOperatorHandle": ...
+    def multiply(
+        self, other: "NativeBosonOperatorHandle", max_bytes: int
+    ) -> "NativeBosonOperatorHandle": ...
+    def adjoint(self) -> "NativeBosonOperatorHandle": ...
+    def commutator(
+        self, other: "NativeBosonOperatorHandle", max_bytes: int
+    ) -> "NativeBosonOperatorHandle": ...
+    def anticommutator(
+        self, other: "NativeBosonOperatorHandle", max_bytes: int
+    ) -> "NativeBosonOperatorHandle": ...
+    def to_hybrid(self) -> "NativeHybridOperatorHandle": ...
+    def materialize(
+        self,
+    ) -> tuple[int, object, object, object]: ...
+
+class NativeHybridOperatorHandle:
+    @property
+    def term_count(self) -> int: ...
+    def has_raw_fermions(self) -> bool: ...
+    def has_mapped_fermions(self) -> bool: ...
+    def has_mixed_fermion_roles(self) -> bool: ...
+    def add(
+        self, other: "NativeHybridOperatorHandle", max_bytes: int
+    ) -> "NativeHybridOperatorHandle": ...
+    def scale(
+        self, scalar_re: float, scalar_im: float
+    ) -> "NativeHybridOperatorHandle": ...
+    def multiply(
+        self, other: "NativeHybridOperatorHandle", max_bytes: int
+    ) -> "NativeHybridOperatorHandle": ...
+    def jordan_wigner(self, max_bytes: int) -> "NativeHybridOperatorHandle": ...
+    def adjoint(self) -> "NativeHybridOperatorHandle": ...
+    def commutator(
+        self, other: "NativeHybridOperatorHandle", max_bytes: int
+    ) -> "NativeHybridOperatorHandle": ...
+    def anticommutator(
+        self, other: "NativeHybridOperatorHandle", max_bytes: int
+    ) -> "NativeHybridOperatorHandle": ...
+    def to_pauli(
+        self, axes: Sequence[tuple[int, int]], max_bytes: int
+    ) -> "NativePauliOperatorHandle": ...
+    def materialize(self) -> tuple[Any, ...]: ...
+
+class NativeMajoranaOperatorHandle:
+    @property
+    def n_modes(self) -> int: ...
+    @property
+    def term_count(self) -> int: ...
+    def add(
+        self, other: "NativeMajoranaOperatorHandle", max_bytes: int
+    ) -> "NativeMajoranaOperatorHandle": ...
+    def scale(
+        self, scalar_re: float, scalar_im: float
+    ) -> "NativeMajoranaOperatorHandle": ...
+    def multiply(
+        self, other: "NativeMajoranaOperatorHandle", max_bytes: int
+    ) -> "NativeMajoranaOperatorHandle": ...
+    def adjoint(self) -> "NativeMajoranaOperatorHandle": ...
+    def commutator(
+        self, other: "NativeMajoranaOperatorHandle", max_bytes: int
+    ) -> "NativeMajoranaOperatorHandle": ...
+    def anticommutator(
+        self, other: "NativeMajoranaOperatorHandle", max_bytes: int
+    ) -> "NativeMajoranaOperatorHandle": ...
+    def materialize(
+        self,
+    ) -> tuple[int, object, object, object]: ...
+    def to_fermion(self, max_bytes: int) -> "NativeFermionOperatorHandle": ...
 
 class NativeMappingPlan:
     @property
@@ -28,6 +169,17 @@ class NativeMappingPlan:
         coefficients_im: Sequence[float],
         max_bytes: int,
     ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+    def transform_pauli_handle(
+        self,
+        handle: "NativePauliOperatorHandle",
+        max_bytes: int,
+    ) -> "NativePauliOperatorHandle": ...
+    def transform_pauli_handle_prefix(
+        self,
+        handle: "NativePauliOperatorHandle",
+        prefix_length: int,
+        max_bytes: int,
+    ) -> "NativePauliOperatorHandle": ...
     def transform_majorana(
         self,
         indices: Sequence[Sequence[int]],
@@ -35,6 +187,11 @@ class NativeMappingPlan:
         coefficients_im: Sequence[float],
         max_bytes: int,
     ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+    def transform_majorana_handle(
+        self,
+        handle: "NativeMajoranaOperatorHandle",
+        max_bytes: int,
+    ) -> "NativePauliOperatorHandle": ...
     def transform_hybrid(
         self,
         n_bosons: int,
@@ -43,20 +200,12 @@ class NativeMappingPlan:
         qudit_dimension: int,
         input: object,
         max_bytes: int,
-    ) -> tuple[
-        object,
-        object,
-        object,
-        object,
-        object,
-        object,
-        object,
-        object,
-        object,
-        object,
-        Sequence[float],
-        Sequence[float],
-    ]: ...
+    ) -> "NativeHybridOperatorHandle": ...
+    def transform_hybrid_handle(
+        self,
+        handle: "NativeHybridOperatorHandle",
+        max_bytes: int,
+    ) -> "NativeHybridOperatorHandle": ...
 
 def mapping_plan(mapping: str, n_modes: int, max_bytes: int) -> NativeMappingPlan: ...
 
@@ -139,11 +288,23 @@ def structured_dense(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, object]: ...
+def structured_dense_handle(
+    handle: NativeHybridOperatorHandle,
+    local_dimensions: Sequence[int],
+    axes: Sequence[tuple[int, int]],
+    max_bytes: int,
+) -> tuple[int, object]: ...
 def structured_sparse(
     local_dimensions: Sequence[int],
     operations: Sequence[Sequence[tuple[int, int, int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def structured_sparse_handle(
+    handle: NativeHybridOperatorHandle,
+    local_dimensions: Sequence[int],
+    axes: Sequence[tuple[int, int]],
     max_bytes: int,
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def structured_sparse_plan(
@@ -153,23 +314,25 @@ def structured_sparse_plan(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> StructuredMvpPlan: ...
+def structured_sparse_plan_handle(
+    handle: NativeHybridOperatorHandle,
+    local_dimensions: Sequence[int],
+    axes: Sequence[tuple[int, int]],
+    max_bytes: int,
+) -> StructuredMvpPlan: ...
 def structured_fermion_canonicalize(
     n_modes: int,
     factors: Sequence[Sequence[tuple[int, int]]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[
-    Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[float], Sequence[float]
-]: ...
+) -> NativeFermionOperatorHandle: ...
 def structured_fermion_multiply(
     n_modes: int,
     left: tuple[object, object, Sequence[float], Sequence[float]],
     right: tuple[object, object, Sequence[float], Sequence[float]],
     max_bytes: int,
-) -> tuple[
-    Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[float], Sequence[float]
-]: ...
+) -> NativeFermionOperatorHandle: ...
 def structured_fermion_jordan_wigner(
     n_modes: int,
     creation: Sequence[Sequence[int]],
@@ -184,13 +347,13 @@ def structured_boson_canonicalize(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[object, Sequence[float], Sequence[float]]: ...
+) -> NativeBosonOperatorHandle: ...
 def structured_boson_multiply(
     n_modes: int,
     left: tuple[object, Sequence[float], Sequence[float]],
     right: tuple[object, Sequence[float], Sequence[float]],
     max_bytes: int,
-) -> tuple[object, Sequence[float], Sequence[float]]: ...
+) -> NativeBosonOperatorHandle: ...
 def structured_hybrid_multiply(
     n_modes: int,
     n_bosons: int,
@@ -200,20 +363,7 @@ def structured_hybrid_multiply(
     left: object,
     right: object,
     max_bytes: int,
-) -> tuple[
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    Sequence[float],
-    Sequence[float],
-]: ...
+) -> NativeHybridOperatorHandle: ...
 def structured_hybrid_canonicalize(
     n_modes: int,
     n_bosons: int,
@@ -222,20 +372,7 @@ def structured_hybrid_canonicalize(
     qudit_dimension: int,
     input: object,
     max_bytes: int,
-) -> tuple[
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    Sequence[float],
-    Sequence[float],
-]: ...
+) -> NativeHybridOperatorHandle: ...
 def structured_hybrid_jordan_wigner(
     n_modes: int,
     n_bosons: int,
@@ -244,27 +381,14 @@ def structured_hybrid_jordan_wigner(
     qudit_dimension: int,
     input: object,
     max_bytes: int,
-) -> tuple[
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    object,
-    Sequence[float],
-    Sequence[float],
-]: ...
+) -> NativeHybridOperatorHandle: ...
 def majorana_canonicalize(
     n_modes: int,
     indices: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[object, Sequence[float], Sequence[float]]: ...
+) -> NativeMajoranaOperatorHandle: ...
 def majorana_multiply(
     n_modes: int,
     left_indices: Sequence[Sequence[int]],
@@ -274,19 +398,14 @@ def majorana_multiply(
     right_coefficients_re: Sequence[float],
     right_coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[object, Sequence[float], Sequence[float]]: ...
+) -> NativeMajoranaOperatorHandle: ...
 def majorana_to_fermion(
     n_modes: int,
     indices: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[
-    Sequence[Sequence[int]],
-    Sequence[Sequence[int]],
-    Sequence[float],
-    Sequence[float],
-]: ...
+) -> NativeFermionOperatorHandle: ...
 def fermion_to_majorana(
     n_modes: int,
     creation: Sequence[Sequence[int]],
@@ -294,7 +413,7 @@ def fermion_to_majorana(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+) -> NativeMajoranaOperatorHandle: ...
 
 class NativeMvpPlan:
     @property
@@ -330,6 +449,9 @@ class NativeZ2TaperingPlan:
         coefficients_re: object,
         coefficients_im: object,
     ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+    def transform_operator_handle(
+        self, operator: NativePauliOperatorHandle
+    ) -> NativePauliOperatorHandle: ...
 
 class NativeU1RestrictedOperator:
     @property
@@ -441,9 +563,7 @@ class NativePropagationEngine:
     def value_and_grad(
         self, parameters: object, checkpoint_interval: int | None = None
     ) -> tuple[float, object]: ...
-    def propagate_operator(
-        self, parameters: object
-    ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+    def propagate_operator(self, parameters: object) -> NativePauliOperatorHandle: ...
     def profile(
         self, parameters: object
     ) -> tuple[float, int, int, int, int, Sequence[int], float]: ...
@@ -587,6 +707,23 @@ def pauli_operator_binary(
     operation: int,
     max_bytes: int,
 ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
+def pauli_operator_native(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> NativePauliOperatorHandle: ...
+def pauli_operator_native_array(
+    nqubits: int, structures: object, coefficients: object, max_bytes: int
+) -> NativePauliOperatorHandle: ...
+def pauli_operator_canonical(
+    nqubits: int,
+    structures: Sequence[Sequence[int]],
+    coefficients_re: Sequence[float],
+    coefficients_im: Sequence[float],
+    max_bytes: int,
+) -> NativePauliOperatorHandle: ...
 def pauli_operator_scale(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -634,6 +771,9 @@ def pauli_dense(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[float], Sequence[float]]: ...
+def pauli_dense_handle(
+    handle: NativePauliOperatorHandle, max_bytes: int
+) -> tuple[int, Sequence[float], Sequence[float]]: ...
 def pauli_dense_array(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -648,6 +788,9 @@ def pauli_coo(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_coo_handle(
+    handle: NativePauliOperatorHandle, max_bytes: int
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def pauli_coo_array(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -661,6 +804,9 @@ def pauli_csr(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
+) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
+def pauli_csr_handle(
+    handle: NativePauliOperatorHandle, max_bytes: int
 ) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def pauli_csr_array(
     nqubits: int,
@@ -677,6 +823,9 @@ def pauli_mvp_array(
     state: object,
     max_bytes: int,
 ) -> object: ...
+def pauli_mvp_handle(
+    handle: NativePauliOperatorHandle, state: object, max_bytes: int
+) -> object: ...
 def pauli_mvp_plan(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -685,6 +834,16 @@ def pauli_mvp_plan(
     max_bytes: int,
     storage: str = ...,
 ) -> NativeMvpPlan: ...
+def pauli_mvp_plan_handle(
+    handle: NativePauliOperatorHandle,
+    max_bytes: int,
+    storage: str = ...,
+) -> NativeMvpPlan: ...
+def pauli_backend_plan_handle(
+    handle: NativePauliOperatorHandle, max_bytes: int
+) -> tuple[
+    int, int, int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]
+]: ...
 def pauli_backend_plan(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -707,6 +866,9 @@ def pauli_find_z2_symmetries(
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
+) -> tuple[Sequence[Sequence[int]], int]: ...
+def pauli_find_z2_symmetries_handle(
+    operator: NativePauliOperatorHandle, max_bytes: int
 ) -> tuple[Sequence[Sequence[int]], int]: ...
 def pauli_z2_tapering_plan(
     nqubits: int,
@@ -755,6 +917,16 @@ def pauli_propagation_engine(
     max_weight: int | None = ...,
     max_bytes: int | None = ...,
 ) -> NativePropagationEngine: ...
+def pauli_propagation_engine_handle(
+    nqubits: int,
+    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+    observable: NativePauliOperatorHandle,
+    state_kind: int,
+    state_bits: Sequence[int],
+    state_values: Sequence[float],
+    max_weight: int | None = None,
+    max_bytes: int | None = None,
+) -> NativePropagationEngine: ...
 def pauli_propagation_batch(
     nqubits: int,
     operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
@@ -762,6 +934,16 @@ def pauli_propagation_batch(
     structures: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
+    state_kind: int,
+    state_bits: Sequence[int],
+    state_values: Sequence[float],
+    max_weight: int | None = None,
+    max_bytes: int | None = None,
+) -> NativePropagationBatch: ...
+def pauli_propagation_batch_handles(
+    nqubits: int,
+    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+    observables: Sequence[NativePauliOperatorHandle],
     state_kind: int,
     state_bits: Sequence[int],
     state_values: Sequence[float],

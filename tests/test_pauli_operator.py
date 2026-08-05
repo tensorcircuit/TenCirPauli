@@ -124,23 +124,23 @@ def test_operator_input_and_output_qubit_errors_are_explicit() -> None:
         PauliOperator.from_terms(1, ((PauliWord.from_string("X"), float("inf")),))
 
 
-def test_operator_construction_uses_one_native_batch_call(
+def test_operator_construction_uses_one_native_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     packed_word = PauliWord.from_string("ZX")
-    original_canonicalize = pauli_module._native.pauli_canonicalize
-    canonicalize_calls = 0
+    original_native = pauli_module._native.pauli_operator_native
+    native_calls = 0
 
-    def count_canonicalize(*args: object) -> object:
-        nonlocal canonicalize_calls
-        canonicalize_calls += 1
-        return original_canonicalize(*args)
+    def count_native(*args: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return original_native(*args)
 
     def reject_per_term_call(*args: object) -> None:
         del args
         raise AssertionError("operator construction made a per-term native call")
 
-    monkeypatch.setattr(pauli_module._native, "pauli_canonicalize", count_canonicalize)
+    monkeypatch.setattr(pauli_module._native, "pauli_operator_native", count_native)
     for name in ("pauli_from_codes", "pauli_codes", "pauli_batch_from_codes"):
         monkeypatch.setattr(pauli_module._native, name, reject_per_term_call)
 
@@ -149,12 +149,11 @@ def test_operator_construction_uses_one_native_batch_call(
         (("xi", 1.0), ((2, 3), 2.0), (packed_word, 3.0)),
     )
 
-    assert canonicalize_calls == 1
-    assert operator._arrays() == (
-        ((1, 0), (2, 3), (3, 1)),
-        (1.0, 2.0, 3.0),
-        (0.0, 0.0, 0.0),
-    )
+    assert native_calls == 1
+    structures, coefficients_re, coefficients_im = operator._arrays()
+    np.testing.assert_array_equal(structures, [[1, 0], [2, 3], [3, 1]])
+    np.testing.assert_array_equal(coefficients_re, [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(coefficients_im, [0.0, 0.0, 0.0])
 
 
 def test_operator_arrays_are_cached_and_do_not_affect_public_value_semantics(
@@ -168,11 +167,9 @@ def test_operator_arrays_are_cached_and_do_not_affect_public_value_semantics(
     second = operator._arrays()
 
     assert all(left is right for left, right in zip(first, second))
-    assert first == (
-        ((0, 0), (3, 1)),
-        (-2.0, 1.0),
-        (0.0, -0.25),
-    )
+    np.testing.assert_array_equal(first[0], [[0, 0], [3, 1]])
+    np.testing.assert_array_equal(first[1], [-2.0, 1.0])
+    np.testing.assert_array_equal(first[2], [0.0, -0.25])
     assert operator == equal_operator
     assert "_canonical_structures" not in repr(operator)
 
@@ -181,13 +178,13 @@ def test_operator_arrays_are_cached_and_do_not_affect_public_value_semantics(
         raise AssertionError("cached arrays performed native code conversion")
 
     monkeypatch.setattr(pauli_module._native, "pauli_codes", reject_code_conversion)
-    assert operator._arrays() == first
+    assert all(left is right for left, right in zip(operator._arrays(), first))
 
 
 def test_code_array_construction_uses_contiguous_native_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = pauli_module._native.pauli_canonicalize_array
+    original = pauli_module._native.pauli_operator_native_array
     calls = 0
 
     def count_array_call(*args: object) -> object:
@@ -202,7 +199,7 @@ def test_code_array_construction_uses_contiguous_native_batch(
         )
 
     monkeypatch.setattr(
-        pauli_module._native, "pauli_canonicalize_array", count_array_call
+        pauli_module._native, "pauli_operator_native_array", count_array_call
     )
     monkeypatch.setattr(
         pauli_module._native, "pauli_canonicalize", reject_nested_sequence_call

@@ -17,6 +17,169 @@ def _bit_count(value: int) -> int:
     return bin(value).count("1")
 
 
+def test_structured_operators_keep_native_storage_until_terms_are_requested() -> None:
+    fermion = tcp.FermionOperator.from_terms(
+        2, [(((0, "create"), (1, "annihilate")), 1.0)]
+    )
+    boson = tcp.BosonOperator.from_terms(1, [(((0, "create"), (0, "annihilate")), 1.0)])
+    qudit = tcp.QuditWeylOperator.from_terms(3, [(((0, 1, 2),), 1.0)], n_sites=1)
+    hybrid_space = tcp.OperatorSpace(fermions=1, bosons=1, qubits=1, qudits=(3,))
+    hybrid = (
+        hybrid_space.fermion.create(0)
+        * hybrid_space.boson.create(0)
+        * hybrid_space.qubit.x(0)
+        * hybrid_space.qudit.weyl(0, 1, 2)
+    )
+
+    for operator in (fermion, boson, qudit, hybrid):
+        assert operator._terms is None
+        assert operator.term_count == 1
+        assert operator.to_dict()
+        assert operator._terms is None
+
+    assert isinstance(fermion._native_handle, _native.NativeFermionOperatorHandle)
+    assert isinstance(boson._native_handle, _native.NativeBosonOperatorHandle)
+    assert isinstance(qudit._native_handle, _native.NativeHybridOperatorHandle)
+    assert isinstance(hybrid._native_handle, _native.NativeHybridOperatorHandle)
+    assert not hasattr(fermion, "_native_data")
+    assert not hasattr(boson, "_native_data")
+    assert not hasattr(qudit, "_native_data")
+    assert not hasattr(hybrid, "_native_data")
+
+    assert fermion.multiply(fermion)._terms is None
+    assert boson.add(boson)._terms is None
+    assert qudit.adjoint()._terms is None
+    assert hybrid.commutator(hybrid)._terms is None
+
+    assert fermion.terms
+    assert boson.terms
+    assert qudit.terms
+    assert hybrid.terms
+
+
+def test_compatible_specialized_and_hybrid_addition_promotes_natively() -> None:
+    fermion = tcp.FermionOperator.from_terms(1, [(((0, "create"),), 1.0)])
+    fermion_hybrid = tcp.OperatorSpace(fermions=1).fermion.create(0)
+    assert isinstance(fermion + fermion_hybrid, tcp.HybridOperator)
+    assert list((fermion + fermion_hybrid).to_dict().values()) == [2.0]
+    assert isinstance(fermion_hybrid + fermion, tcp.HybridOperator)
+
+    boson = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
+    boson_hybrid = tcp.OperatorSpace(bosons=1).boson.create(0)
+    assert isinstance(boson + boson_hybrid, tcp.HybridOperator)
+    assert isinstance(boson_hybrid + boson, tcp.HybridOperator)
+
+    qudit = tcp.QuditWeylOperator.from_terms(3, [(((0, 1, 1),), 1.0)], n_sites=1)
+    qudit_hybrid = tcp.OperatorSpace(qudits=(3,)).qudit.weyl(0, 1, 1)
+    assert isinstance(qudit + qudit_hybrid, tcp.HybridOperator)
+    assert isinstance(qudit_hybrid + qudit, tcp.HybridOperator)
+    with pytest.raises(ValueError, match="incompatible"):
+        _ = fermion + tcp.OperatorSpace(fermions=2).fermion.create(0)
+
+
+def test_fused_structured_commutators_match_composed_native_reference() -> None:
+    spaces_and_pairs = (
+        (
+            tcp.OperatorSpace(fermions=2),
+            lambda space: (
+                space.fermion.create(0) + 2 * space.fermion.annihilate(1),
+                space.fermion.create(1) + 3 * space.fermion.annihilate(0),
+            ),
+        ),
+        (
+            tcp.OperatorSpace(bosons=1),
+            lambda space: (
+                space.boson.create(0) + space.boson.annihilate(0),
+                2 * space.boson.create(0) + space.boson.annihilate(0),
+            ),
+        ),
+        (
+            tcp.OperatorSpace(fermions=1, bosons=1, qubits=1),
+            lambda space: (
+                space.fermion.create(0) * space.boson.create(0) + space.qubit.x(0),
+                space.fermion.annihilate(0) * space.boson.annihilate(0)
+                + space.qubit.z(0),
+            ),
+        ),
+    )
+    for space, factory in spaces_and_pairs:
+        left, right = factory(space)
+        composed = left.multiply(right).add(
+            right.multiply(left).scale(-1),
+        )
+        assert left.commutator(right).to_dict() == composed.to_dict()
+
+
+def test_fused_structured_operations_match_independent_dense_references() -> None:
+    fermion_left = tcp.FermionOperator.from_terms(
+        1, [(((0, "create"),), 1.0), (((0, "annihilate"),), 0.3)]
+    )
+    fermion_right = tcp.FermionOperator.from_terms(
+        1, [(((0, "create"),), 0.7), (((0, "annihilate"),), -1.0)]
+    )
+
+    boson_left = tcp.BosonOperator.from_terms(
+        1, [(((0, "create"),), 1.0), (((0, "annihilate"),), 1.0)]
+    )
+    boson_right = tcp.BosonOperator.from_terms(
+        1, [(((0, "create"),), 0.4), (((0, "annihilate"),), -1.0)]
+    )
+
+    qudit_left = tcp.QuditWeylOperator.from_terms(
+        3, [(((0, 1, 1),), 0.6 - 0.1j)], n_sites=1
+    )
+    qudit_right = tcp.QuditWeylOperator.from_terms(
+        3, [(((0, 2, 1),), -0.2 + 0.5j)], n_sites=1
+    )
+
+    hybrid_space = tcp.OperatorSpace(fermions=1, qubits=1)
+    hybrid_left = hybrid_space.fermion.create(0) * hybrid_space.qubit.x(
+        0
+    ) + hybrid_space.qubit.z(0)
+    hybrid_right = hybrid_space.fermion.annihilate(0) * hybrid_space.qubit.z(
+        0
+    ) + 0.5 * hybrid_space.qubit.x(0)
+
+    cases = (
+        (fermion_left, fermion_right, {}, "fermion"),
+        (boson_left, boson_right, {"boson_cutoffs": {0: 3}}, "boson"),
+        (qudit_left, qudit_right, {}, "qudit"),
+        (hybrid_left, hybrid_right, {}, "hybrid"),
+    )
+    for left, right, compile_kwargs, _family in cases:
+        if _family == "boson":
+            product = left.multiply(right)
+            commutator = left.commutator(right)
+            anticommutator = left.anticommutator(right)
+            expected_product = _boson_operator_dense(product, 3)
+            expected_commutator = _boson_operator_dense(commutator, 3)
+            expected_anticommutator = _boson_operator_dense(anticommutator, 3)
+        else:
+            left_dense = left.compile("dense", **compile_kwargs)
+            right_dense = right.compile("dense", **compile_kwargs)
+            expected_product = left_dense @ right_dense
+            expected_commutator = expected_product - right_dense @ left_dense
+            expected_anticommutator = expected_product + right_dense @ left_dense
+        np.testing.assert_allclose(
+            left.multiply(right).compile("dense", **compile_kwargs), expected_product
+        )
+        np.testing.assert_allclose(
+            left.commutator(right).compile("dense", **compile_kwargs),
+            expected_commutator,
+        )
+        np.testing.assert_allclose(
+            left.anticommutator(right).compile("dense", **compile_kwargs),
+            expected_anticommutator,
+        )
+
+    assert isinstance(qudit_left + qudit_right, tcp.QuditWeylOperator)
+    assert isinstance(qudit_left.multiply(qudit_right), tcp.QuditWeylOperator)
+    assert isinstance(qudit_left.commutator(qudit_right), tcp.QuditWeylOperator)
+    assert isinstance(qudit_left.anticommutator(qudit_right), tcp.QuditWeylOperator)
+    mixed = tcp.OperatorSpace(qudits=(3,)).qudit.weyl(0, 1, 1)
+    assert isinstance(qudit_left + mixed, tcp.HybridOperator)
+
+
 def _fermion_matrix(n_modes: int, factors: tuple[tuple[int, str], ...]) -> np.ndarray:
     dimension = 1 << n_modes
     result = np.eye(dimension, dtype=np.complex128)
@@ -103,6 +266,19 @@ def _projected_boson_monomial(
         result[destination, column] = amplitude
     if creation_power == 0 and annihilation_power == 0:
         np.fill_diagonal(result, 1.0)
+    return result
+
+
+def _boson_operator_dense(operator: tcp.BosonOperator, cutoff: int) -> np.ndarray:
+    result = np.zeros((cutoff + 1, cutoff + 1), dtype=np.complex128)
+    for term in operator.terms:
+        monomial = np.eye(cutoff + 1, dtype=np.complex128)
+        for mode, creation, annihilation in term.word.blocks:
+            assert mode == 0
+            monomial = monomial @ _projected_boson_monomial(
+                cutoff, creation, annihilation
+            )
+        result += term.coefficient * monomial
     return result
 
 

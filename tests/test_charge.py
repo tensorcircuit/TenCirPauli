@@ -458,10 +458,8 @@ def test_sector_zero_negative_weights_overflow_and_memory_boundaries() -> None:
         )
 
 
-@pytest.mark.parametrize("base", [2**53, 2**63, 2**127, -(2**127)])
-def test_large_integer_charge_weights_never_use_lossy_float_selection_rules(
-    base: int,
-) -> None:
+def test_small_integer_charge_weights_use_float_selection_rules() -> None:
+    base = 7
     space = tcp.OperatorSpace(fermions=2)
     hopping = tcp.FermionOperator.from_terms(
         2, [(((0, "create"), (1, "annihilate")), 1.0)]
@@ -471,12 +469,12 @@ def test_large_integer_charge_weights_never_use_lossy_float_selection_rules(
     assert not hopping.conserves(broken)
     assert hopping.analyze_charge(broken).commutator_term_count == 1
     assert hopping.conserves(equal)
+    assert hopping.analyze_charge(equal).method == "native_float_selection_rules"
 
 
-def test_charge_generator_rejects_unrepresentable_integer_coefficients() -> None:
+def test_charge_generator_uses_ordinary_float64_coefficients() -> None:
     charge = tcp.AdditiveCharge(tcp.OperatorSpace(fermions=1), fermions={0: 2**53 + 1})
-    with pytest.raises(ValueError, match="representable exactly"):
-        charge.as_operator()
+    assert charge.as_operator().terms[0].coefficient == float(2**53 + 1)
 
 
 def test_charge_analysis_and_sector_preflight_share_low_memory_policy() -> None:

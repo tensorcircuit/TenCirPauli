@@ -46,6 +46,7 @@ pub struct HybridRawBatch<'a> {
 }
 
 /// Result of a batched mixed-domain symbolic multiplication.
+#[derive(Clone)]
 pub struct HybridCanonicalResult {
     pub fermion_present: Vec<bool>,
     pub fermion_creation: Vec<Vec<u32>>,
@@ -60,7 +61,7 @@ pub struct HybridCanonicalResult {
     pub coefficients: Vec<Complex64>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HybridLayout {
     pub n_modes: usize,
     pub n_bosons: usize,
@@ -85,6 +86,21 @@ pub fn multiply_hybrid_terms(
     right: HybridBatch<'_>,
     max_bytes: u128,
 ) -> Result<HybridCanonicalResult, PauliError> {
+    binary_hybrid_terms(layout, left, right, max_bytes, 1, 0)
+}
+
+/// Compute a commutator or anticommutator of canonical hybrid operators in a
+/// single aggregate. `reverse_sign` is `-1` for a commutator and `1` for an
+/// anticommutator; `forward_sign` is kept explicit so the same kernel also
+/// serves the ordinary product.
+pub fn binary_hybrid_terms(
+    layout: HybridLayout,
+    left: HybridBatch<'_>,
+    right: HybridBatch<'_>,
+    max_bytes: u128,
+    forward_sign: i8,
+    reverse_sign: i8,
+) -> Result<HybridCanonicalResult, PauliError> {
     validate_hybrid_batch(layout, &left)?;
     validate_hybrid_batch(layout, &right)?;
     let pair_count = left
@@ -94,57 +110,98 @@ pub fn multiply_hybrid_terms(
         .ok_or(PauliError::Overflow {
             context: "estimating hybrid product expansion",
         })?;
-    check_structured_bytes(pair_count, max_bytes, "hybrid product expansion")?;
+    let directional_count = if reverse_sign == 0 {
+        pair_count
+    } else {
+        pair_count.checked_mul(2).ok_or(PauliError::Overflow {
+            context: "estimating hybrid binary expansion",
+        })?
+    };
+    check_structured_bytes(directional_count, max_bytes, "hybrid product expansion")?;
 
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
     let mut total_values = 0usize;
     for left_index in 0..left.coefficients.len() {
         for right_index in 0..right.coefficients.len() {
-            let fermion_products =
-                hybrid_fermion_products(&left, left_index, &right, right_index, max_bytes)?;
-            let boson_products =
-                hybrid_boson_products(&left, left_index, &right, right_index, max_bytes)?;
-            let (qubit_codes, qubit_phase) = multiply_pauli_codes(
-                &left.qubit_codes[left_index],
-                &right.qubit_codes[right_index],
-            );
-            let (mapped_codes, mapped_phase) =
-                hybrid_mapped_product(layout.n_modes, &left, left_index, &right, right_index);
-            let (qudit_triples, qudit_phase) = hybrid_qudit_product(
-                layout.qudit_dimension,
+            accumulate_hybrid_product(
+                layout,
                 &left,
                 left_index,
                 &right,
                 right_index,
-            );
-            let scalar = left.coefficients[left_index]
-                * right.coefficients[right_index]
-                * qubit_phase
-                * mapped_phase
-                * qudit_phase;
-            for (fermion, fermion_integer) in &fermion_products {
-                for (boson, boson_integer) in &boson_products {
-                    let value = scalar
-                        * checked_integer_to_f64(*fermion_integer, "fermion product expansion")?
-                        * checked_integer_to_f64(*boson_integer, "boson product expansion")?;
-                    push_aggregate(
-                        &mut aggregate,
-                        (
-                            fermion.clone(),
-                            boson.clone(),
-                            qubit_codes.clone(),
-                            mapped_codes.clone(),
-                            qudit_triples.clone(),
-                        ),
-                        value,
-                        &mut total_values,
-                        max_bytes,
-                    )?;
-                }
+                forward_sign,
+                &mut aggregate,
+                &mut total_values,
+                max_bytes,
+            )?;
+            if reverse_sign != 0 {
+                accumulate_hybrid_product(
+                    layout,
+                    &right,
+                    right_index,
+                    &left,
+                    left_index,
+                    reverse_sign,
+                    &mut aggregate,
+                    &mut total_values,
+                    max_bytes,
+                )?;
             }
         }
     }
     finish_hybrid_aggregate(aggregate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accumulate_hybrid_product(
+    layout: HybridLayout,
+    left: &HybridBatch<'_>,
+    left_index: usize,
+    right: &HybridBatch<'_>,
+    right_index: usize,
+    direction_sign: i8,
+    aggregate: &mut FxHashMap<HybridKey, Vec<Complex64>>,
+    total_values: &mut usize,
+    max_bytes: u128,
+) -> Result<(), PauliError> {
+    let fermion_products =
+        hybrid_fermion_products(left, left_index, right, right_index, max_bytes)?;
+    let boson_products = hybrid_boson_products(left, left_index, right, right_index, max_bytes)?;
+    let (qubit_codes, qubit_phase) = multiply_pauli_codes(
+        &left.qubit_codes[left_index],
+        &right.qubit_codes[right_index],
+    );
+    let (mapped_codes, mapped_phase) =
+        hybrid_mapped_product(layout.n_modes, left, left_index, right, right_index);
+    let (qudit_triples, qudit_phase) =
+        hybrid_qudit_product(layout.qudit_dimension, left, left_index, right, right_index);
+    let scalar = left.coefficients[left_index]
+        * right.coefficients[right_index]
+        * qubit_phase
+        * mapped_phase
+        * qudit_phase
+        * f64::from(direction_sign);
+    for (fermion, fermion_integer) in &fermion_products {
+        for (boson, boson_integer) in &boson_products {
+            let value = scalar
+                * checked_integer_to_f64(*fermion_integer, "fermion product expansion")?
+                * checked_integer_to_f64(*boson_integer, "boson product expansion")?;
+            push_aggregate(
+                aggregate,
+                (
+                    fermion.clone(),
+                    boson.clone(),
+                    qubit_codes.clone(),
+                    mapped_codes.clone(),
+                    qudit_triples.clone(),
+                ),
+                value,
+                total_values,
+                max_bytes,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Canonicalize raw mixed-domain product specifications in one batch.
@@ -615,6 +672,93 @@ pub fn multiply_fermion_terms(
     finish_fermion_aggregate(aggregate)
 }
 
+/// Compute a fermion commutator or anticommutator without materializing the
+/// two directional products first.
+pub fn binary_fermion_terms(
+    n_modes: usize,
+    left: FermionBatch<'_>,
+    right: FermionBatch<'_>,
+    max_bytes: u128,
+    reverse_sign: i8,
+) -> Result<FermionCanonicalResult, PauliError> {
+    validate_fermion_arrays(n_modes, left.creation, left.annihilation, left.coefficients)?;
+    validate_fermion_arrays(
+        n_modes,
+        right.creation,
+        right.annihilation,
+        right.coefficients,
+    )?;
+    let pair_count = left
+        .coefficients
+        .len()
+        .checked_mul(right.coefficients.len())
+        .and_then(|value| value.checked_mul(if reverse_sign == 0 { 1 } else { 2 }))
+        .ok_or(PauliError::Overflow {
+            context: "estimating fermion binary expansion",
+        })?;
+    check_structured_bytes(pair_count, max_bytes, "fermion product expansion")?;
+    let mut aggregate: FxHashMap<FermionKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
+    for left_index in 0..left.coefficients.len() {
+        for right_index in 0..right.coefficients.len() {
+            accumulate_fermion_product(
+                &left,
+                left_index,
+                &right,
+                right_index,
+                1,
+                &mut aggregate,
+                &mut total_values,
+                max_bytes,
+            )?;
+            if reverse_sign != 0 {
+                accumulate_fermion_product(
+                    &right,
+                    right_index,
+                    &left,
+                    left_index,
+                    reverse_sign,
+                    &mut aggregate,
+                    &mut total_values,
+                    max_bytes,
+                )?;
+            }
+        }
+    }
+    finish_fermion_aggregate(aggregate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accumulate_fermion_product(
+    left: &FermionBatch<'_>,
+    left_index: usize,
+    right: &FermionBatch<'_>,
+    right_index: usize,
+    direction_sign: i8,
+    aggregate: &mut FxHashMap<FermionKey, Vec<Complex64>>,
+    total_values: &mut usize,
+    max_bytes: u128,
+) -> Result<(), PauliError> {
+    let mut sequence = fermion_sequence(&left.creation[left_index], &left.annihilation[left_index]);
+    sequence.extend(fermion_sequence(
+        &right.creation[right_index],
+        &right.annihilation[right_index],
+    ));
+    for (key, integer) in fermion_rewrite(sequence, max_bytes)? {
+        push_aggregate(
+            aggregate,
+            key,
+            left.coefficients[left_index]
+                * right.coefficients[right_index]
+                * f64::from(direction_sign)
+                * checked_integer_to_f64(integer, "fermion product expansion")?,
+            total_values,
+            max_bytes,
+        )?;
+    }
+    Ok(())
+}
+
 /// Map canonical fermion terms to Jordan-Wigner Pauli terms in one batch.
 pub fn jordan_wigner_terms(
     n_modes: usize,
@@ -848,6 +992,99 @@ pub fn multiply_boson_terms(
         }
     }
     finish_boson_aggregate(aggregate)
+}
+
+/// Compute a boson commutator or anticommutator in one shared aggregate.
+pub fn binary_boson_terms(
+    n_modes: usize,
+    left_blocks: &[Vec<(u32, u32, u32)>],
+    left_coefficients: &[Complex64],
+    right_blocks: &[Vec<(u32, u32, u32)>],
+    right_coefficients: &[Complex64],
+    max_bytes: u128,
+    reverse_sign: i8,
+) -> Result<BosonCanonicalResult, PauliError> {
+    if left_blocks.len() != left_coefficients.len()
+        || right_blocks.len() != right_coefficients.len()
+    {
+        return Err(PauliError::InvalidStructureLength {
+            expected: left_blocks.len(),
+            actual: left_coefficients.len(),
+        });
+    }
+    for (index, coefficient) in left_coefficients
+        .iter()
+        .chain(right_coefficients)
+        .enumerate()
+    {
+        validate_coefficient(*coefficient, index)?;
+    }
+    for blocks in left_blocks.iter().chain(right_blocks) {
+        validate_boson_blocks(n_modes, blocks)?;
+    }
+    let pair_count = left_coefficients
+        .len()
+        .checked_mul(right_coefficients.len())
+        .and_then(|value| value.checked_mul(if reverse_sign == 0 { 1 } else { 2 }))
+        .ok_or(PauliError::Overflow {
+            context: "estimating boson binary expansion",
+        })?;
+    check_structured_bytes(pair_count, max_bytes, "boson product expansion")?;
+    let mut aggregate: FxHashMap<BosonKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
+    for left_index in 0..left_blocks.len() {
+        for right_index in 0..right_blocks.len() {
+            accumulate_boson_product(
+                &left_blocks[left_index],
+                left_coefficients[left_index],
+                &right_blocks[right_index],
+                right_coefficients[right_index],
+                1,
+                &mut aggregate,
+                &mut total_values,
+                max_bytes,
+            )?;
+            if reverse_sign != 0 {
+                accumulate_boson_product(
+                    &right_blocks[right_index],
+                    right_coefficients[right_index],
+                    &left_blocks[left_index],
+                    left_coefficients[left_index],
+                    reverse_sign,
+                    &mut aggregate,
+                    &mut total_values,
+                    max_bytes,
+                )?;
+            }
+        }
+    }
+    finish_boson_aggregate(aggregate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accumulate_boson_product(
+    left: &[(u32, u32, u32)],
+    left_coefficient: Complex64,
+    right: &[(u32, u32, u32)],
+    right_coefficient: Complex64,
+    direction_sign: i8,
+    aggregate: &mut FxHashMap<BosonKey, Vec<Complex64>>,
+    total_values: &mut usize,
+    max_bytes: u128,
+) -> Result<(), PauliError> {
+    for (key, integer) in boson_block_product(left, right, max_bytes)? {
+        push_aggregate(
+            aggregate,
+            key,
+            left_coefficient
+                * right_coefficient
+                * f64::from(direction_sign)
+                * checked_integer_to_f64(integer, "boson product expansion")?,
+            total_values,
+            max_bytes,
+        )?;
+    }
+    Ok(())
 }
 
 fn fermion_rewrite(

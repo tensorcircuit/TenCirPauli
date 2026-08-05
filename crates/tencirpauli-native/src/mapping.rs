@@ -2,6 +2,9 @@ use pyo3::prelude::*;
 use tencir_pauli_core::{build_mapping_plan, HybridBatch, HybridLayout, MappingPlan};
 
 use crate::convert::{complex_coefficients, map_error, operator_output};
+use crate::majorana::NativeMajoranaOperatorHandle;
+use crate::operator::NativePauliOperatorHandle;
+use crate::structured::NativeHybridOperatorHandle;
 
 type MappingOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 type HybridInput = (
@@ -18,8 +21,6 @@ type HybridInput = (
     Vec<f64>,
     Vec<f64>,
 );
-type HybridOutput = HybridInput;
-
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeMappingPlan {
     plan: MappingPlan,
@@ -70,6 +71,34 @@ impl NativeMappingPlan {
         Ok(operator_output(&operator))
     }
 
+    fn transform_pauli_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativePauliOperatorHandle,
+        max_bytes: u128,
+    ) -> PyResult<NativePauliOperatorHandle> {
+        let operator = py
+            .allow_threads(|| self.plan.map_pauli_operator(handle.core(), max_bytes))
+            .map_err(map_error)?;
+        Ok(NativePauliOperatorHandle::from_operator(operator))
+    }
+
+    fn transform_pauli_handle_prefix(
+        &self,
+        py: Python<'_>,
+        handle: &NativePauliOperatorHandle,
+        prefix_length: usize,
+        max_bytes: u128,
+    ) -> PyResult<NativePauliOperatorHandle> {
+        let operator = py
+            .allow_threads(|| {
+                self.plan
+                    .map_pauli_operator_prefix(handle.core(), prefix_length, max_bytes)
+            })
+            .map_err(map_error)?;
+        Ok(NativePauliOperatorHandle::from_operator(operator))
+    }
+
     fn transform_majorana(
         &self,
         py: Python<'_>,
@@ -88,6 +117,22 @@ impl NativeMappingPlan {
         Ok(operator_output(&operator))
     }
 
+    fn transform_majorana_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativeMajoranaOperatorHandle,
+        max_bytes: u128,
+    ) -> PyResult<NativePauliOperatorHandle> {
+        let (indices, coefficients) = handle.native_parts();
+        let operator = py
+            .allow_threads(|| {
+                self.plan
+                    .map_majorana_terms(indices, coefficients, max_bytes)
+            })
+            .map_err(map_error)?;
+        Ok(NativePauliOperatorHandle::from_operator(operator))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn transform_hybrid(
         &self,
@@ -98,7 +143,7 @@ impl NativeMappingPlan {
         qudit_dimension: usize,
         input: HybridInput,
         max_bytes: u128,
-    ) -> PyResult<HybridOutput> {
+    ) -> PyResult<NativeHybridOperatorHandle> {
         let (
             fermion_present,
             fermion_creation,
@@ -114,16 +159,17 @@ impl NativeMappingPlan {
             coefficients_im,
         ) = input;
         let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        let layout = HybridLayout {
+            n_modes: self.plan.n_modes(),
+            n_bosons,
+            nqubits: n_qubits,
+            n_qudit_sites,
+            qudit_dimension,
+        };
         let result = py
             .allow_threads(|| {
                 self.plan.map_hybrid_terms(
-                    HybridLayout {
-                        n_modes: self.plan.n_modes(),
-                        n_bosons,
-                        nqubits: n_qubits,
-                        n_qudit_sites,
-                        qudit_dimension,
-                    },
+                    layout,
                     HybridBatch {
                         fermion_present: &fermion_present,
                         fermion_creation: &fermion_creation,
@@ -141,21 +187,24 @@ impl NativeMappingPlan {
                 )
             })
             .map_err(map_error)?;
-        let (real, imaginary) = crate::convert::split_complex(&result.coefficients);
-        Ok((
-            result.fermion_present,
-            result.fermion_creation,
-            result.fermion_annihilation,
-            result.boson_present,
-            result.boson_blocks,
-            result.qubit_codes,
-            result.mapped_present,
-            result.mapped_codes,
-            result.qudit_present,
-            result.qudit_triples,
-            real,
-            imaginary,
-        ))
+        Ok(NativeHybridOperatorHandle::from_result(layout, result))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transform_hybrid_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativeHybridOperatorHandle,
+        max_bytes: u128,
+    ) -> PyResult<NativeHybridOperatorHandle> {
+        let layout = handle.layout();
+        let result = py
+            .allow_threads(|| {
+                self.plan
+                    .map_hybrid_terms(layout, handle.batch(), max_bytes)
+            })
+            .map_err(map_error)?;
+        Ok(NativeHybridOperatorHandle::from_result(layout, result))
     }
 }
 

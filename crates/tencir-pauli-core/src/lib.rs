@@ -40,8 +40,8 @@ pub use grouping::{
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
 pub use majorana::{
-    canonicalize_majorana_terms, fermion_to_majorana_terms, majorana_to_fermion_terms,
-    multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,
+    binary_majorana_terms, canonicalize_majorana_terms, fermion_to_majorana_terms,
+    majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,
 };
 pub use mapping::{build_mapping_plan, MappingPlan};
 pub use operator::{Canonicalization, PauliOperator, PauliTerm};
@@ -56,11 +56,12 @@ pub use sector::{
 };
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 pub use structured::{
-    canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
-    jordan_wigner_hybrid_terms, jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms,
-    multiply_hybrid_terms, structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix,
-    BosonCanonicalResult, FermionBatch, FermionCanonicalResult, HybridBatch, HybridCanonicalResult,
-    HybridLayout, HybridRawBatch, StructuredMvpPlan, StructuredOperation, StructuredSparseResult,
+    binary_boson_terms, binary_fermion_terms, binary_hybrid_terms, canonicalize_boson_terms,
+    canonicalize_fermion_terms, canonicalize_hybrid_terms, jordan_wigner_hybrid_terms,
+    jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms,
+    structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult,
+    FermionBatch, FermionCanonicalResult, HybridBatch, HybridCanonicalResult, HybridLayout,
+    HybridRawBatch, StructuredMvpPlan, StructuredOperation, StructuredSparseResult,
 };
 pub use symmetry::{find_z2_symmetries, CliffordOperation, Z2SymmetryAnalysis, Z2TaperingPlan};
 pub use u1_circuit::U1CircuitPlan;

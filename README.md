@@ -95,6 +95,16 @@ External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use q
 | Deterministic Pauli propagation | `PropagationCircuit` (advanced `GateTape`/`PropagationEngine` remain available) |
 | Stochastic Pauli-path estimation | `SPPSCircuit` (low-level `SPPSEngine` remains available) |
 
+Pauli algebra uses native-backed lazy results by default. Each result remains a lightweight `PauliOperator` backed by a private Rust handle; `term_count`, algebra, and matrix/MVP targets do not construct Python `PauliTerm` objects. Use `result.to_dict()` for a plain `{pauli_string: coefficient}` mapping, or access `result.terms` when the full Python term objects are explicitly needed.
+
+```python
+native_result = hamiltonian.commutator(hamiltonian)
+weights = native_result.to_dict()
+python_terms = native_result.terms  # explicit, cached materialization
+```
+
+Fermion, Boson, Qudit, Hybrid, and Majorana operators follow the same default lazy boundary with family-specific canonical native arrays and `to_dict()` exports. The exact native coverage and intentionally retained Python fallbacks are listed in [`docs/vibe/operator-lazy-results.md`](docs/vibe/operator-lazy-results.md).
+
 ## Structured operator algebra
 
 Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
