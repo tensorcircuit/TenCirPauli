@@ -1,6 +1,5 @@
 //! Private PyO3 extension for the public `tencirpauli` Python package.
 
-mod charge;
 mod charge_sector;
 mod convert;
 mod grouping;
@@ -17,7 +16,6 @@ mod word;
 
 use pyo3::prelude::*;
 
-use charge::{charge_compile_transitions, charge_mvp_apply, charge_mvp_apply_into};
 use charge_sector::{
     charge_sector_plan, charge_sector_plan_compact, NativeChargeEagerMvpPlan, NativeChargeMvpPlan,
     NativeChargeSectorPlan,
@@ -101,9 +99,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_csr_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_mvp_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_mvp_plan, module)?)?;
-    module.add_function(wrap_pyfunction!(charge_mvp_apply, module)?)?;
-    module.add_function(wrap_pyfunction!(charge_mvp_apply_into, module)?)?;
-    module.add_function(wrap_pyfunction!(charge_compile_transitions, module)?)?;
     module.add_function(wrap_pyfunction!(charge_sector_plan, module)?)?;
     module.add_function(wrap_pyfunction!(charge_sector_plan_compact, module)?)?;
     module.add_function(wrap_pyfunction!(majorana_canonicalize, module)?)?;

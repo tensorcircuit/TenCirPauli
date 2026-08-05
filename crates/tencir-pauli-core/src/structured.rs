@@ -1295,7 +1295,10 @@ fn validate_fermion_arrays(
     Ok(())
 }
 
-fn validate_boson_blocks(n_modes: usize, blocks: &[(u32, u32, u32)]) -> Result<(), PauliError> {
+pub(crate) fn validate_boson_blocks(
+    n_modes: usize,
+    blocks: &[(u32, u32, u32)],
+) -> Result<(), PauliError> {
     if blocks.windows(2).any(|pair| pair[0].0 >= pair[1].0)
         || blocks.iter().any(|&(mode, _, _)| mode as usize >= n_modes)
     {

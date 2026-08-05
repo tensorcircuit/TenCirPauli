@@ -1,6 +1,6 @@
 //! Pure Rust occupation-encoding plans and batched Clifford transforms.
 
-use crate::structured::{HybridBatch, HybridCanonicalResult, HybridLayout};
+use crate::structured::{validate_boson_blocks, HybridBatch, HybridCanonicalResult, HybridLayout};
 use crate::{Complex64, PauliError, PauliOperator, PauliPhase, PauliWord};
 use rustc_hash::FxHashMap;
 
@@ -356,6 +356,18 @@ impl MappingPlan {
                     expected: layout.n_modes,
                     actual: batch.mapped_codes[index].len(),
                 });
+            }
+            validate_boson_blocks(layout.n_bosons, &batch.boson_blocks[index])?;
+            if batch.qudit_triples[index]
+                .windows(2)
+                .any(|pair| pair[0].0 >= pair[1].0)
+                || batch.qudit_triples[index].iter().any(|&(site, a, b)| {
+                    site as usize >= layout.n_qudit_sites
+                        || a as usize >= layout.qudit_dimension
+                        || b as usize >= layout.qudit_dimension
+                })
+            {
+                return Err(PauliError::NonCanonicalTerms { index });
             }
             if !batch.coefficients[index].re.is_finite()
                 || !batch.coefficients[index].im.is_finite()

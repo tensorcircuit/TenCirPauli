@@ -248,11 +248,16 @@ def test_cpu_native_apply_into_is_strict_and_matches_apply(factory: str) -> None
     output = np.full(plan.dimension, 7.0 + 2.0j, dtype=np.complex128)
     assert plan.apply_into(state, output, max_bytes=None) is None
     np.testing.assert_allclose(output, plan.apply(state, max_bytes=None))
-    if factory in {"pauli", "charge", "u1"}:
+    if factory == "pauli":
         for buffer in (output, np.empty_like(output)):
             buffer.fill(9.0 + 4.0j)
             plan.apply_into(state, buffer, max_bytes=0)
             np.testing.assert_allclose(buffer, plan.apply(state, max_bytes=None))
+    elif factory in {"charge", "u1"}:
+        output.fill(9.0 + 4.0j)
+        with pytest.raises(MemoryError):
+            plan.apply_into(state, output, max_bytes=0)
+        np.testing.assert_array_equal(output, np.full_like(output, 9.0 + 4.0j))
     with pytest.raises(ValueError, match="overlap"):
         plan.apply_into(state, state, max_bytes=None)
     wrong_shape = np.full(plan.dimension + 1, 9.0 + 4.0j, dtype=np.complex128)

@@ -68,49 +68,6 @@ class NativeChargeSectorPlan:
     def rank(self, occupations: Sequence[int]) -> int: ...
     def unrank(self, index: int) -> Sequence[int]: ...
     def basis_states(self, max_bytes: int) -> object: ...
-    def compile_transitions(
-        self,
-        dimension: int,
-        local_dimensions: Sequence[int],
-        fermion_positions: Sequence[int],
-        boson_positions: Sequence[int],
-        qubit_positions: Sequence[int],
-        qudit_positions: Sequence[int],
-        fermion_creation: object,
-        fermion_annihilation: object,
-        boson_blocks: object,
-        qubit_codes: object,
-        mapped_present: Sequence[bool],
-        mapped_codes: object,
-        qudit_present: Sequence[bool],
-        qudit_triples: object,
-        coefficients: object,
-        qudit_dimension: int,
-        max_bytes: int,
-    ) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
-    def apply_lazy(
-        self,
-        dimension: int,
-        local_dimensions: Sequence[int],
-        fermion_positions: Sequence[int],
-        boson_positions: Sequence[int],
-        qubit_positions: Sequence[int],
-        qudit_positions: Sequence[int],
-        fermion_creation: object,
-        fermion_annihilation: object,
-        boson_blocks: object,
-        qubit_codes: object,
-        mapped_present: Sequence[bool],
-        mapped_codes: object,
-        qudit_present: Sequence[bool],
-        qudit_triples: object,
-        coefficients: object,
-        state: object,
-        qudit_dimension: int,
-        termwise_conserved: bool,
-        max_bytes: int,
-        fast_fermion_particles: int | None = ...,
-    ) -> object: ...
     def compile_mvp(
         self,
         dimension: int,
@@ -301,43 +258,6 @@ def structured_hybrid_jordan_wigner(
     Sequence[float],
     Sequence[float],
 ]: ...
-def charge_mvp_apply(
-    dimension: int,
-    rows: object,
-    columns: object,
-    coefficients: object,
-    state: object,
-    max_bytes: int,
-) -> object: ...
-def charge_mvp_apply_into(
-    dimension: int,
-    rows: object,
-    columns: object,
-    coefficients: object,
-    state: object,
-    output: object,
-    max_bytes: int,
-) -> None: ...
-def charge_compile_transitions(
-    dimension: int,
-    basis: object,
-    local_dimensions: Sequence[int],
-    fermion_positions: Sequence[int],
-    boson_positions: Sequence[int],
-    qubit_positions: Sequence[int],
-    qudit_positions: Sequence[int],
-    fermion_creation: object,
-    fermion_annihilation: object,
-    boson_blocks: object,
-    qubit_codes: object,
-    mapped_present: Sequence[bool],
-    mapped_codes: object,
-    qudit_present: Sequence[bool],
-    qudit_triples: object,
-    coefficients: object,
-    qudit_dimension: int,
-    max_bytes: int,
-) -> tuple[Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def majorana_canonicalize(
     n_modes: int,
     indices: Sequence[Sequence[int]],

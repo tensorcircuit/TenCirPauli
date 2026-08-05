@@ -200,6 +200,18 @@ def test_wide_low_particle_circuit_does_not_use_single_word_state() -> None:
     assert np.isclose(np.linalg.norm(state), 1.0)
 
 
+def test_u1_compile_budget_includes_static_diagonal_payload() -> None:
+    circuit = tcp.U1Circuit(
+        20,
+        particle_number=10,
+        occupied=range(10),
+        max_bytes=8 * 1024 * 1024,
+    )
+    circuit.diagonal(*range(20), diagonal=np.ones(1 << 20, dtype=np.complex128))
+    with pytest.raises(MemoryError):
+        circuit.compile()
+
+
 @pytest.mark.parametrize("nqubits", [63, 64, 65, 127, 128, 129, 256])
 def test_width_acceptance_matrix_for_low_particle_sector(nqubits: int) -> None:
     circuit = tcp.U1Circuit(nqubits, particle_number=1, occupied=[nqubits - 1])

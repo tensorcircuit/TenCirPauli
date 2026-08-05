@@ -88,3 +88,9 @@ The spinful Hubbard and steady native CSR paths are suitable for continued scien
 Closure requires SR1–SR3, the full local quality gate, the corrected focused benchmark record, and an updated status statement. The existing single-machine 4x4 TenCirPauli-versus-QuSpin result remains useful positive evidence but is not changed into a cross-machine or CI performance guarantee.
 
 No production source, test, benchmark source, or benchmark result was modified by this review. Only this review report and its `docs/vibe/README.md` index entry were added as archival documentation.
+
+## Remediation closure (2026-08-05)
+
+The scoped SR1–SR3 items are closed in the subsequent implementation: `NativeChargeMvpPlan::compile_eager` releases the GIL around pure-Rust transition compilation and CSR conversion; charge and packed-U1 facades preflight dimension-dependent materialization budgets before uncached eager construction and re-check the exact transition-dependent request before publishing the cache; and `test_generic_charge_aggregation_steady_apply` now uses a mixed-domain fixture that cannot dispatch to packed U1 and asserts `strategy == "term_direct"`.
+
+The related Deep Audit Round‑2 findings are closed in the same remediation chain. The closure evidence is recorded in `audit-report-2026-08-04-round2.md` and `implementation-status.md`; the full local quality gate passed with 41 Rust tests, 331 Python tests, and 10 doctests, and the scoped focused suite passed 153 tests. The structured eager/lazy metadata note remains an explicit best-effort contract decision and does not require a neutral cache.

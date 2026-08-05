@@ -1,5 +1,5 @@
 use numpy::{PyArray1, PyReadonlyArray1, PyReadwriteArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{find_z2_symmetries, CliffordOperation, U1Sector, Z2TaperingPlan};
 
@@ -176,7 +176,7 @@ impl NativeU1RestrictedOperator {
         py: Python<'py>,
         state: PyReadonlyArray1<'py, numpy::Complex64>,
         mut output: PyReadwriteArray1<'py, numpy::Complex64>,
-        _max_bytes: usize,
+        max_bytes: usize,
     ) -> PyResult<()> {
         let state_slice = state
             .as_slice()
@@ -184,6 +184,16 @@ impl NativeU1RestrictedOperator {
         let output_slice = output
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let output_bytes = self
+            .operator
+            .dimension()
+            .checked_mul(std::mem::size_of::<numpy::Complex64>())
+            .ok_or_else(|| PyMemoryError::new_err("U1 output size overflow"))?;
+        if output_bytes > max_bytes {
+            return Err(PyMemoryError::new_err(format!(
+                "U1 MVP output requires approximately {output_bytes} bytes, exceeding max_bytes={max_bytes}"
+            )));
+        }
         py.allow_threads(|| self.operator.apply_into(state_slice, output_slice))
             .map_err(map_error)
     }
@@ -282,6 +292,16 @@ impl NativeU1MvpPlan {
         let output_slice = output
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        let output_bytes = self
+            .plan
+            .dimension()
+            .checked_mul(std::mem::size_of::<numpy::Complex64>())
+            .ok_or_else(|| PyMemoryError::new_err("U1 output size overflow"))?;
+        if output_bytes > _max_bytes {
+            return Err(PyMemoryError::new_err(format!(
+                "U1 MVP output requires approximately {output_bytes} bytes, exceeding max_bytes={_max_bytes}"
+            )));
+        }
         py.allow_threads(|| self.plan.apply_into(state_slice, output_slice))
             .map_err(map_error)
     }

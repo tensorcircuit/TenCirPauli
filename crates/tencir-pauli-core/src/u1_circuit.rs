@@ -440,6 +440,27 @@ impl U1CircuitPlan {
                 context: "estimating U1 circuit diagonal-index memory",
             })
         })?;
+        let mut static_bytes = 0_u128;
+        for gate in &gates {
+            let CompiledU1Gate::DiagonalBlock { operations } = gate else {
+                continue;
+            };
+            for operation in operations.iter() {
+                let DiagonalOp::Static { payload, .. } = operation else {
+                    continue;
+                };
+                let bytes = (payload.len() as u128)
+                    .checked_mul(size_of::<Complex64>() as u128)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating U1 circuit static payload memory",
+                    })?;
+                static_bytes = static_bytes
+                    .checked_add(bytes)
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating U1 circuit static payload memory",
+                    })?;
+            }
+        }
         let state_bytes = (dimension as u128)
             .checked_mul(size_of::<Complex64>() as u128)
             .ok_or(PauliError::Overflow {
@@ -449,6 +470,7 @@ impl U1CircuitPlan {
             basis_bytes
                 .checked_add(pair_bytes)
                 .and_then(|bytes| bytes.checked_add(diagonal_bytes))
+                .and_then(|bytes| bytes.checked_add(static_bytes))
                 .and_then(|bytes| bytes.checked_add(state_bytes))
                 .ok_or(PauliError::Overflow {
                     context: "estimating U1 circuit compiled metadata",
@@ -1091,11 +1113,13 @@ fn pair_block_matrix(block: &PairBlock, values: &[f64], inverse: bool) -> Matrix
                 pair_micro_matrix(operation, values).multiply(total)
             })
     });
-    if inverse {
-        matrix.adjoint()
-    } else {
-        matrix
-    }
+    let matrix = if inverse { matrix.adjoint() } else { matrix };
+    debug_assert!(
+        (matrix.values[0][1] - matrix.values[1][0]).norm() < 1e-12
+            && (matrix.values[0][0] - matrix.values[1][1]).norm() < 1e-12,
+        "sorted pair-map keys require symmetric pair matrices"
+    );
+    matrix
 }
 
 fn apply_pair_matrix(state: &mut [Complex64], pairs: &[PairIndex], matrix: Matrix2) {

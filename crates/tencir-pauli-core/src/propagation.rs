@@ -1503,53 +1503,8 @@ fn checked_scale(
 }
 
 pub(crate) fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f64) {
-    let code = key.code_at(wire);
-    let (mapped_code, sign) = match gate {
-        Clifford1::X => match code {
-            0 => (0, 1.0),
-            1 => (1, 1.0),
-            2 => (2, -1.0),
-            3 => (3, -1.0),
-            _ => unreachable!(),
-        },
-        Clifford1::Y => match code {
-            0 => (0, 1.0),
-            1 => (1, -1.0),
-            2 => (2, 1.0),
-            3 => (3, -1.0),
-            _ => unreachable!(),
-        },
-        Clifford1::Z => match code {
-            0 => (0, 1.0),
-            1 => (1, -1.0),
-            2 => (2, -1.0),
-            3 => (3, 1.0),
-            _ => unreachable!(),
-        },
-        Clifford1::H => match code {
-            0 => (0, 1.0),
-            1 => (3, 1.0),
-            2 => (2, -1.0),
-            3 => (1, 1.0),
-            _ => unreachable!(),
-        },
-        Clifford1::S => match code {
-            0 => (0, 1.0),
-            1 => (2, -1.0),
-            2 => (1, 1.0),
-            3 => (3, 1.0),
-            _ => unreachable!(),
-        },
-        Clifford1::Sdg => match code {
-            0 => (0, 1.0),
-            1 => (2, 1.0),
-            2 => (1, -1.0),
-            3 => (3, 1.0),
-            _ => unreachable!(),
-        },
-    };
     let mut result = key.clone();
-    result.set_code(wire, mapped_code);
+    let sign = apply_clifford1_in_place(&mut result, gate, wire);
     (result, sign)
 }
 

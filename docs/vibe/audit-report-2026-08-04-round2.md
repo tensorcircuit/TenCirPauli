@@ -290,7 +290,14 @@ Phase 7 expanded scope substantially (fermion + boson + hybrid + direct‑Weyl +
 
 ### Priority if only a subset is pursued
 1. **S‑B** (PR checklist) — cheapest, most direct structural prevention.
+
 2. **S‑A** (convention differential tests) — directly guards the project's named non‑negotiable invariant.
 3. **S‑C** (propagation regression baseline) — protects the largest competitive moat.
 
 `S‑D`/`S‑E` are medium‑term test‑density investments; `S‑F` is an owner‑decision‑level scoping question. None of the six are requests for action in this report; they are recorded so a future owner can choose to invest, and so the next audit can reference them rather than re‑deriving the pattern from scratch.
+
+## Remediation closure (2026-08-05)
+
+All 17 surviving Round‑2 findings are closed in the current implementation. The high-severity canonical and numerical findings have regression coverage for hybrid qudit identity aggregation and large-dimension Weyl phase reduction; the parallel CSR branch, lazy U1 budget preflight, and eager `apply_into` budget parity are covered by focused tests. The remaining production hardening covers propagation value-only parameter evaluation, batch estimate overflow handling, hybrid mapping validation parity, U1 static-payload accounting and pair-map invariants, Clifford-map deduplication, lowercase Pauli input, invalid ndarray state diagnostics, charge/U1 output guards, and precise private native stubs. The dead charge FFI entry points were removed, so R2-17 is intentionally moot rather than independently changed.
+
+The Phase 8.5 second-round acceptance items SR1–SR3 are also closed: generic eager transition compilation releases the GIL, dense/COO/CSR materialization performs target-budget preflight before uncached construction, and the generic aggregation benchmark uses a mixed-domain fixture with an explicit `term_direct` assertion. `conda run -p .conda python scripts/check.py --benchmark skip` passed Black, Ruff, strict mypy, Clippy, release maturin build, 41 Rust tests, 331 Python tests, and 10 doctests; the affected focused suite passed 153 tests. Benchmark results remain informational and machine-specific as required by the project policy.
