@@ -173,6 +173,49 @@ def test_batch_rejects_budget_smaller_than_one_worker_at_construction() -> None:
         )
 
 
+def test_wide_weight_projected_batch_uses_projected_storage_bound() -> None:
+    tape = advanced.GateTape(64)
+    for wire in range(64):
+        tape.ry(wire, parameter=wire)
+    observable = tcp.PauliOperator.from_terms(64, [("X" + "I" * 63, 1.0)])
+    batch = tcp.PropagationBatch(
+        tape,
+        [observable],
+        max_weight=1,
+        max_bytes=None,
+    )
+    parameters = np.linspace(-0.2, 0.3, 64)
+    scalar = advanced.PropagationEngine(
+        tape,
+        observable,
+        max_weight=1,
+        max_bytes=None,
+    )
+    np.testing.assert_array_equal(
+        batch.expectations(parameters),
+        [scalar.expectation(parameters)],
+    )
+
+    wider_tape = advanced.GateTape(128)
+    for wire in range(128):
+        wider_tape.ry(wire, parameter=wire)
+    wider_observable = tcp.PauliOperator.from_terms(128, [("X" + "I" * 127, 1.0)])
+    wider = tcp.PropagationBatch(
+        wider_tape,
+        [wider_observable],
+        max_weight=2,
+        max_bytes=None,
+    )
+    assert wider.nqubits == 128
+    with pytest.raises(MemoryError, match="memory limit"):
+        tcp.PropagationBatch(
+            wider_tape,
+            [wider_observable],
+            max_weight=2,
+            max_bytes=1024,
+        )
+
+
 def test_batch_concurrent_calls_are_isolated() -> None:
     tape = _tape()
     batch = tcp.PropagationBatch(tape, _observables(16))

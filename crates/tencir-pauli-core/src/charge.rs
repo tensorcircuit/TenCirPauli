@@ -152,6 +152,24 @@ pub struct ChargeTransitionPlanLayout<'a> {
     pub max_bytes: u128,
 }
 
+/// Owned charge-sector layout validated once for repeated native execution.
+pub struct PreparedChargeTransitionPlanLayout {
+    dimension: usize,
+    local_dimensions: Vec<u64>,
+    fermion_positions: Vec<usize>,
+    boson_positions: Vec<usize>,
+    qubit_positions: Vec<usize>,
+    qudit_positions: Vec<usize>,
+    qudit_dimension: u64,
+    estimated_bytes: u128,
+}
+
+impl PreparedChargeTransitionPlanLayout {
+    pub fn estimated_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+}
+
 fn invalid_sector() -> PauliError {
     PauliError::InvalidSector {
         context: "invalid charge-sector transition input",
@@ -206,6 +224,85 @@ fn validate_qudit_term(
         return Err(PauliError::NonCanonicalTerms { index });
     }
     Ok(())
+}
+
+/// Convert and validate immutable charge layout and term metadata once.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_charge_transition_plan_layout(
+    plan: &ChargeSectorPlan,
+    dimension: usize,
+    local_dimensions: Vec<u64>,
+    fermion_positions: &[u64],
+    boson_positions: &[u64],
+    qubit_positions: &[u64],
+    qudit_positions: &[u64],
+    qudit_dimension: u64,
+    terms: &[ChargeTransitionTerm],
+    max_bytes: u128,
+) -> Result<PreparedChargeTransitionPlanLayout, PauliError> {
+    let axis_count = local_dimensions.len();
+    if dimension != plan.dimension()
+        || plan.local_dimensions().len() != axis_count
+        || plan
+            .local_dimensions()
+            .iter()
+            .zip(&local_dimensions)
+            .any(|(&left, &right)| u64::try_from(left).ok() != Some(right))
+        || local_dimensions.contains(&0)
+    {
+        return Err(invalid_sector());
+    }
+    let retained_positions = fermion_positions
+        .len()
+        .checked_add(boson_positions.len())
+        .and_then(|value| value.checked_add(qubit_positions.len()))
+        .and_then(|value| value.checked_add(qudit_positions.len()))
+        .ok_or(PauliError::Overflow {
+            context: "estimating prepared charge layout storage",
+        })?;
+    let estimated_bytes = (local_dimensions.len() as u128)
+        .checked_mul(std::mem::size_of::<u64>() as u128)
+        .and_then(|local_bytes| {
+            (retained_positions as u128)
+                .checked_mul(std::mem::size_of::<usize>() as u128)
+                .and_then(|position_bytes| local_bytes.checked_add(position_bytes))
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating prepared charge layout storage",
+        })?;
+    if estimated_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: estimated_bytes,
+            limit: max_bytes,
+        });
+    }
+    let fermion_positions = positions(fermion_positions, axis_count, max_bytes)?;
+    let boson_positions = positions(boson_positions, axis_count, max_bytes)?;
+    let qubit_positions = positions(qubit_positions, axis_count, max_bytes)?;
+    let qudit_positions = positions(qudit_positions, axis_count, max_bytes)?;
+    for (index, term) in terms.iter().enumerate() {
+        if term.qubit_codes.len() != qubit_positions.len()
+            || term.mapped_codes.len() != fermion_positions.len()
+            || (term.mapped_present
+                && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
+        {
+            return Err(invalid_sector());
+        }
+        validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
+        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
+            return Err(PauliError::NonFiniteCoefficient { index });
+        }
+    }
+    Ok(PreparedChargeTransitionPlanLayout {
+        dimension,
+        local_dimensions,
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        qudit_dimension,
+        estimated_bytes,
+    })
 }
 
 fn apply_phase(value: &mut Complex64, phase: Complex64) {
@@ -1122,36 +1219,22 @@ pub fn compile_charge_transitions(
 /// essential for wide layouts whose selected sector still fits platform
 /// indices. Destination aggregation still happens before sector membership is
 /// checked.
-pub fn compile_charge_transitions_from_plan(
+pub fn compile_charge_transitions_from_prepared_plan(
     plan: &ChargeSectorPlan,
-    layout: ChargeTransitionPlanLayout<'_>,
+    layout: &PreparedChargeTransitionPlanLayout,
     terms: &[ChargeTransitionTerm],
+    max_bytes: u128,
 ) -> Result<ChargeTransitionResult, PauliError> {
-    let ChargeTransitionPlanLayout {
-        dimension,
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        qudit_dimension,
-        max_bytes,
-    } = layout;
+    let dimension = layout.dimension;
+    let local_dimensions = &layout.local_dimensions;
+    let fermion_positions = &layout.fermion_positions;
+    let boson_positions = &layout.boson_positions;
+    let qubit_positions = &layout.qubit_positions;
+    let qudit_positions = &layout.qudit_positions;
+    let qudit_dimension = layout.qudit_dimension;
     let axis_count = local_dimensions.len();
-    if dimension != plan.dimension()
-        || plan.local_dimensions().len() != axis_count
-        || plan
-            .local_dimensions()
-            .iter()
-            .zip(local_dimensions)
-            .any(|(&left, &right)| u64::try_from(left).ok() != Some(right))
-    {
+    if dimension != plan.dimension() {
         return Err(invalid_sector());
-    }
-    for &local_dimension in local_dimensions {
-        if local_dimension == 0 {
-            return Err(invalid_sector());
-        }
     }
     let scratch_bytes = axis_count
         .checked_mul(std::mem::size_of::<u64>())
@@ -1161,23 +1244,6 @@ pub fn compile_charge_transitions_from_plan(
             context: "estimating charge-sector transition workspace",
         })?;
     check_bytes(1, scratch_bytes, max_bytes)?;
-    let fermion_positions = positions(fermion_positions, axis_count, max_bytes)?;
-    let boson_positions = positions(boson_positions, axis_count, max_bytes)?;
-    let qubit_positions = positions(qubit_positions, axis_count, max_bytes)?;
-    let qudit_positions = positions(qudit_positions, axis_count, max_bytes)?;
-    for (index, term) in terms.iter().enumerate() {
-        if term.qubit_codes.len() != qubit_positions.len()
-            || term.mapped_codes.len() != fermion_positions.len()
-            || (term.mapped_present
-                && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
-        {
-            return Err(invalid_sector());
-        }
-        validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
-        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
-    }
 
     let mut source = vec![0_u64; axis_count];
     let mut destination = vec![0_u64; axis_count];
@@ -1212,7 +1278,7 @@ pub fn compile_charge_transitions_from_plan(
                 &mut destination,
                 &term.fermion_creation,
                 &term.fermion_annihilation,
-                &fermion_positions,
+                fermion_positions,
                 &mut value,
             )? {
                 continue;
@@ -1220,7 +1286,7 @@ pub fn compile_charge_transitions_from_plan(
             if !apply_bosons(
                 &mut destination,
                 &term.boson_blocks,
-                &boson_positions,
+                boson_positions,
                 local_dimensions,
                 &mut value,
             )? {
@@ -1229,14 +1295,14 @@ pub fn compile_charge_transitions_from_plan(
             apply_pauli(
                 &mut destination,
                 &term.qubit_codes,
-                &qubit_positions,
+                qubit_positions,
                 &mut value,
             )?;
             if term.mapped_present {
                 apply_pauli(
                     &mut destination,
                     &term.mapped_codes,
-                    &fermion_positions,
+                    fermion_positions,
                     &mut value,
                 )?;
             }
@@ -1244,7 +1310,7 @@ pub fn compile_charge_transitions_from_plan(
                 apply_qudits(
                     &mut destination,
                     &term.qudit_triples,
-                    &qudit_positions,
+                    qudit_positions,
                     qudit_dimension,
                     &mut value,
                 )?;
@@ -1295,6 +1361,36 @@ pub fn compile_charge_transitions_from_plan(
     Ok((rows, columns, coefficients))
 }
 
+/// Compile transitions from a borrowed layout, preserving the original
+/// one-shot API while routing reusable native handles through the prepared
+/// counterpart.
+pub fn compile_charge_transitions_from_plan(
+    plan: &ChargeSectorPlan,
+    layout: ChargeTransitionPlanLayout<'_>,
+    terms: &[ChargeTransitionTerm],
+) -> Result<ChargeTransitionResult, PauliError> {
+    let prepared = prepare_charge_transition_plan_layout(
+        plan,
+        layout.dimension,
+        layout.local_dimensions.to_vec(),
+        layout.fermion_positions,
+        layout.boson_positions,
+        layout.qubit_positions,
+        layout.qudit_positions,
+        layout.qudit_dimension,
+        terms,
+        layout.max_bytes,
+    )?;
+    let remaining = layout
+        .max_bytes
+        .checked_sub(prepared.estimated_bytes())
+        .ok_or(PauliError::MemoryLimit {
+            requested: prepared.estimated_bytes(),
+            limit: layout.max_bytes,
+        })?;
+    compile_charge_transitions_from_prepared_plan(plan, &prepared, terms, remaining)
+}
+
 /// Apply a structured operator directly against a reusable charge-sector plan.
 ///
 /// This is the explicitly lazy counterpart to
@@ -1303,13 +1399,14 @@ pub fn compile_charge_transitions_from_plan(
 /// retain the full restricted transition graph. Destination terms are
 /// aggregated before sector membership is checked, preserving the same exact
 /// cancellation semantics as eager compilation.
-pub fn apply_charge_mvp_from_plan(
+pub fn apply_charge_mvp_from_prepared_plan(
     plan: &ChargeSectorPlan,
-    layout: ChargeTransitionPlanLayout<'_>,
+    layout: &PreparedChargeTransitionPlanLayout,
     terms: &[ChargeTransitionTerm],
     state: &[Complex64],
     termwise_conserved: bool,
     fast_fermion_plan: Option<&FastFermionMvpPlan>,
+    max_bytes: u128,
 ) -> Result<Vec<Complex64>, PauliError> {
     let dimension = layout.dimension;
     let output_bytes = dimension
@@ -1317,14 +1414,14 @@ pub fn apply_charge_mvp_from_plan(
         .ok_or(PauliError::Overflow {
             context: "estimating charge MVP output",
         })?;
-    if output_bytes as u128 > layout.max_bytes {
+    if output_bytes as u128 > max_bytes {
         return Err(PauliError::MemoryLimit {
             requested: output_bytes as u128,
-            limit: layout.max_bytes,
+            limit: max_bytes,
         });
     }
     let mut output = vec![Complex64::new(0.0, 0.0); dimension];
-    apply_charge_mvp_from_plan_into(
+    apply_charge_mvp_from_prepared_plan_into(
         plan,
         layout,
         terms,
@@ -1332,45 +1429,31 @@ pub fn apply_charge_mvp_from_plan(
         &mut output,
         termwise_conserved,
         fast_fermion_plan,
+        max_bytes,
     )?;
     Ok(output)
 }
 
-pub fn apply_charge_mvp_from_plan_into(
+#[allow(clippy::too_many_arguments)]
+pub fn apply_charge_mvp_from_prepared_plan_into(
     plan: &ChargeSectorPlan,
-    layout: ChargeTransitionPlanLayout<'_>,
+    layout: &PreparedChargeTransitionPlanLayout,
     terms: &[ChargeTransitionTerm],
     state: &[Complex64],
     output: &mut [Complex64],
     termwise_conserved: bool,
     fast_fermion_plan: Option<&FastFermionMvpPlan>,
+    max_bytes: u128,
 ) -> Result<(), PauliError> {
-    let ChargeTransitionPlanLayout {
-        dimension,
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        qudit_dimension,
-        max_bytes,
-    } = layout;
-    if dimension != plan.dimension()
-        || state.len() != dimension
-        || output.len() != dimension
-        || plan.local_dimensions().len() != local_dimensions.len()
-        || plan
-            .local_dimensions()
-            .iter()
-            .zip(local_dimensions)
-            .any(|(&left, &right)| u64::try_from(left).ok() != Some(right))
-    {
+    let dimension = layout.dimension;
+    let local_dimensions = &layout.local_dimensions;
+    let fermion_positions = &layout.fermion_positions;
+    let boson_positions = &layout.boson_positions;
+    let qubit_positions = &layout.qubit_positions;
+    let qudit_positions = &layout.qudit_positions;
+    let qudit_dimension = layout.qudit_dimension;
+    if dimension != plan.dimension() || state.len() != dimension || output.len() != dimension {
         return Err(invalid_sector());
-    }
-    for &local_dimension in local_dimensions {
-        if local_dimension == 0 {
-            return Err(invalid_sector());
-        }
     }
 
     // The cached spinful kernel has no execution-time major allocation. Run it
@@ -1406,24 +1489,6 @@ pub fn apply_charge_mvp_from_plan_into(
         })?;
     check_bytes(1, scratch_bytes, scratch_limit)?;
 
-    let fermion_positions = positions(fermion_positions, axis_count, scratch_limit)?;
-    let boson_positions = positions(boson_positions, axis_count, scratch_limit)?;
-    let qubit_positions = positions(qubit_positions, axis_count, scratch_limit)?;
-    let qudit_positions = positions(qudit_positions, axis_count, scratch_limit)?;
-    for (index, term) in terms.iter().enumerate() {
-        if term.qubit_codes.len() != qubit_positions.len()
-            || term.mapped_codes.len() != fermion_positions.len()
-            || (term.mapped_present
-                && (!term.fermion_creation.is_empty() || !term.fermion_annihilation.is_empty()))
-        {
-            return Err(invalid_sector());
-        }
-        validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
-        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
-    }
-
     let destination_entry_bytes = 64usize
         .checked_add(axis_count.checked_mul(std::mem::size_of::<u64>()).ok_or(
             PauliError::Overflow {
@@ -1458,10 +1523,10 @@ pub fn apply_charge_mvp_from_plan_into(
                     &mut destination,
                     term,
                     local_dimensions,
-                    &fermion_positions,
-                    &boson_positions,
-                    &qubit_positions,
-                    &qudit_positions,
+                    fermion_positions,
+                    boson_positions,
+                    qubit_positions,
+                    qudit_positions,
                     qudit_dimension,
                 )?
                 else {
@@ -1486,10 +1551,10 @@ pub fn apply_charge_mvp_from_plan_into(
                     &mut destination,
                     term,
                     local_dimensions,
-                    &fermion_positions,
-                    &boson_positions,
-                    &qubit_positions,
-                    &qudit_positions,
+                    fermion_positions,
+                    boson_positions,
+                    qubit_positions,
+                    qudit_positions,
                     qudit_dimension,
                 )?
                 else {
@@ -1520,4 +1585,84 @@ pub fn apply_charge_mvp_from_plan_into(
         }
     }
     Ok(())
+}
+
+/// Apply through the original borrowed-layout API.
+pub fn apply_charge_mvp_from_plan(
+    plan: &ChargeSectorPlan,
+    layout: ChargeTransitionPlanLayout<'_>,
+    terms: &[ChargeTransitionTerm],
+    state: &[Complex64],
+    termwise_conserved: bool,
+    fast_fermion_plan: Option<&FastFermionMvpPlan>,
+) -> Result<Vec<Complex64>, PauliError> {
+    let prepared = prepare_charge_transition_plan_layout(
+        plan,
+        layout.dimension,
+        layout.local_dimensions.to_vec(),
+        layout.fermion_positions,
+        layout.boson_positions,
+        layout.qubit_positions,
+        layout.qudit_positions,
+        layout.qudit_dimension,
+        terms,
+        layout.max_bytes,
+    )?;
+    let remaining = layout
+        .max_bytes
+        .checked_sub(prepared.estimated_bytes())
+        .ok_or(PauliError::MemoryLimit {
+            requested: prepared.estimated_bytes(),
+            limit: layout.max_bytes,
+        })?;
+    apply_charge_mvp_from_prepared_plan(
+        plan,
+        &prepared,
+        terms,
+        state,
+        termwise_conserved,
+        fast_fermion_plan,
+        remaining,
+    )
+}
+
+/// Apply into caller-owned output through the original borrowed-layout API.
+pub fn apply_charge_mvp_from_plan_into(
+    plan: &ChargeSectorPlan,
+    layout: ChargeTransitionPlanLayout<'_>,
+    terms: &[ChargeTransitionTerm],
+    state: &[Complex64],
+    output: &mut [Complex64],
+    termwise_conserved: bool,
+    fast_fermion_plan: Option<&FastFermionMvpPlan>,
+) -> Result<(), PauliError> {
+    let prepared = prepare_charge_transition_plan_layout(
+        plan,
+        layout.dimension,
+        layout.local_dimensions.to_vec(),
+        layout.fermion_positions,
+        layout.boson_positions,
+        layout.qubit_positions,
+        layout.qudit_positions,
+        layout.qudit_dimension,
+        terms,
+        layout.max_bytes,
+    )?;
+    let remaining = layout
+        .max_bytes
+        .checked_sub(prepared.estimated_bytes())
+        .ok_or(PauliError::MemoryLimit {
+            requested: prepared.estimated_bytes(),
+            limit: layout.max_bytes,
+        })?;
+    apply_charge_mvp_from_prepared_plan_into(
+        plan,
+        &prepared,
+        terms,
+        state,
+        output,
+        termwise_conserved,
+        fast_fermion_plan,
+        remaining,
+    )
 }

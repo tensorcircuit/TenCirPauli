@@ -569,8 +569,7 @@ impl PropagationBatch {
             .map(|observable| observable.terms().len())
             .max()
             .unwrap_or(0);
-        let per_worker_bytes =
-            estimate_batch_worker_bytes(&program, maximum_terms, None).unwrap_or(usize::MAX);
+        let per_worker_bytes = estimate_batch_worker_bytes(&program, maximum_terms, None)?;
         let base_bytes = observable_bytes
             .checked_add(program.transition_bytes)
             .and_then(|bytes| bytes.checked_add(output_bytes))
@@ -848,12 +847,24 @@ fn estimate_batch_worker_bytes(
         .map(|operation| branch_exponent(operation_branch_factor(operation)))
         .fold(0usize, usize::saturating_add)
         .min(program.nqubits);
-    let growth = checked_pow_two(growth_exponent)?;
-    let propagated_terms = initial_terms
-        .checked_mul(growth)
-        .ok_or(PauliError::Overflow {
-            context: "estimating propagation batch term growth",
-        })?;
+    let propagated_terms = if let Some(max_weight) = program.max_weight {
+        let projected_bound = projected_pauli_word_bound(program.nqubits, max_weight)?;
+        let projected_growth = checked_pow_two(growth_exponent)
+            .ok()
+            .and_then(|growth| initial_terms.checked_mul(growth))
+            .map_or(projected_bound, |terms| terms.min(projected_bound));
+        // Projection is applied after a gate's contributions are aggregated,
+        // so the initial observable can temporarily contain more terms than
+        // the projected universe itself.
+        initial_terms.max(projected_growth)
+    } else {
+        let growth = checked_pow_two(growth_exponent)?;
+        initial_terms
+            .checked_mul(growth)
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation batch term growth",
+            })?
+    };
     let maximum_branch = program
         .operations
         .iter()
@@ -918,6 +929,47 @@ fn estimate_batch_worker_bytes(
         .ok_or(PauliError::Overflow {
             context: "estimating propagation batch worker storage",
         })
+}
+
+/// Return the number of Pauli words with weight at most `max_weight`.
+///
+/// The bound is `sum_w C(nqubits, w) * 3^w`. Intermediate binomial products
+/// use `u128`, which is wide enough for the product of two platform-sized
+/// values, and every completed term is required to fit the platform index
+/// space before it can influence an allocation estimate.
+fn projected_pauli_word_bound(nqubits: usize, max_weight: usize) -> Result<usize, PauliError> {
+    let maximum_weight = max_weight.min(nqubits);
+    let mut combinations = 1_u128;
+    let mut pauli_choices = 1_u128;
+    let mut total = 1_u128;
+    let platform_limit = usize::MAX as u128;
+    for weight in 1..=maximum_weight {
+        combinations = combinations
+            .checked_mul((nqubits - weight + 1) as u128)
+            .and_then(|value| value.checked_div(weight as u128))
+            .ok_or(PauliError::Overflow {
+                context: "estimating weight-projected Pauli universe",
+            })?;
+        pauli_choices = pauli_choices.checked_mul(3).ok_or(PauliError::Overflow {
+            context: "estimating weight-projected Pauli universe",
+        })?;
+        let words = combinations
+            .checked_mul(pauli_choices)
+            .ok_or(PauliError::Overflow {
+                context: "estimating weight-projected Pauli universe",
+            })?;
+        total = total.checked_add(words).ok_or(PauliError::Overflow {
+            context: "estimating weight-projected Pauli universe",
+        })?;
+        if total > platform_limit {
+            return Err(PauliError::Overflow {
+                context: "estimating weight-projected Pauli universe",
+            });
+        }
+    }
+    usize::try_from(total).map_err(|_| PauliError::Overflow {
+        context: "estimating weight-projected Pauli universe",
+    })
 }
 
 fn branch_exponent(branch_factor: usize) -> usize {

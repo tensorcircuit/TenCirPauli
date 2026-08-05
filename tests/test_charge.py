@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -287,63 +288,124 @@ def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
     np.testing.assert_allclose(actual, expected)
 
 
-def test_spinful_fermion_lazy_fast_path_matches_generic_and_eager() -> None:
-    space = tcp.OperatorSpace(fermions=4)
-    operator = tcp.FermionOperator.from_terms(
-        4,
-        [
-            (((0, "create"), (0, "annihilate"), (2, "create"), (2, "annihilate")), 3.0),
-            (((0, "create"), (1, "annihilate")), -1.0),
-            (((1, "create"), (0, "annihilate")), -1.0),
-            (((2, "create"), (3, "annihilate")), -1.0),
-            (((3, "create"), (2, "annihilate")), -1.0),
-        ],
-    )
-    total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
-    balance = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: -1, 3: -1})
-    sector = tcp.ChargeSector(((total, 2), (balance, 0)))
-    eager = operator.restrict_charge(sector, storage="eager")
-    fast = operator.restrict_charge(sector, storage="lazy")
-    mixed_space = tcp.OperatorSpace(fermions=4, bosons=1)
-    # The boson spectator makes the generic native backend ineligible for the
-    # spinful shortcut without retaining a duplicate Python descriptor graph.
-    mixed_operator = (
-        mixed_space.fermion.create(0)
-        * mixed_space.fermion.annihilate(0)
-        * mixed_space.fermion.create(2)
-        * mixed_space.fermion.annihilate(2)
-        * 3.0
-    )
-    mixed_operator = (
-        mixed_operator
-        + (
-            mixed_space.fermion.create(0) * mixed_space.fermion.annihilate(1)
-            + mixed_space.fermion.create(1) * mixed_space.fermion.annihilate(0)
-            + mixed_space.fermion.create(2) * mixed_space.fermion.annihilate(3)
-            + mixed_space.fermion.create(3) * mixed_space.fermion.annihilate(2)
-        )
-        * -1.0
-    )
-    mixed_sector = tcp.ChargeSector(
+def _spinful_terms(
+    sites: int,
+) -> list[tuple[tuple[tuple[int, str], ...], complex]]:
+    hopping = 0.7 + 0.2j
+    terms = [
         (
             (
-                tcp.AdditiveCharge(
-                    mixed_space, fermions={index: 1 for index in range(4)}
-                ),
-                2,
+                (0, "create"),
+                (0, "annihilate"),
+                (sites, "create"),
+                (sites, "annihilate"),
             ),
-            (
-                tcp.AdditiveCharge(mixed_space, fermions={0: 1, 1: 1, 2: -1, 3: -1}),
-                0,
-            ),
+            1.3 + 0.0j,
         ),
-        boson_cutoffs={0: 0},
+        (((0, "create"), (1, "annihilate")), hopping),
+        (((1, "create"), (0, "annihilate")), hopping.conjugate()),
+        (((sites, "create"), (sites + 1, "annihilate")), -hopping),
+        (((sites + 1, "create"), (sites, "annihilate")), -hopping.conjugate()),
+        (
+            (
+                (0, "create"),
+                (sites + 1, "create"),
+                (1, "annihilate"),
+                (sites, "annihilate"),
+            ),
+            0.0 + 0.35j,
+        ),
+        (
+            (
+                (sites, "create"),
+                (1, "create"),
+                (sites + 1, "annihilate"),
+                (0, "annihilate"),
+            ),
+            0.0 - 0.35j,
+        ),
+        (((0, "create"), (0, "annihilate")), 0.25 + 0.0j),
+        (((0, "create"), (0, "annihilate")), -0.25 + 0.0j),
+        (((1, "create"), (1, "annihilate")), 0.0 + 0.0j),
+    ]
+    return terms
+
+
+def _operator_from_ladder_terms(
+    space: tcp.OperatorSpace,
+    terms: list[tuple[tuple[tuple[int, str], ...], complex]],
+) -> Any:
+    operator: Any = None
+    for operations, coefficient in terms:
+        term: Any = None
+        for mode, action in operations:
+            factor = getattr(space.fermion, action)(mode)
+            term = factor if term is None else term * factor
+        term = term * coefficient
+        operator = term if operator is None else operator + term
+    return operator
+
+
+def _spinful_sector(
+    space: tcp.OperatorSpace, sites: int, particles: int, *, boson: bool = False
+) -> tcp.ChargeSector:
+    total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(2 * sites)})
+    balance = tcp.AdditiveCharge(
+        space,
+        fermions={index: (1 if index < sites else -1) for index in range(2 * sites)},
     )
-    generic = mixed_operator.restrict_charge(mixed_sector)
-    state = np.asarray([0.3 - 0.2j, -0.4 + 0.1j, 0.7 + 0.5j, -0.2 - 0.6j])
-    fast.mvp_plan().apply_into(state, np.empty_like(state), max_bytes=0)
-    np.testing.assert_allclose(fast.apply(state), generic.apply(state))
-    np.testing.assert_allclose(fast.apply(state), eager.apply(state))
+    return tcp.ChargeSector(
+        ((total, 2 * particles), (balance, 0)),
+        boson_cutoffs={0: 0} if boson else None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("sites", "particles"),
+    [(sites, particles) for sites in range(2, 7) for particles in range(1, sites + 1)],
+)
+def test_spinful_fermion_fast_path_matches_generic_and_eager_across_fillings(
+    sites: int, particles: int
+) -> None:
+    terms = _spinful_terms(sites)
+    space = tcp.OperatorSpace(fermions=2 * sites)
+    operator = tcp.FermionOperator.from_terms(2 * sites, terms)
+    sector = _spinful_sector(space, sites, particles)
+    fast = operator.restrict_charge(sector, storage="lazy")
+    eager = operator.restrict_charge(sector, storage="eager")
+
+    # A zero-cutoff boson spectator preserves the basis while making the
+    # spinful shortcut ineligible, yielding a durable generic differential.
+    mixed_space = tcp.OperatorSpace(fermions=2 * sites, bosons=1)
+    mixed_operator = _operator_from_ladder_terms(mixed_space, terms)
+    generic = mixed_operator.restrict_charge(
+        _spinful_sector(mixed_space, sites, particles, boson=True)
+    )
+    state = np.arange(fast.dimension, dtype=np.float64).astype(np.complex128)
+    state += 0.125j * state[::-1]
+    output = np.empty_like(state)
+    fast.mvp_plan().apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, generic.apply(state))
+    np.testing.assert_allclose(output, eager.apply(state))
+
+
+def test_spinful_fermion_combinatorial_rank_fallback_matches_generic() -> None:
+    # More than 20 sites deterministically disables the dense rank table while
+    # a one-particle-per-spin sector keeps the differential compact.
+    sites = 21
+    particles = 1
+    terms = _spinful_terms(sites)
+    space = tcp.OperatorSpace(fermions=2 * sites)
+    operator = tcp.FermionOperator.from_terms(2 * sites, terms)
+    fast = operator.restrict_charge(_spinful_sector(space, sites, particles))
+    mixed_space = tcp.OperatorSpace(fermions=2 * sites, bosons=1)
+    generic = _operator_from_ladder_terms(mixed_space, terms).restrict_charge(
+        _spinful_sector(mixed_space, sites, particles, boson=True)
+    )
+    state = np.linspace(-0.3, 0.8, fast.dimension).astype(np.complex128)
+    output = np.empty_like(state)
+    fast.mvp_plan().apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, generic.apply(state))
 
 
 def test_qudit_spectator_is_retained_in_restricted_execution() -> None:

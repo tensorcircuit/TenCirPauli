@@ -21,9 +21,12 @@ mod word;
 
 pub use charge::{
     apply_charge_csr_into, apply_charge_mvp_from_plan, apply_charge_mvp_from_plan_into,
+    apply_charge_mvp_from_prepared_plan, apply_charge_mvp_from_prepared_plan_into,
     build_fast_fermion_mvp_plan, compile_charge_transitions, compile_charge_transitions_from_plan,
-    estimate_charge_transition_terms_bytes, ChargeTransitionLayout, ChargeTransitionPlanLayout,
+    compile_charge_transitions_from_prepared_plan, estimate_charge_transition_terms_bytes,
+    prepare_charge_transition_plan_layout, ChargeTransitionLayout, ChargeTransitionPlanLayout,
     ChargeTransitionResult, ChargeTransitionTerm, FastFermionMvpPlan,
+    PreparedChargeTransitionPlanLayout,
 };
 pub use charge_sector::{
     build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,

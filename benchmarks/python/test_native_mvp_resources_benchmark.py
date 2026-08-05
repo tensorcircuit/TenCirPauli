@@ -308,6 +308,48 @@ def test_generic_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) ->
     assert result.shape == state.shape
 
 
+def test_generic_charge_prepared_layout_apply_into(
+    benchmark: BenchmarkFixture,
+) -> None:
+    # Keep the sector small while using enough canonical descriptors to make
+    # any repeated O(T) plan validation visible in steady execution.
+    space = tcp.OperatorSpace(bosons=1, qubits=6)
+    number = tcp.AdditiveCharge(
+        space,
+        bosons={0: 0},
+        qubits={index: (0, 1) for index in range(space.qubits)},
+    )
+    operator: Any = None
+    for mask in range(1, 1 << space.qubits):
+        term: Any = None
+        for qubit in range(space.qubits):
+            if mask & (1 << qubit):
+                factor = space.qubit.z(qubit)
+                term = factor if term is None else term * factor
+        term = term * (1.0 / mask)
+        operator = term if operator is None else operator + term
+    restricted = operator.restrict_charge(number.sector(3, boson_cutoffs={0: 0}))
+    plan = restricted.mvp_plan()
+    assert plan.strategy == "term_direct"
+    state = np.linspace(-0.5, 0.75, plan.dimension).astype(np.complex128)
+    output = np.empty_like(state)
+    benchmark(plan.apply_into, state, output)
+    expected = plan.apply(state)
+    _record_plan_metadata(
+        benchmark,
+        plan,
+        state,
+        allocation_mode="caller_owned_output",
+        max_abs_error=float(np.max(np.abs(output - expected))),
+    )
+    benchmark.extra_info.update(
+        {
+            "native_layout_conversions_per_apply": 0,
+            "native_term_validation_passes_per_apply": 0,
+        }
+    )
+
+
 def test_generic_charge_eager_construction(benchmark: BenchmarkFixture) -> None:
     plan = benchmark(lambda: _hubbard_restricted(1, 4).mvp_plan(storage="eager"))
     assert plan.strategy == "destination_major_csr"

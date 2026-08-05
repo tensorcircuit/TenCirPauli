@@ -3,10 +3,12 @@ use std::sync::Arc;
 use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    apply_charge_csr_into, apply_charge_mvp_from_plan, apply_charge_mvp_from_plan_into,
-    build_charge_sector_plan, build_compact_charge_sector_plan, build_fast_fermion_mvp_plan,
-    compile_charge_transitions_from_plan, estimate_charge_transition_terms_bytes, ChargeSectorPlan,
-    ChargeTransitionPlanLayout, ChargeTransitionTerm, Complex64, FastFermionMvpPlan, PauliError,
+    apply_charge_csr_into, apply_charge_mvp_from_prepared_plan,
+    apply_charge_mvp_from_prepared_plan_into, build_charge_sector_plan,
+    build_compact_charge_sector_plan, build_fast_fermion_mvp_plan,
+    compile_charge_transitions_from_prepared_plan, estimate_charge_transition_terms_bytes,
+    prepare_charge_transition_plan_layout, ChargeSectorPlan, ChargeTransitionTerm, Complex64,
+    FastFermionMvpPlan, PauliError, PreparedChargeTransitionPlanLayout,
 };
 
 use crate::convert::{map_error, split_complex};
@@ -187,7 +189,22 @@ impl NativeChargeSectorPlan {
             ));
         }
         let base_bytes = charge_plan_base_bytes(&self.plan, &terms).map_err(map_error)?;
-        let fast_budget = charge_remaining_budget(max_bytes, base_bytes).map_err(map_error)?;
+        let layout_budget = charge_remaining_budget(max_bytes, base_bytes).map_err(map_error)?;
+        let layout = prepare_charge_transition_plan_layout(
+            &self.plan,
+            dimension,
+            local_dimensions.clone(),
+            &fermion_positions,
+            &boson_positions,
+            &qubit_positions,
+            &qudit_positions,
+            qudit_dimension,
+            &terms,
+            layout_budget,
+        )
+        .map_err(map_error)?;
+        let fast_budget =
+            charge_remaining_budget(layout_budget, layout.estimated_bytes()).map_err(map_error)?;
         let fast_fermion_plan = if termwise_conserved {
             build_fast_fermion_mvp_plan(
                 &self.plan,
@@ -206,12 +223,7 @@ impl NativeChargeSectorPlan {
         };
         Ok(NativeChargeMvpPlan {
             plan: Arc::clone(&self.plan),
-            local_dimensions,
-            fermion_positions,
-            boson_positions,
-            qubit_positions,
-            qudit_positions,
-            qudit_dimension,
+            layout,
             terms,
             termwise_conserved,
             fast_fermion_plan,
@@ -222,12 +234,7 @@ impl NativeChargeSectorPlan {
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeMvpPlan {
     plan: Arc<ChargeSectorPlan>,
-    local_dimensions: Vec<u64>,
-    fermion_positions: Vec<u64>,
-    boson_positions: Vec<u64>,
-    qubit_positions: Vec<u64>,
-    qudit_positions: Vec<u64>,
-    qudit_dimension: u64,
+    layout: PreparedChargeTransitionPlanLayout,
     terms: Vec<ChargeTransitionTerm>,
     termwise_conserved: bool,
     fast_fermion_plan: Option<FastFermionMvpPlan>,
@@ -247,6 +254,7 @@ impl NativeChargeMvpPlan {
             .saturating_add(
                 estimate_charge_transition_terms_bytes(&self.terms).unwrap_or(u128::MAX),
             )
+            .saturating_add(self.layout.estimated_bytes())
             .saturating_add(
                 self.fast_fermion_plan
                     .as_ref()
@@ -272,22 +280,14 @@ impl NativeChargeMvpPlan {
         }
         let result = py
             .allow_threads(|| {
-                apply_charge_mvp_from_plan(
+                apply_charge_mvp_from_prepared_plan(
                     &self.plan,
-                    ChargeTransitionPlanLayout {
-                        dimension: self.dimension(),
-                        local_dimensions: &self.local_dimensions,
-                        fermion_positions: &self.fermion_positions,
-                        boson_positions: &self.boson_positions,
-                        qubit_positions: &self.qubit_positions,
-                        qudit_positions: &self.qudit_positions,
-                        qudit_dimension: self.qudit_dimension,
-                        max_bytes,
-                    },
+                    &self.layout,
                     &self.terms,
                     state_values,
                     self.termwise_conserved,
                     self.fast_fermion_plan.as_ref(),
+                    max_bytes,
                 )
             })
             .map_err(map_error)?;
@@ -314,23 +314,15 @@ impl NativeChargeMvpPlan {
             })?;
         let effective_max = max_bytes.saturating_add(output_bytes);
         py.allow_threads(|| {
-            apply_charge_mvp_from_plan_into(
+            apply_charge_mvp_from_prepared_plan_into(
                 &self.plan,
-                ChargeTransitionPlanLayout {
-                    dimension: self.dimension(),
-                    local_dimensions: &self.local_dimensions,
-                    fermion_positions: &self.fermion_positions,
-                    boson_positions: &self.boson_positions,
-                    qubit_positions: &self.qubit_positions,
-                    qudit_positions: &self.qudit_positions,
-                    qudit_dimension: self.qudit_dimension,
-                    max_bytes: effective_max,
-                },
+                &self.layout,
                 &self.terms,
                 state_values,
                 output_values,
                 self.termwise_conserved,
                 self.fast_fermion_plan.as_ref(),
+                effective_max,
             )
         })
         .map_err(map_error)
@@ -342,19 +334,11 @@ impl NativeChargeMvpPlan {
         max_bytes: u128,
     ) -> PyResult<NativeChargeEagerMvpPlan> {
         py.allow_threads(|| {
-            let result = compile_charge_transitions_from_plan(
+            let result = compile_charge_transitions_from_prepared_plan(
                 &self.plan,
-                ChargeTransitionPlanLayout {
-                    dimension: self.dimension(),
-                    local_dimensions: &self.local_dimensions,
-                    fermion_positions: &self.fermion_positions,
-                    boson_positions: &self.boson_positions,
-                    qubit_positions: &self.qubit_positions,
-                    qudit_positions: &self.qudit_positions,
-                    qudit_dimension: self.qudit_dimension,
-                    max_bytes,
-                },
+                &self.layout,
                 &self.terms,
+                max_bytes,
             )
             .map_err(map_error)?;
             NativeChargeEagerMvpPlan::from_coo(self.dimension(), result, max_bytes)

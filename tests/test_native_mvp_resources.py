@@ -217,7 +217,7 @@ def test_u1_materialization_preflights_before_publishing_eager_cache() -> None:
     assert dense.shape == (restricted.dimension, restricted.dimension)
 
 
-def test_structured_eager_retains_a_real_bounded_cache() -> None:
+def test_structured_eager_alias_uses_profile_selected_compact_representation() -> None:
     space = tcp.OperatorSpace(bosons=2)
     operator = space.boson.create(0) * space.boson.annihilate(1)
     lazy = operator.compile("native_mvp", storage="lazy", boson_cutoffs={0: 3, 1: 3})

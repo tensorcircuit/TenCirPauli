@@ -86,7 +86,7 @@ Both structured modes remain matrix-free and never retain a full dimension-scale
 
 Lazy structured execution computes local transitions and factors from compact descriptors at application time. Eager mode may additionally retain bounded tables for unique local operations, such as boson ladder destinations/factors or direct-Weyl shifts/phases. Eager tables must be bounded by the involved local dimensions rather than the full Hilbert-space dimension.
 
-If profiling shows no material benefit for a family-specific bounded cache, eager and lazy may use the same kernel and report distinct storage metadata only when their retained data actually differ. The implementation must not allocate a meaningless cache merely to justify the eager label.
+If profiling shows no material benefit for a family-specific bounded cache, eager and lazy may use the same kernel and compact representation. For compatibility, the current structured plan preserves the requested `storage="eager"` metadata as an accepted alias even when `strategy` and `estimated_bytes` are identical to lazy; this metadata records the accepted request rather than claiming that a distinct cache was retained. The implementation must not allocate a meaningless cache merely to justify the eager label.
 
 The generic structured kernel preserves mixed-radix basis ordering, projected-boson boundary behavior, direct-Weyl conventions, exact cancellation semantics, and finite-amplitude checks.
 
