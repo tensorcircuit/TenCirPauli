@@ -28,7 +28,7 @@ Issues = "https://github.com/tensorcircuit/TenCirPauli/issues"
 [project.optional-dependencies]
 test = ["pytest>=7"]
 benchmark = ["pytest>=7", "pytest-benchmark>=4"]
-chemistry = ["pyscf"]
+chemistry = ["pyscf", "jax", "optax"]
 quality = [
     "black>=24.10,<26",
     "mypy>=1.14,<2",
