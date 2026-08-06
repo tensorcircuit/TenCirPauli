@@ -233,7 +233,17 @@ def test_expectation_matches_materialization_for_all_product_state_descriptors()
         )
         profiled = engine.profile(params)
         assert profiled.value == pytest.approx(engine.expectation(params), abs=1e-12)
-        assert profiled.profile.final_term_count == len(materialized.terms)
+        profile = profiled.profile
+        assert profile.gate_count == len(tape)
+        assert profile.initial_term_count == len(observable.terms)
+        assert profile.final_term_count == len(materialized.terms)
+        assert profile.peak_term_count >= max(
+            profile.initial_term_count, profile.final_term_count
+        )
+        assert profile.estimated_peak_bytes >= 0
+        assert sum(profile.final_weight_counts) == profile.final_term_count
+        assert all(count >= 0 for count in profile.final_weight_counts)
+        assert profile.kernel_seconds >= 0.0
 
 
 def test_custom_ptm_orientation_negative_entries_and_wire_order() -> None:

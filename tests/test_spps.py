@@ -55,6 +55,62 @@ def test_fixed_estimator_matches_exact_single_term_expectation() -> None:
     assert estimate.value_standard_error < 0.03
 
 
+def test_adaptive_estimator_matches_exact_single_term_reference() -> None:
+    engine = _single_rotation(3)
+    exact_value, exact_gradient = exact_value_and_gradient(
+        1, (3,), (("ry", 0, 0.37),), (0.37,)
+    )
+    estimate = engine.value_and_grad_adaptive(
+        [0.37],
+        initial_samples_per_term=128,
+        max_samples_per_term=4096,
+        gradient_tolerance=0.005,
+        seed=11,
+    )
+    term_proxies = estimate.term_gradient_error_proxies
+    assert term_proxies is not None
+    assert estimate.value == pytest.approx(
+        exact_value, abs=3.0 * estimate.value_standard_error
+    )
+    assert estimate.gradient[0] == pytest.approx(
+        exact_gradient, abs=3.0 * term_proxies[0]
+    )
+
+
+def test_adaptive_estimator_uses_divergent_term_budgets() -> None:
+    tape = advanced.GateTape(1)
+    tape.ry(0, parameter=0)
+    terms = [((3,), 1.0), ((1,), 1.0e-6)]
+    engine = advanced.SPPSEngine(tape, tcp.PauliOperator(1, terms))
+    estimate = engine.value_and_grad_adaptive(
+        [0.37],
+        initial_samples_per_term=8,
+        max_samples_per_term=128,
+        gradient_tolerance=0.01,
+        seed=91,
+    )
+    expected = [
+        exact_value_and_gradient(1, word, (("ry", 0, 0.37),), (0.37,))
+        for word, _ in terms
+    ]
+    expected_value = sum(
+        coefficient * value for (_, coefficient), (value, _) in zip(terms, expected)
+    )
+    expected_gradient = sum(
+        coefficient * gradient
+        for (_, coefficient), (_, gradient) in zip(terms, expected)
+    )
+    assert len(estimate.samples_per_replicate) == 2
+    assert len(set(estimate.samples_per_replicate)) > 1
+    assert estimate.value == pytest.approx(
+        expected_value, abs=3.0 * estimate.value_standard_error
+    )
+    assert estimate.gradient_error_proxy is not None
+    assert estimate.gradient[0] == pytest.approx(
+        expected_gradient, abs=3.0 * estimate.gradient_error_proxy
+    )
+
+
 def test_zero_factor_branch_preserves_pad_derivative() -> None:
     # For RY(0), the sine factor is exactly zero but its proposal probability
     # is positive.  The sine branch has final Z expectation one and therefore

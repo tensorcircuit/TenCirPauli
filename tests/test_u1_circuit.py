@@ -134,6 +134,43 @@ def test_projected_pauli_expectation_matches_dense_operator() -> None:
     assert value == pytest.approx(expected)
 
 
+def test_u1_plan_level_terminals_match_independent_dense_reference() -> None:
+    initial = np.array([1.0, 0.4j, -0.2 + 0.3j], dtype=np.complex128)
+    initial /= np.linalg.norm(initial)
+    parameter = tcp.Parameter(0)
+    circuit = tcp.U1Circuit(3, particle_number=1, initial_state=initial)
+    circuit.iswap(0, 1, theta=parameter)
+    circuit.rz(2, theta=0.17)
+    plan = circuit.compile()
+    parameters = np.asarray([0.23])
+    expected_restricted = _dense_reference(
+        3,
+        _basis(3, 1),
+        initial,
+        [("iswap", (0, 1), 0.23), ("rz", (2,), 0.17)],
+    )
+    expected_full = np.zeros(1 << 3, dtype=np.complex128)
+    expected_full[_basis(3, 1)] = expected_restricted
+    observable = tcp.PauliOperator.from_terms(3, [("ZII", 0.7), ("IZZ", -0.2)])
+
+    actual_state = plan.run(initial, parameters)
+    np.testing.assert_allclose(
+        plan.probability(initial, parameters), np.abs(actual_state) ** 2
+    )
+    np.testing.assert_allclose(
+        actual_state, expected_restricted, atol=1e-12, rtol=1e-12
+    )
+    actual_full = plan.state_full(initial, parameters)
+    np.testing.assert_allclose(actual_full, expected_full, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(
+        plan.probability_full(initial, parameters), np.abs(expected_full) ** 2
+    )
+    expected_value = np.vdot(expected_full, observable.dense() @ expected_full)
+    assert plan.expectation(initial, observable, parameters) == pytest.approx(
+        expected_value
+    )
+
+
 def test_adjoint_gradient_matches_finite_difference_and_expression_chain_rule() -> None:
     parameter = tcp.Parameter(0)
     initial = np.array([1.0, 1.0], dtype=np.complex128) / np.sqrt(2.0)
