@@ -11,6 +11,39 @@ type BosonKey = Vec<(u32, u32, u32)>;
 pub type FermionCanonicalResult = (Vec<Vec<u32>>, Vec<Vec<u32>>, Vec<Complex64>);
 pub type BosonCanonicalResult = (Vec<Vec<(u32, u32, u32)>>, Vec<Complex64>);
 
+/// Spin-orbital ordering used when expanding compact spatial integral blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FermionSpinOrdering {
+    Interleaved,
+    AlphaThenBeta,
+}
+
+/// Compact spatial-orbital molecular integral blocks.
+///
+/// Each two-body block is stored in chemist axes `(p, r, q, s)`, so its value
+/// is the spatial integral `(p r | q s)` used by the canonical spin-orbital
+/// tensor `g[p_sigma, q_tau, r_sigma, s_tau]`.
+pub struct FermionSpinBlocks<'a> {
+    pub n_spatial: usize,
+    pub one_alpha: &'a [Complex64],
+    pub one_beta: &'a [Complex64],
+    pub eri_aa: &'a [Complex64],
+    pub eri_ab: &'a [Complex64],
+    pub eri_ba: &'a [Complex64],
+    pub eri_bb: &'a [Complex64],
+    pub ordering: FermionSpinOrdering,
+}
+
+/// Input representations accepted by the framework-neutral integral importer.
+pub enum FermionIntegralSource<'a> {
+    SpinOrbital {
+        n_modes: usize,
+        one_body: &'a [Complex64],
+        two_body: &'a [Complex64],
+    },
+    SpinBlocks(FermionSpinBlocks<'a>),
+}
+
 pub struct FermionBatch<'a> {
     pub creation: &'a [Vec<u32>],
     pub annihilation: &'a [Vec<u32>],
@@ -948,6 +981,282 @@ pub fn canonicalize_fermion_terms(
         }
     }
     finish_fermion_aggregate(aggregate)
+}
+
+/// Ingest a complete or compact molecular Hamiltonian in one native batch.
+///
+/// The two-body coefficient is multiplied by one half exactly here. Values
+/// related by Hermiticity are averaged before CAR canonicalization, which
+/// removes harmless roundoff asymmetry without applying a numerical cutoff.
+pub fn canonicalize_fermion_integrals(
+    source: FermionIntegralSource<'_>,
+    constant: Complex64,
+    max_bytes: u128,
+) -> Result<FermionCanonicalResult, PauliError> {
+    let (n_modes, raw_count) = match &source {
+        FermionIntegralSource::SpinOrbital {
+            n_modes,
+            one_body,
+            two_body,
+        } => {
+            let n_squared = n_modes.checked_mul(*n_modes).ok_or(PauliError::Overflow {
+                context: "checking molecular integral dimensions",
+            })?;
+            let n_fourth = n_squared
+                .checked_mul(n_squared)
+                .ok_or(PauliError::Overflow {
+                    context: "checking molecular integral dimensions",
+                })?;
+            validate_integral_length(one_body.len(), n_squared)?;
+            validate_integral_length(two_body.len(), n_fourth)?;
+            (
+                *n_modes,
+                count_spin_orbital_terms(one_body, two_body, *n_modes, constant),
+            )
+        }
+        FermionIntegralSource::SpinBlocks(blocks) => {
+            let n_squared =
+                blocks
+                    .n_spatial
+                    .checked_mul(blocks.n_spatial)
+                    .ok_or(PauliError::Overflow {
+                        context: "checking molecular integral dimensions",
+                    })?;
+            let n_fourth = n_squared
+                .checked_mul(n_squared)
+                .ok_or(PauliError::Overflow {
+                    context: "checking molecular integral dimensions",
+                })?;
+            validate_integral_length(blocks.one_alpha.len(), n_squared)?;
+            validate_integral_length(blocks.one_beta.len(), n_squared)?;
+            for length in [
+                blocks.eri_aa.len(),
+                blocks.eri_ab.len(),
+                blocks.eri_ba.len(),
+                blocks.eri_bb.len(),
+            ] {
+                validate_integral_length(length, n_fourth)?;
+            }
+            (
+                blocks
+                    .n_spatial
+                    .checked_mul(2)
+                    .ok_or(PauliError::Overflow {
+                        context: "checking molecular spin-orbital dimensions",
+                    })?,
+                count_spin_block_terms(blocks, constant),
+            )
+        }
+    };
+    let requested = (raw_count as u128)
+        .checked_mul(768)
+        .ok_or(PauliError::Overflow {
+            context: "estimating molecular integral ingestion",
+        })?;
+    if requested > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested,
+            limit: max_bytes,
+        });
+    }
+
+    let mut factors = Vec::with_capacity(raw_count);
+    let mut coefficients = Vec::with_capacity(raw_count);
+    if !is_exact_zero(constant) {
+        factors.push(Vec::new());
+        coefficients.push(constant);
+    }
+    match source {
+        FermionIntegralSource::SpinOrbital {
+            n_modes,
+            one_body,
+            two_body,
+        } => append_spin_orbital_integrals(
+            n_modes,
+            one_body,
+            two_body,
+            &mut factors,
+            &mut coefficients,
+        ),
+        FermionIntegralSource::SpinBlocks(blocks) => {
+            append_spin_block_integrals(&blocks, &mut factors, &mut coefficients)
+        }
+    }
+    canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes)
+}
+
+fn validate_integral_length(actual: usize, expected: usize) -> Result<(), PauliError> {
+    if actual != expected {
+        return Err(PauliError::InvalidStructureLength { expected, actual });
+    }
+    Ok(())
+}
+
+fn count_spin_orbital_terms(
+    one_body: &[Complex64],
+    two_body: &[Complex64],
+    n_modes: usize,
+    constant: Complex64,
+) -> usize {
+    let mut count = usize::from(!is_exact_zero(constant));
+    for p in 0..n_modes {
+        for q in 0..n_modes {
+            if !is_exact_zero(hermitian_average(
+                one_body[p * n_modes + q],
+                one_body[q * n_modes + p],
+            )) {
+                count += 1;
+            }
+            for r in 0..n_modes {
+                for s in 0..n_modes {
+                    let value = hermitian_average(
+                        two_body[spin_orbital_index(n_modes, p, q, r, s)],
+                        two_body[spin_orbital_index(n_modes, r, s, p, q)],
+                    ) * 0.5;
+                    if !is_exact_zero(value) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+fn count_spin_block_terms(blocks: &FermionSpinBlocks<'_>, constant: Complex64) -> usize {
+    let n = blocks.n_spatial;
+    let mut count = usize::from(!is_exact_zero(constant));
+    for one_body in [blocks.one_alpha, blocks.one_beta] {
+        for p in 0..n {
+            for q in 0..n {
+                if !is_exact_zero(hermitian_average(one_body[p * n + q], one_body[q * n + p])) {
+                    count += 1;
+                }
+            }
+        }
+    }
+    for eri in [blocks.eri_aa, blocks.eri_ab, blocks.eri_ba, blocks.eri_bb] {
+        for p in 0..n {
+            for r in 0..n {
+                for q in 0..n {
+                    for s in 0..n {
+                        let index = chemist_index(n, p, r, q, s);
+                        let reverse = chemist_index(n, r, p, s, q);
+                        if !is_exact_zero(hermitian_average(eri[index], eri[reverse]) * 0.5) {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+fn append_spin_orbital_integrals(
+    n_modes: usize,
+    one_body: &[Complex64],
+    two_body: &[Complex64],
+    factors: &mut Vec<Vec<(usize, u8)>>,
+    coefficients: &mut Vec<Complex64>,
+) {
+    for p in 0..n_modes {
+        for q in 0..n_modes {
+            let value = hermitian_average(one_body[p * n_modes + q], one_body[q * n_modes + p]);
+            if !is_exact_zero(value) {
+                factors.push(vec![(p, 0), (q, 1)]);
+                coefficients.push(value);
+            }
+            for r in 0..n_modes {
+                for s in 0..n_modes {
+                    let value = hermitian_average(
+                        two_body[spin_orbital_index(n_modes, p, q, r, s)],
+                        two_body[spin_orbital_index(n_modes, r, s, p, q)],
+                    ) * 0.5;
+                    if !is_exact_zero(value) {
+                        factors.push(vec![(p, 0), (q, 0), (s, 1), (r, 1)]);
+                        coefficients.push(value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn append_spin_block_integrals(
+    blocks: &FermionSpinBlocks<'_>,
+    factors: &mut Vec<Vec<(usize, u8)>>,
+    coefficients: &mut Vec<Complex64>,
+) {
+    let n = blocks.n_spatial;
+    for (spin, one_body) in [(0usize, blocks.one_alpha), (1usize, blocks.one_beta)] {
+        for p in 0..n {
+            for q in 0..n {
+                let value = hermitian_average(one_body[p * n + q], one_body[q * n + p]);
+                if !is_exact_zero(value) {
+                    let p_mode = spin_mode(n, p, spin, blocks.ordering);
+                    let q_mode = spin_mode(n, q, spin, blocks.ordering);
+                    factors.push(vec![(p_mode, 0), (q_mode, 1)]);
+                    coefficients.push(value);
+                }
+            }
+        }
+    }
+    for (left_spin, right_spin, eri) in [
+        (0usize, 0usize, blocks.eri_aa),
+        (0usize, 1usize, blocks.eri_ab),
+        (1usize, 0usize, blocks.eri_ba),
+        (1usize, 1usize, blocks.eri_bb),
+    ] {
+        for p in 0..n {
+            for r in 0..n {
+                for q in 0..n {
+                    for s in 0..n {
+                        let value = hermitian_average(
+                            eri[chemist_index(n, p, r, q, s)],
+                            eri[chemist_index(n, r, p, s, q)],
+                        ) * 0.5;
+                        if !is_exact_zero(value) {
+                            let p_mode = spin_mode(n, p, left_spin, blocks.ordering);
+                            let q_mode = spin_mode(n, q, right_spin, blocks.ordering);
+                            let r_mode = spin_mode(n, r, left_spin, blocks.ordering);
+                            let s_mode = spin_mode(n, s, right_spin, blocks.ordering);
+                            factors.push(vec![(p_mode, 0), (q_mode, 0), (s_mode, 1), (r_mode, 1)]);
+                            coefficients.push(value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn hermitian_average(left: Complex64, right: Complex64) -> Complex64 {
+    (left + right.conj()) * 0.5
+}
+
+#[inline]
+fn spin_orbital_index(n_modes: usize, p: usize, q: usize, r: usize, s: usize) -> usize {
+    ((p * n_modes + q) * n_modes + r) * n_modes + s
+}
+
+#[inline]
+fn chemist_index(n_spatial: usize, p: usize, r: usize, q: usize, s: usize) -> usize {
+    ((p * n_spatial + r) * n_spatial + q) * n_spatial + s
+}
+
+#[inline]
+fn spin_mode(
+    n_spatial: usize,
+    orbital: usize,
+    spin: usize,
+    ordering: FermionSpinOrdering,
+) -> usize {
+    match ordering {
+        FermionSpinOrdering::Interleaved => 2 * orbital + spin,
+        FermionSpinOrdering::AlphaThenBeta => spin * n_spatial + orbital,
+    }
 }
 
 /// Multiply two canonical fermion operators in one coarse-grained call.

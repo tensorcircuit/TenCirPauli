@@ -2,17 +2,21 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
-use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{
+    Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray4,
+    PyReadwriteArray1, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     analyze_hybrid_charge, binary_boson_terms, binary_fermion_terms, binary_hybrid_terms,
-    canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
-    embed_hybrid_terms, fermion_to_majorana_terms, hash_complex, hybrid_terms_conserve_charge,
-    jordan_wigner_hybrid_terms, jordan_wigner_hybrid_terms_trusted, jordan_wigner_terms,
-    multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms, structured_dense_matrix,
-    structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult, Complex64, FermionBatch,
-    FermionCanonicalResult, HybridBatch, HybridLayout, HybridRawBatch,
+    canonicalize_boson_terms, canonicalize_fermion_integrals, canonicalize_fermion_terms,
+    canonicalize_hybrid_terms, embed_hybrid_terms, fermion_to_majorana_terms, hash_complex,
+    hybrid_terms_conserve_charge, jordan_wigner_hybrid_terms, jordan_wigner_hybrid_terms_trusted,
+    jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms,
+    structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult,
+    Complex64, FermionBatch, FermionCanonicalResult, FermionIntegralSource, FermionSpinBlocks,
+    FermionSpinOrdering, HybridBatch, HybridLayout, HybridRawBatch,
     StructuredMvpPlan as CoreStructuredMvpPlan, StructuredOperation,
 };
 
@@ -1737,6 +1741,137 @@ pub(crate) fn structured_fermion_canonicalize(
         canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes).map_err(map_error)
     })?;
     Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
+}
+
+#[pyfunction]
+pub(crate) fn structured_fermion_integrals(
+    py: Python<'_>,
+    one_body: PyReadonlyArray2<'_, NumpyComplex128>,
+    two_body: PyReadonlyArray4<'_, NumpyComplex128>,
+    constant_re: f64,
+    constant_im: f64,
+    max_bytes: u128,
+) -> PyResult<NativeFermionOperatorHandle> {
+    let one_shape = one_body.shape();
+    if one_shape[0] != one_shape[1] {
+        return Err(PyValueError::new_err("one_body must have a square shape"));
+    }
+    let n_modes = one_shape[0];
+    let two_shape = two_body.shape();
+    if two_shape != [n_modes, n_modes, n_modes, n_modes] {
+        return Err(PyValueError::new_err(format!(
+            "two_body must have shape ({n_modes}, {n_modes}, {n_modes}, {n_modes})"
+        )));
+    }
+    let one_body = one_body
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("one_body must be C-contiguous"))?;
+    let two_body = two_body
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("two_body must be C-contiguous"))?;
+    let result = py
+        .allow_threads(|| {
+            canonicalize_fermion_integrals(
+                FermionIntegralSource::SpinOrbital {
+                    n_modes,
+                    one_body,
+                    two_body,
+                },
+                Complex64::new(constant_re, constant_im),
+                max_bytes,
+            )
+        })
+        .map_err(map_error)?;
+    Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn structured_fermion_integral_blocks(
+    py: Python<'_>,
+    n_spatial: usize,
+    one_alpha: PyReadonlyArray2<'_, NumpyComplex128>,
+    one_beta: PyReadonlyArray2<'_, NumpyComplex128>,
+    eri_aa: PyReadonlyArray4<'_, NumpyComplex128>,
+    eri_ab: PyReadonlyArray4<'_, NumpyComplex128>,
+    eri_ba: PyReadonlyArray4<'_, NumpyComplex128>,
+    eri_bb: PyReadonlyArray4<'_, NumpyComplex128>,
+    ordering: u8,
+    constant_re: f64,
+    constant_im: f64,
+    max_bytes: u128,
+) -> PyResult<NativeFermionOperatorHandle> {
+    let expected_one = [n_spatial, n_spatial];
+    for (name, shape) in [
+        ("one_alpha", one_alpha.shape()),
+        ("one_beta", one_beta.shape()),
+    ] {
+        if shape != expected_one {
+            return Err(PyValueError::new_err(format!(
+                "{name} must have shape ({n_spatial}, {n_spatial})"
+            )));
+        }
+    }
+    let expected_eri = [n_spatial, n_spatial, n_spatial, n_spatial];
+    for (name, shape) in [
+        ("eri_aa", eri_aa.shape()),
+        ("eri_ab", eri_ab.shape()),
+        ("eri_ba", eri_ba.shape()),
+        ("eri_bb", eri_bb.shape()),
+    ] {
+        if shape != expected_eri {
+            return Err(PyValueError::new_err(format!(
+                "{name} must have shape ({n_spatial}, {n_spatial}, {n_spatial}, {n_spatial})"
+            )));
+        }
+    }
+    let ordering = match ordering {
+        0 => FermionSpinOrdering::Interleaved,
+        1 => FermionSpinOrdering::AlphaThenBeta,
+        _ => return Err(PyValueError::new_err("unknown spin-orbital ordering")),
+    };
+    let one_alpha = one_alpha
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("one_alpha must be C-contiguous"))?;
+    let one_beta = one_beta
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("one_beta must be C-contiguous"))?;
+    let eri_aa = eri_aa
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("eri_aa must be C-contiguous"))?;
+    let eri_ab = eri_ab
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("eri_ab must be C-contiguous"))?;
+    let eri_ba = eri_ba
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("eri_ba must be C-contiguous"))?;
+    let eri_bb = eri_bb
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("eri_bb must be C-contiguous"))?;
+    let result = py
+        .allow_threads(|| {
+            canonicalize_fermion_integrals(
+                FermionIntegralSource::SpinBlocks(FermionSpinBlocks {
+                    n_spatial,
+                    one_alpha,
+                    one_beta,
+                    eri_aa,
+                    eri_ab,
+                    eri_ba,
+                    eri_bb,
+                    ordering,
+                }),
+                Complex64::new(constant_re, constant_im),
+                max_bytes,
+            )
+        })
+        .map_err(map_error)?;
+    Ok(NativeFermionOperatorHandle::from_result(
+        n_spatial
+            .checked_mul(2)
+            .ok_or_else(|| PyValueError::new_err("spin-orbital mode count overflow"))?,
+        result,
+    ))
 }
 
 #[pyfunction]

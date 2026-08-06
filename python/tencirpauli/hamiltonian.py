@@ -63,6 +63,10 @@ class MVPPlan(Protocol):
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]: ...
 
+    def to_scipy_linear_operator(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any: ...
+
 
 @dataclass(frozen=True)
 class COOMatrix:
@@ -70,7 +74,7 @@ class COOMatrix:
 
     ``row``, ``column`` and ``data`` have equal length, and ``shape`` gives the
     logical matrix shape. Entries are already aggregated and ordered by the
-    producing operator. Use :meth:`to_scipy` for optional SciPy interop.
+    producing operator. Use :meth:`to_scipy` for SciPy sparse interop.
     """
 
     row: np.ndarray[Any, Any]
@@ -84,15 +88,9 @@ class COOMatrix:
         return self.data
 
     def to_scipy(self) -> Any:
-        """Convert to a SciPy COO matrix.
+        """Convert to a SciPy COO matrix."""
+        from scipy.sparse import coo_matrix  # type: ignore[import-untyped]
 
-        Raises:
-            ImportError: If SciPy is not installed in the current environment.
-        """
-        try:
-            from scipy.sparse import coo_matrix  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError("COO conversion requires scipy") from error
         return coo_matrix((self.data, (self.row, self.column)), shape=self.shape)
 
 
@@ -101,8 +99,8 @@ class CSRMatrix:
     """Deterministic compressed-sparse-row matrix arrays.
 
     ``indptr``, ``indices`` and ``data`` follow the standard CSR contract and
-    ``shape`` gives the logical matrix shape. Use :meth:`to_scipy` for optional
-    SciPy interop.
+    ``shape`` gives the logical matrix shape. Use :meth:`to_scipy` for SciPy
+    sparse interop.
     """
 
     indptr: np.ndarray[Any, Any]
@@ -116,15 +114,9 @@ class CSRMatrix:
         return self.data
 
     def to_scipy(self) -> Any:
-        """Convert to a SciPy CSR matrix.
+        """Convert to a SciPy CSR matrix."""
+        from scipy.sparse import csr_matrix
 
-        Raises:
-            ImportError: If SciPy is not installed in the current environment.
-        """
-        try:
-            from scipy.sparse import csr_matrix
-        except ImportError as error:
-            raise ImportError("CSR conversion requires scipy") from error
         return csr_matrix((self.data, self.indices, self.indptr), shape=self.shape)
 
 
@@ -306,6 +298,14 @@ class NativeMVPPlan:
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         """Apply the plan using its default memory limit."""
         return self.apply(state)
+
+    def to_scipy_linear_operator(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any:
+        """Expose this reusable plan as a SciPy ``LinearOperator``."""
+        from .integrations.scipy import to_scipy_linear_operator
+
+        return to_scipy_linear_operator(self, max_bytes=max_bytes)
 
 
 @dataclass(frozen=True)
@@ -517,6 +517,14 @@ class BackendMVPPlan:
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         """Apply the plan using its default memory limit."""
         return self.apply(state)
+
+    def to_scipy_linear_operator(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any:
+        """Expose this backend MVP plan as a SciPy ``LinearOperator``."""
+        from .integrations.scipy import to_scipy_linear_operator
+
+        return to_scipy_linear_operator(self, max_bytes=max_bytes)
 
     def _apply_direct_weyl(
         self, state: Sequence[complex], max_bytes: Optional[int]

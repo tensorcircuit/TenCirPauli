@@ -571,6 +571,14 @@ class U1MvpPlan:
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
         return self.apply(state)
 
+    def to_scipy_linear_operator(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any:
+        """Expose the U(1)-restricted plan as a SciPy ``LinearOperator``."""
+        from .integrations.scipy import to_scipy_linear_operator
+
+        return to_scipy_linear_operator(self, max_bytes=max_bytes)
+
 
 def _validate_sector_value(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value not in (-1, 1):

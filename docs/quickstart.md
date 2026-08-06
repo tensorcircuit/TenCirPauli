@@ -27,6 +27,8 @@ print(h.dense().shape)
 
 `PauliOperator.from_terms()` accepts strings, code sequences, and `PauliWord` objects. Construction canonicalizes duplicate words and preserves deterministic term order.
 
+SciPy is a required runtime dependency. Use `plan.to_scipy_linear_operator()` or `h.to_scipy_linear_operator()` for iterative solvers without materializing a matrix. PySCF is optional: install `tencirpauli[chemistry]` to use `tencirpauli.integrations.pyscf.from_scf()` or `from_molecule()`. The chemistry adapter uses orthonormal canonical orbitals, the fixed spin-orbital orderings `interleaved` or `alpha_then_beta`, and the documented spin-orbital integral convention; it does not require OpenFermion.
+
 ## Group measurements
 
 ```python

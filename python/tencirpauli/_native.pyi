@@ -361,6 +361,26 @@ def structured_fermion_canonicalize(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> NativeFermionOperatorHandle: ...
+def structured_fermion_integrals(
+    one_body: object,
+    two_body: object,
+    constant_re: float,
+    constant_im: float,
+    max_bytes: int,
+) -> NativeFermionOperatorHandle: ...
+def structured_fermion_integral_blocks(
+    n_spatial: int,
+    one_alpha: object,
+    one_beta: object,
+    eri_aa: object,
+    eri_ab: object,
+    eri_ba: object,
+    eri_bb: object,
+    ordering: int,
+    constant_re: float,
+    constant_im: float,
+    max_bytes: int,
+) -> NativeFermionOperatorHandle: ...
 def structured_boson_canonicalize(
     n_modes: int,
     factors: Sequence[Sequence[tuple[int, int]]],

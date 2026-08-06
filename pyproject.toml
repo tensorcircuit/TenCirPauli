@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Physics",
 ]
-dependencies = ["numpy>=1.23", "tensorcircuit-ng>=1.8,<2"]
+dependencies = ["numpy>=1.23", "scipy>=1.10", "tensorcircuit-ng>=1.8,<2"]
 
 [project.urls]
 Homepage = "https://github.com/tensorcircuit/TenCirPauli"
@@ -28,7 +28,7 @@ Issues = "https://github.com/tensorcircuit/TenCirPauli/issues"
 [project.optional-dependencies]
 test = ["pytest>=7"]
 benchmark = ["pytest>=7", "pytest-benchmark>=4"]
-examples = ["scipy>=1.10"]
+chemistry = ["pyscf"]
 quality = [
     "black>=24.10,<26",
     "mypy>=1.14,<2",

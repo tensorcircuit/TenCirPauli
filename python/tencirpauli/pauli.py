@@ -988,6 +988,15 @@ class PauliOperator:
             _factory_token=_PLAN_FACTORY_TOKEN,
         )
 
+    def to_scipy_linear_operator(
+        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
+    ) -> Any:
+        """Compile one native MVP plan and expose it to SciPy."""
+        from .integrations.scipy import to_scipy_linear_operator
+
+        plan = self.native_mvp_plan(max_bytes=max_bytes)
+        return to_scipy_linear_operator(plan, max_bytes=max_bytes)
+
     def compile(
         self,
         target: str,

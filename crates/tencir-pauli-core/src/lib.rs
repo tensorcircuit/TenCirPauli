@@ -57,11 +57,12 @@ pub use sector::{
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 pub use structured::{
     analyze_hybrid_charge, binary_boson_terms, binary_fermion_terms, binary_hybrid_terms,
-    canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
-    embed_hybrid_terms, hybrid_terms_conserve_charge, jordan_wigner_hybrid_terms,
-    jordan_wigner_hybrid_terms_trusted, jordan_wigner_terms, multiply_boson_terms,
-    multiply_fermion_terms, multiply_hybrid_terms, structured_dense_matrix, structured_mvp_plan,
-    structured_sparse_matrix, BosonCanonicalResult, FermionBatch, FermionCanonicalResult,
+    canonicalize_boson_terms, canonicalize_fermion_integrals, canonicalize_fermion_terms,
+    canonicalize_hybrid_terms, embed_hybrid_terms, hybrid_terms_conserve_charge,
+    jordan_wigner_hybrid_terms, jordan_wigner_hybrid_terms_trusted, jordan_wigner_terms,
+    multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms, structured_dense_matrix,
+    structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult, FermionBatch,
+    FermionCanonicalResult, FermionIntegralSource, FermionSpinBlocks, FermionSpinOrdering,
     HybridBatch, HybridCanonicalResult, HybridLayout, HybridRawBatch, StructuredMvpPlan,
     StructuredOperation, StructuredSparseResult,
 };

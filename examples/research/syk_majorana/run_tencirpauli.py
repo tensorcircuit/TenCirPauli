@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, eigsh
+from scipy.sparse.linalg import eigsh
 
 import tencirpauli as tcp
 
@@ -110,11 +110,7 @@ def main() -> None:
         mvp_seconds.append(time.perf_counter() - start)
 
     ncv = min(max(args.ncv, 3), plan.dimension - 1)
-    linear = LinearOperator(
-        (plan.dimension, plan.dimension),
-        matvec=lambda vector: plan.apply(vector, max_bytes=args.max_bytes),
-        dtype=np.complex128,
-    )
+    linear = plan.to_scipy_linear_operator(max_bytes=args.max_bytes)
     eigsh_start = time.perf_counter()
     values, vectors = eigsh(
         linear,

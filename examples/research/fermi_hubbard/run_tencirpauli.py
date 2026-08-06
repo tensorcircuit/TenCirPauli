@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, eigsh
+from scipy.sparse.linalg import eigsh
 
 import tencirpauli as tcp
 
@@ -193,11 +193,7 @@ def main() -> None:
     }
     if args.eigsh:
         rss_before_eigsh = peak_rss_bytes()
-        linear = LinearOperator(
-            (restricted.dimension, restricted.dimension),
-            matvec=lambda vector: restricted.apply(vector),
-            dtype=np.complex128,
-        )
+        linear = plan.to_scipy_linear_operator()
         start = time.perf_counter()
         values, vectors = eigsh(
             linear,

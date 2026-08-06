@@ -125,6 +125,97 @@ def _complex_sort_key(value: complex) -> Tuple[bytes, bytes]:
     return struct.pack("!d", value.real), struct.pack("!d", value.imag)
 
 
+def _prepare_integral_array(
+    value: object,
+    shape: Tuple[int, ...],
+    name: str,
+    max_bytes: Optional[int],
+) -> np.ndarray[Any, Any]:
+    """Validate one contiguous numerical integral array without hidden copies."""
+    if not isinstance(value, np.ndarray):
+        raise TypeError(f"{name} must be a NumPy array")
+    if value.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
+    if not value.flags.c_contiguous:
+        raise ValueError(f"{name} must be C-contiguous")
+    if value.dtype not in (np.dtype(np.float64), np.dtype(np.complex128)):
+        raise TypeError(f"{name} must have dtype float64 or complex128")
+    if not np.isfinite(value).all():
+        raise ValueError(f"{name} must contain only finite values")
+    if value.dtype == np.dtype(np.float64):
+        _check_allocation(
+            int(value.size * np.dtype(np.complex128).itemsize),
+            max_bytes,
+            f"{name} complex conversion",
+        )
+        return cast(
+            np.ndarray[Any, Any], np.asarray(value, dtype=np.complex128, order="C")
+        )
+    return value
+
+
+def _prepare_integral_constant(value: object) -> complex:
+    constant = _finite_complex(value, "constant")
+    if constant.imag != 0.0:
+        raise ValueError("constant must be real")
+    return complex(constant.real, 0.0)
+
+
+def _fermion_from_integral_blocks(
+    cls: Any,
+    n_spatial: int,
+    one_alpha: object,
+    one_beta: object,
+    eri_aa: object,
+    eri_ab: object,
+    eri_ba: object,
+    eri_bb: object,
+    *,
+    spin_ordering: str,
+    constant: object,
+    max_bytes: Optional[int],
+) -> "FermionOperator":
+    """Call the compact native chemistry ingestion path."""
+    n_spatial = _nonnegative_int(n_spatial, "n_spatial")
+    _validate_max_bytes(max_bytes)
+    shape_one = (n_spatial, n_spatial)
+    shape_eri = (n_spatial, n_spatial, n_spatial, n_spatial)
+    alpha = _prepare_integral_array(one_alpha, shape_one, "one_alpha", max_bytes)
+    beta = _prepare_integral_array(one_beta, shape_one, "one_beta", max_bytes)
+    eri_aa, eri_ab, eri_ba, eri_bb = tuple(
+        _prepare_integral_array(value, shape_eri, name, max_bytes)
+        for name, value in (
+            ("eri_aa", eri_aa),
+            ("eri_ab", eri_ab),
+            ("eri_ba", eri_ba),
+            ("eri_bb", eri_bb),
+        )
+    )
+    if spin_ordering == "interleaved":
+        ordering_code = 0
+    elif spin_ordering == "alpha_then_beta":
+        ordering_code = 1
+    else:
+        raise ValueError(
+            "spin_ordering must be exactly 'interleaved' or 'alpha_then_beta'"
+        )
+    constant_value = _prepare_integral_constant(constant)
+    result = _native.structured_fermion_integral_blocks(
+        n_spatial,
+        alpha,
+        beta,
+        eri_aa,
+        eri_ab,
+        eri_ba,
+        eri_bb,
+        ordering_code,
+        constant_value.real,
+        constant_value.imag,
+        _effective_max_bytes(max_bytes),
+    )
+    return _fermion_from_native(cls, 2 * n_spatial, result)
+
+
 @dataclass(frozen=True)
 class FermionWord:
     """Canonical fermionic monomial ``creations * annihilations``.
@@ -2456,6 +2547,60 @@ class FermionOperator(_StructuredOperator):
             1
         """
         return cls._from_raw(n_modes, terms, max_bytes)
+
+    @classmethod
+    def from_integrals(
+        cls,
+        one_body: np.ndarray[Any, Any],
+        two_body: np.ndarray[Any, Any],
+        *,
+        constant: complex = 0.0,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "FermionOperator":
+        """Construct a canonical spin-orbital molecular Hamiltonian.
+
+        ``one_body[p, q]`` and ``two_body[p, q, r, s]`` use the fixed
+        convention from ``a†_p a_q`` and ``a†_p a†_q a_s a_r``. The native
+        importer applies the two-body factor of one half exactly once.
+        """
+        _validate_max_bytes(max_bytes)
+        if not isinstance(one_body, np.ndarray) or one_body.ndim != 2:
+            raise TypeError("one_body must be a two-dimensional NumPy array")
+        if one_body.shape[0] != one_body.shape[1]:
+            raise ValueError("one_body must have a square shape")
+        n_modes = int(one_body.shape[0])
+        one = _prepare_integral_array(
+            one_body, (n_modes, n_modes), "one_body", max_bytes
+        )
+        two = _prepare_integral_array(
+            two_body,
+            (n_modes, n_modes, n_modes, n_modes),
+            "two_body",
+            max_bytes,
+        )
+        if not np.allclose(
+            one,
+            one.conj().T,
+            rtol=1.0e-10,
+            atol=1.0e-12,
+        ):
+            raise ValueError("one_body must be Hermitian")
+        if not np.allclose(
+            two,
+            two.transpose(2, 3, 0, 1).conj(),
+            rtol=1.0e-10,
+            atol=1.0e-12,
+        ):
+            raise ValueError("two_body must satisfy Hermitian pair symmetry")
+        constant_value = _prepare_integral_constant(constant)
+        result = _native.structured_fermion_integrals(
+            one,
+            two,
+            constant_value.real,
+            constant_value.imag,
+            _effective_max_bytes(max_bytes),
+        )
+        return _fermion_from_native(cls, n_modes, result)
 
     @classmethod
     def _from_raw(

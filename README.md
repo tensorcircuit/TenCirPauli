@@ -21,6 +21,7 @@ TenCirPauli brings a compact Rust core and a Python-first API to the Pauli-heavy
 | --- | --- |
 | **Pauli algebra** | Canonical words, products, phases, commutation, support, and deterministic term aggregation. |
 | **Hamiltonians** | Dense, COO, CSR, matrix-vector products, and reusable native or TensorCircuit backend plans. |
+| **Scientific interop** | Required SciPy `LinearOperator` wrappers and optional direct PySCF RHF/UHF Hamiltonian ingestion. |
 | **Measurement and symmetry** | QWC/general commuting groups, Z2 tapering, and U(1) sector restriction. |
 | **Native circuit execution** | Fixed-particle-number circuits, deterministic Pauli propagation, gradients, and stochastic Pauli-path estimates. |
 | **Structured fermion workflows** | Majorana algebra, Jordan–Wigner/parity/Bravyi–Kitaev plans, exact additive charges, and guarded restricted sectors. |
@@ -84,6 +85,7 @@ External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use q
 | --- | --- |
 | Pauli algebra | `PauliWord`, `PauliOperator` |
 | Hamiltonian targets | `.dense()`, `.coo()`, `.csr()`, `.mvp()` |
+| SciPy iterative solvers | `.to_scipy_linear_operator()` on MVP plans or `PauliOperator` |
 | Reusable native MVP | `.native_mvp_plan()` |
 | TensorCircuit backend MVP | `.backend_mvp_plan()`, `backend_mvp()` |
 | QWC/general grouping | `.group_commuting()` |
@@ -110,6 +112,8 @@ Fermion, Boson, Qudit, Hybrid, and Majorana operators follow the same default la
 structured adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
 
 Majorana and charge adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the design index under [`docs/vibe/README.md`](docs/vibe/README.md).
+
+Optional chemistry interop imports converged PySCF RHF or UHF results directly into the canonical `FermionOperator` form, including nuclear repulsion by default. Standard fermionic CAR requires orthonormal orbitals; spin-orbital ordering and the fixed integral convention are explicit adapter inputs. OpenFermion is not required. See [`examples/quantum_chemistry_pyscf.py`](examples/quantum_chemistry_pyscf.py) after installing `pip install "tencirpauli[chemistry]"`.
 
 CPU-native MVP plans default to `storage="lazy"`; use `storage="eager"` when a reusable retained representation fits the budget. A restricted facade starts compact, and `mvp_plan(storage="eager")`, `dense()`, `coo()`, or `csr()` explicitly authorizes a thread-safe eager transition cache that later facade calls may reuse. Fixed plans never change storage, and `apply_into(input_state, output_state)` writes into caller-owned non-overlapping `complex128` buffers.
 
