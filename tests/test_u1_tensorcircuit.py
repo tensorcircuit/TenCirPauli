@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+# TensorCircuit is an optional test-environment dependency; import it only
+# after the package import so the whole module can be skipped cleanly.
+# ruff: noqa: I001
+
 import numpy as np
 import pytest
-import tensorcircuit as tc
 
 import tencirpauli as tcp
+
+tc = pytest.importorskip("tensorcircuit")
 
 
 def _circuits() -> tuple[tcp.U1Circuit, object]:

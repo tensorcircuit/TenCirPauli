@@ -375,7 +375,7 @@ maturin --version
 
 ### 阶段六：common circuit IR 与 Rust-native U1Circuit
 
-在阶段四的GateTape/adapter边界和阶段五的multiword U1 engine完成后，先建立backend-neutral common circuit layer，统一typed gate semantics、`Parameter(slot)`、immutable `ParameterExpr`、logical transformations和deterministic Python/Rust serialization。Common IR不计算`2**n`，不包含U1 sector/rank/pair map，也不承诺public通用模拟器；未来execution mode可以消费同一logical representation，而不重复参数和gate协议。
+在 GateTape/adapter 边界和 multiword U1 engine 完成后，backend-neutral common circuit layer 统一 typed gate semantics、实际 `theta` 值、私有 occurrence-angle slots 和 deterministic Python/Rust serialization。Common IR 不计算 `2**n`，不包含 U1 sector/rank/pair map，也不承诺 public 通用模拟器；未来 execution mode 可以消费同一 logical representation，而不重复 gate 协议。用户参数的共享、算术关系和 PyTree 由 JAX 或调用方处理，native 层只接收 flat `f64` angle arrays。
 
 Phase 6唯一实现的execution backend与TensorCircuit `U1Circuit`常用构造、gate名称、basis ordering和observable语义对齐。Python gate methods只记录common typed operations；`compile()`、state、expectation或gradient terminal一次性跨PyO3，由U1 compiler完成sector validation、fusion、pair-map construction、restricted-state execution和reduction。Required gate set为RZ、RZZ、CZ、CPhase、SWAP、TensorCircuit-convention iSWAP和bounded static diagonal，并支持任意宽low-k/low-hole sectors。通用full-state和tensor-network simulator都不属于本阶段。
 

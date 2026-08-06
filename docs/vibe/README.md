@@ -4,7 +4,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 
 ## Documents
 
-- [Phase Alpha Python facade specification](phase-alpha-spec.md): implemented unified user-facing circuit contract for `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, parameter expressions, TensorCircuit conversion, and backend MVP execution; native executors remain independent.
+- [Phase 9.5 circuit differentiation boundary](phase-9.5-spec.md): superseding contract for actual gate angles, occurrence-space native gradients, private compilation, JAX callbacks, and fixed-budget SPPS integration.
 - [Phase Alpha review, 2026-08-03](phase-alpha-review-2026-08-03.md): archived review findings, remediation scope, deferred items, and the local disposition record.
 - [Deep audit, 2026-08-04](audit-report-2026-08-04.md): archived point-by-point audit dispositions, applied remediations, deferred recommendations, and correctness/performance verification.
 - [Deep audit round 2, 2026-08-04](audit-report-2026-08-04-round2.md): second-pass findings over the post-audit tree; new correctness gaps, test misses, dead FFI, and stub drift, each verified benefit-over-risk and excluding the round-1 deferred/rejected ledger.
@@ -40,7 +40,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 - [Phase 9 implementation and performance review, 2026-08-06](phase-9-review-2026-08-06.md): open remediation report covering incomplete embedding, generic charge, grouping reconstruction, and native gate-tape paths; legacy dual storage and ABI cleanup; ordinary-IEEE semantics; two confirmed performance regressions; and concrete closure evidence.
 - [Phase 9 second-round remediation review, 2026-08-06](phase-9-second-round-review-2026-08-06.md): open follow-up report limited to the remaining GIL-bound reconstruction and charge setup, signed-zero equality/hash defect, embedding facade regression, missing closure evidence, non-vibe milestone labels, and generic-charge performance closure.
 - [Phase 9 remediation closure evidence, 2026-08-06](phase-9-remediation-closure-2026-08-06.md): local S1–S7 closure record covering residency, GIL probes, equality/hash contracts, facade preservation, cache lifecycle, label scanning, release gates, and independent-target generic-charge A/B results.
-- [Phase 9.5 gradient boundaries and repeated MVP technical review](phase-9.5-spec.md): discussion draft for unifying U1, deterministic propagation, and SPPS gradient boundaries, keeping parameter-expression tracing lightweight, and deciding whether repeated native MVP calls justify internal scratch reuse.
+- [Phase 9.5 circuit differentiation boundary, JAX execution, and repeated MVP specification](phase-9.5-spec.md): owner-approved contract for actual gate-angle inputs, unified native/JAX circuit terminals, removal of public and Rust parameter-expression systems, private native compilation, and evidence-gated repeated MVP scratch reuse.
 - [Feature incubator](feature-incubator.md): living ledger for deferred or immature feature ideas, design fragments, unresolved questions, promotion criteria, and links to ideas that later enter formal phase specifications.
 - [Default lazy operator results](operator-lazy-results.md): default native storage, explicit `.terms` materialization, family coverage, and known Python fallbacks.
 - [Native-backed lazy operator results](pauli-lazy-results.md): implemented PauliOperator lazy terms, private native handles, plain string/weight export, and the family-neutral extension contract for structured operators.

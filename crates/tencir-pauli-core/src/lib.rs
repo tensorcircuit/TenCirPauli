@@ -31,7 +31,7 @@ pub use charge::{
 pub use charge_sector::{
     build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,
 };
-pub use circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode, CIRCUIT_SCHEMA_VERSION};
+pub use circuit_ir::{AngleRef, CircuitGate, CircuitProgram, CIRCUIT_SCHEMA_VERSION};
 pub use error::PauliError;
 pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};
 pub use grouping::{

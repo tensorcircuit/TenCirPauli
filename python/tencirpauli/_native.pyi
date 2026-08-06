@@ -772,7 +772,7 @@ def u1_circuit_plan(
     particle_number: int,
     schema_version: int,
     nparameters: int,
-    expression_nodes: object,
+    angles: object,
     gates: object,
     max_bytes: int,
 ) -> NativeU1CircuitPlan: ...

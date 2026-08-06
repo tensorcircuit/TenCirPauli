@@ -4,14 +4,14 @@ use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    CircuitGate, CircuitProgram, Complex64, ParameterExprNode, U1CircuitPlan, U1Sector,
+    AngleRef, CircuitGate, CircuitProgram, Complex64, U1CircuitPlan, U1Sector,
 };
 
 use crate::convert::{build_canonical_operator, map_error};
 use crate::operator::NativePauliOperatorHandle;
 
-type NativeExpressionNode = (u8, usize, usize, f64);
 type NativeGate = (u8, usize, usize, usize, Vec<usize>, Vec<f64>, Vec<f64>);
+type NativeAngle = (i64, f64);
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeU1CircuitPlan {
@@ -360,31 +360,28 @@ impl NativeU1FinalState {
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, particle_number, schema_version, nparameters, expression_nodes, gates, max_bytes))]
+#[pyo3(signature = (nqubits, particle_number, schema_version, nparameters, angles, gates, max_bytes))]
 pub(crate) fn u1_circuit_plan(
     py: Python<'_>,
     nqubits: usize,
     particle_number: usize,
     schema_version: u32,
     nparameters: usize,
-    expression_nodes: Vec<NativeExpressionNode>,
+    angles: Vec<NativeAngle>,
     gates: Vec<NativeGate>,
     max_bytes: usize,
 ) -> PyResult<NativeU1CircuitPlan> {
     let plan = py.allow_threads(|| {
-        let expressions = expression_nodes
+        let angle_refs = angles
             .into_iter()
-            .map(|(opcode, left, right, constant)| match opcode {
-                0 => Ok(ParameterExprNode::Constant(constant)),
-                1 => Ok(ParameterExprNode::Slot(left)),
-                2 => Ok(ParameterExprNode::Neg(left)),
-                3 => Ok(ParameterExprNode::Add(left, right)),
-                4 => Ok(ParameterExprNode::Sub(left, right)),
-                5 => Ok(ParameterExprNode::Mul(left, right)),
-                6 => Ok(ParameterExprNode::Div(left, right)),
-                _ => Err(PyValueError::new_err("unknown circuit expression opcode")),
+            .map(|(slot, value)| {
+                if slot >= 0 {
+                    AngleRef::Slot(slot as usize)
+                } else {
+                    AngleRef::Static(value)
+                }
             })
-            .collect::<PyResult<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         let operations = gates
             .into_iter()
             .map(
@@ -429,14 +426,9 @@ pub(crate) fn u1_circuit_plan(
                 },
             )
             .collect::<PyResult<Vec<_>>>()?;
-        let program = CircuitProgram::new(
-            schema_version,
-            nqubits,
-            operations,
-            expressions,
-            nparameters,
-        )
-        .map_err(map_error)?;
+        let program =
+            CircuitProgram::new(schema_version, nqubits, operations, angle_refs, nparameters)
+                .map_err(map_error)?;
         let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
         let plan =
             U1CircuitPlan::compile(program, sector, Some(max_bytes as u128)).map_err(map_error)?;

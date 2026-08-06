@@ -37,7 +37,7 @@ def _circuit_workload(circuit_type: type[Any]) -> tuple[Any, tcp.PauliOperator]:
     circuit = circuit_type(8)
     for _layer in range(3):
         for wire in range(8):
-            circuit.ry(wire, theta=tcp.Parameter(wire % 2))
+            circuit.ry(wire, theta=0.01 * (wire + 1))
         for wire in range(0, 7, 2):
             circuit.cnot(wire, wire + 1)
     _, observable = _tape_workload()
@@ -48,10 +48,10 @@ def _cold_factory(kind: str) -> Callable[[], Any]:
     def run() -> Any:
         if kind == "propagation_circuit":
             circuit, observable = _circuit_workload(tcp.PropagationCircuit)
-            return circuit.compile(observable)
+            return circuit.expectation(observable)
         if kind == "spps_circuit":
             circuit, observable = _circuit_workload(tcp.SPPSCircuit)
-            return circuit.compile(observable)
+            return circuit.expectation(observable, samples_per_term=32, seed=7)
         tape, observable = _tape_workload()
         if kind == "propagation_engine":
             return advanced.PropagationEngine(tape, observable)
@@ -67,19 +67,19 @@ def _cold_factory(kind: str) -> Callable[[], Any]:
 def _cached_factory(kind: str) -> tuple[Callable[[], Any], dict[str, Any]]:
     if kind == "propagation_circuit":
         circuit, observable = _circuit_workload(tcp.PropagationCircuit)
-        circuit.compile(observable)
-        return lambda: circuit.compile(observable), {
+        circuit.expectation(observable)
+        return lambda: circuit.expectation(observable), {
             "gate_count": len(circuit),
-            "parameter_count": circuit.nparameters,
+            "angle_count": circuit.angle_count,
             "observable_term_count": observable.term_count,
             "structural_conversion_included": False,
         }
     if kind == "spps_circuit":
         circuit, observable = _circuit_workload(tcp.SPPSCircuit)
-        circuit.compile(observable)
-        return lambda: circuit.compile(observable), {
+        circuit.expectation(observable, samples_per_term=32, seed=7)
+        return lambda: circuit.expectation(observable, samples_per_term=32, seed=7), {
             "gate_count": len(circuit),
-            "parameter_count": circuit.nparameters,
+            "angle_count": circuit.angle_count,
             "observable_term_count": observable.term_count,
             "structural_conversion_included": False,
         }

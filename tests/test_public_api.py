@@ -39,8 +39,6 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "MajoranaTerm",
         "MajoranaWord",
         "OperatorSpace",
-        "Parameter",
-        "ParameterExpr",
         "PauliOperator",
         "PauliPhase",
         "PauliProduct",
@@ -78,17 +76,19 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "GateTape",
         "NativeMVPPlan",
         "OperatorBuilder",
-        "PropagationCircuitPlan",
         "PropagationEngine",
-        "SPPSCircuitPlan",
         "SPPSEngine",
-        "U1CircuitPlan",
         "U1MvpPlan",
         "U1RestrictedOperator",
         "Z2TaperingPlan",
     )
     assert not hasattr(tcp, "NativeMVPPlan")
     assert not hasattr(tcp, "GateTape")
+    assert not hasattr(tcp, "Parameter")
+    assert not hasattr(tcp, "ParameterExpr")
+    assert not hasattr(advanced, "PropagationCircuitPlan")
+    assert not hasattr(advanced, "SPPSCircuitPlan")
+    assert not hasattr(advanced, "U1CircuitPlan")
 
 
 def test_operator_counts_and_unified_code_validation() -> None:
@@ -211,7 +211,7 @@ def test_circuit_capabilities_hermiticity_and_u1_state_contract() -> None:
     with pytest.raises(ValueError, match="Hermitian"):
         propagation.expectation(nonhermitian)
     with pytest.raises(ValueError, match="Hermitian"):
-        spps.compile(nonhermitian)
+        spps.expectation(nonhermitian, samples_per_term=4, seed=1)
 
     circuit = tcp.U1Circuit(3, particle_number=1, occupied=[2])
     assert not hasattr(circuit, "k")
@@ -261,8 +261,8 @@ def test_u1_exact_hermiticity_uses_the_native_handle(
     circuit = tcp.U1Circuit(1, particle_number=0)
     circuit.value_and_grad(observable)
     circuit.value_and_grad(observable)
-    plan = circuit.compile()
-    plan.value_and_grad(None, observable)
+    result = circuit.value_and_grad(observable)
+    assert result.gradient.shape == (0,)
 
 
 def test_equal_operator_values_have_equal_hashes_without_materialization(

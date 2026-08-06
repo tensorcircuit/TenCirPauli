@@ -6,7 +6,6 @@ from .charge import (
     AdditiveSymmetryAnalysis,
     ChargeSector,
 )
-from .circuit import Parameter, ParameterExpr
 from .grouping import (
     GeneralCommutingGroupingResult,
     QWCGroupingResult,
@@ -88,8 +87,6 @@ __all__ = [
     "MajoranaTerm",
     "MajoranaWord",
     "OperatorSpace",
-    "Parameter",
-    "ParameterExpr",
     "PauliOperator",
     "PauliPhase",
     "PauliProduct",

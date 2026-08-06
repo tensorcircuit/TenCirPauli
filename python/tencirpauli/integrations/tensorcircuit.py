@@ -28,7 +28,6 @@ class TensorCircuitTapeConversion:
     """A supported TensorCircuit QIR converted to a native ``GateTape``."""
 
     tape: GateTape
-    parameters: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -36,7 +35,6 @@ class TensorCircuitU1Conversion:
     """A supported TensorCircuit U(1) QIR converted to ``U1Circuit``."""
 
     circuit: U1Circuit
-    parameters: tuple[Any, ...]
 
 
 def require_tensorcircuit() -> Any:
@@ -52,15 +50,8 @@ def require_tensorcircuit() -> Any:
 
 def gate_tape_from_circuit(
     circuit: Any,
-    *,
-    parameter_order: Optional[Sequence[Any]] = None,
 ) -> TensorCircuitTapeConversion:
-    """Convert supported numeric/direct-symbol TensorCircuit QIR to a tape.
-
-    Only fixed Clifford gates and the six Pauli rotations with a direct
-    numeric angle or one direct SymPy symbol are accepted.  The adapter does
-    not connect the resulting tape to TensorCircuit autodiff or tracing.
-    """
+    """Convert concrete TensorCircuit QIR to a native gate tape."""
     require_tensorcircuit()
     if not hasattr(circuit, "to_qir"):
         raise TypeError("circuit must provide TensorCircuit to_qir()")
@@ -69,16 +60,7 @@ def gate_tape_from_circuit(
     if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
         raise ValueError("could not determine circuit qubit count")
 
-    try:
-        sympy_module: Any = importlib.import_module("sympy")
-    except ImportError:
-        sympy_module = None
-
-    def is_symbol(value: Any) -> bool:
-        return sympy_module is not None and isinstance(value, sympy_module.Symbol)
-
-    operations: list[tuple[str, tuple[int, ...], Any]] = []
-    symbols: list[Any] = []
+    operations: list[tuple[str, tuple[int, ...], float | None]] = []
     fixed = {"x", "y", "z", "h", "s", "sdg", "cnot", "cz", "swap"}
     rotations = {"rx", "ry", "rz", "rxx", "ryy", "rzz"}
     for instruction in qir:
@@ -97,34 +79,17 @@ def gate_tape_from_circuit(
         if not isinstance(parameters, dict) or set(parameters) != {"theta"}:
             raise ValueError(f"{name} requires one direct theta parameter")
         angle = parameters["theta"]
-        if is_symbol(angle):
-            if angle not in symbols:
-                symbols.append(angle)
-            operations.append((name, wires, angle))
-        else:
-            if isinstance(angle, (bool, np.bool_)):
-                raise TypeError("TensorCircuit angles must be finite real values")
-            try:
-                numeric_angle = float(angle)
-            except (TypeError, ValueError) as error:
-                raise ValueError(
-                    "TensorCircuit angles must be numeric or direct SymPy symbols"
-                ) from error
-            if not math.isfinite(numeric_angle):
-                raise ValueError("TensorCircuit angles must be finite")
-            operations.append((name, wires, numeric_angle))
-
-    if parameter_order is None:
-        ordered_symbols = tuple(symbols)
-    else:
-        ordered_symbols = tuple(parameter_order)
-        if len(set(ordered_symbols)) != len(ordered_symbols):
-            raise ValueError("parameter_order must not contain duplicates")
-        if set(ordered_symbols) != set(symbols) or any(
-            not is_symbol(symbol) for symbol in ordered_symbols
-        ):
-            raise ValueError("parameter_order must exactly cover direct QIR symbols")
-    symbol_slots = {symbol: index for index, symbol in enumerate(ordered_symbols)}
+        if isinstance(angle, (bool, np.bool_)):
+            raise TypeError("TensorCircuit angles must be finite real values")
+        try:
+            numeric_angle = float(angle)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "TensorCircuit angles must be concrete numeric values"
+            ) from error
+        if not math.isfinite(numeric_angle):
+            raise ValueError("TensorCircuit angles must be finite")
+        operations.append((name, wires, numeric_angle))
 
     tape = GateTape(nqubits)
     for name, wires, angle in operations:
@@ -140,17 +105,13 @@ def gate_tape_from_circuit(
         else:
             append = getattr(tape, name)
             wire_args = (wires[0], wires[1])
-        if is_symbol(angle):
-            append(*wire_args, parameter=symbol_slots[angle])
-        else:
-            append(*wire_args, angle=angle)
-    return TensorCircuitTapeConversion(tape=tape, parameters=ordered_symbols)
+        assert angle is not None
+        append(*wire_args, angle=angle)
+    return TensorCircuitTapeConversion(tape=tape)
 
 
 def u1_circuit_from_tensorcircuit(
     circuit: Any,
-    *,
-    parameter_order: Optional[Sequence[Any]] = None,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> TensorCircuitU1Conversion:
     """Convert TensorCircuit U1Circuit QIR without importing it at module load."""
@@ -166,16 +127,7 @@ def u1_circuit_from_tensorcircuit(
     if "k" not in circuit_params and "filled" not in circuit_params:
         raise ValueError("TensorCircuit U1 circuit must expose k or filled")
 
-    try:
-        sympy_module: Any = importlib.import_module("sympy")
-    except ImportError:
-        sympy_module = None
-
-    def is_symbol(value: Any) -> bool:
-        return sympy_module is not None and isinstance(value, sympy_module.Symbol)
-
     qir: list[dict[str, object]] = []
-    symbols: list[Any] = []
     supported = {"rz", "rzz", "cz", "cphase", "swap", "iswap", "diagonal"}
     for instruction in circuit.to_qir():
         if not isinstance(instruction, dict):
@@ -190,19 +142,15 @@ def u1_circuit_from_tensorcircuit(
             if not isinstance(parameters, dict) or set(parameters) != {"theta"}:
                 raise ValueError(f"{name} requires one theta parameter")
             theta = parameters["theta"]
-            if is_symbol(theta):
-                if theta not in symbols:
-                    symbols.append(theta)
-            else:
-                try:
-                    numeric = float(theta)
-                except (TypeError, ValueError) as error:
-                    raise ValueError(
-                        "U1Circuit angles must be numeric or direct symbols"
-                    ) from error
-                if not math.isfinite(numeric):
-                    raise ValueError("U1Circuit angles must be finite")
-                theta = numeric
+            try:
+                numeric = float(theta)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "U1Circuit angles must be concrete numeric values"
+                ) from error
+            if not math.isfinite(numeric):
+                raise ValueError("U1Circuit angles must be finite")
+            theta = numeric
             item["parameters"] = {"theta": theta}
         if name == "diagonal":
             gate = instruction.get("gate")
@@ -211,24 +159,13 @@ def u1_circuit_from_tensorcircuit(
             item["diagonal"] = values
         qir.append(item)
 
-    if parameter_order is None:
-        ordered_symbols = tuple(symbols)
-    else:
-        ordered_symbols = tuple(parameter_order)
-        if len(set(ordered_symbols)) != len(ordered_symbols):
-            raise ValueError("parameter_order must not contain duplicates")
-        if set(ordered_symbols) != set(symbols) or any(
-            not is_symbol(symbol) for symbol in ordered_symbols
-        ):
-            raise ValueError("parameter_order must exactly cover direct QIR symbols")
     params = dict(circuit_params)
     params["nqubits"] = nqubits
     params["particle_number"] = params.pop("k", None)
     params["occupied"] = params.pop("filled", None)
     params["initial_state"] = params.pop("inputs", None)
-    params["parameter_order"] = ordered_symbols
     converted = U1Circuit.from_qir(qir, params, max_bytes=max_bytes)
-    return TensorCircuitU1Conversion(converted, ordered_symbols)
+    return TensorCircuitU1Conversion(converted)
 
 
 def backend_mvp(

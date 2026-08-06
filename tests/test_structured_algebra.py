@@ -887,7 +887,7 @@ def test_finite_boson_large_ladder_factor_is_target_consistent() -> None:
 
 
 def test_uniform_qudit_backend_mvp_uses_direct_weyl_plan() -> None:
-    import tensorcircuit as tc
+    tc = pytest.importorskip("tensorcircuit")
 
     tc.set_backend("numpy")
     operator = tcp.QuditWeylOperator.from_terms(
@@ -1104,7 +1104,7 @@ def test_tensor_product_jordan_wigner_adapter_matches_native(
 def test_uniform_weyl_backend_numpy_jax_matrix(
     dimension: int, backend_name: str
 ) -> None:
-    import tensorcircuit as tc
+    tc = pytest.importorskip("tensorcircuit")
 
     if backend_name == "jax":
         jax = pytest.importorskip("jax")

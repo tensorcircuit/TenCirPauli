@@ -1,8 +1,8 @@
 //! Backend-neutral logical circuit representation.
 //!
-//! This module deliberately contains no sector, basis, or state-vector
-//! assumptions. Execution backends consume the validated program and attach
-//! their own compiled metadata.
+//! Angles are either compile-time constants or indices into one flat runtime
+//! angle vector.  Runtime indices are an internal numerical ABI; this module
+//! contains no symbolic expression language.
 
 use std::sync::Arc;
 
@@ -11,20 +11,12 @@ use crate::scalar::Complex64;
 
 pub const CIRCUIT_SCHEMA_VERSION: u32 = 1;
 
-/// A topologically ordered arithmetic expression node for a real gate angle.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ParameterExprNode {
-    Constant(f64),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AngleRef {
+    Static(f64),
     Slot(usize),
-    Neg(usize),
-    Add(usize, usize),
-    Sub(usize, usize),
-    Mul(usize, usize),
-    Div(usize, usize),
 }
 
-/// A supported logical gate. The angle index refers to a node in the shared
-/// parameter program; static angles are represented by Constant nodes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CircuitGate {
     Rz {
@@ -60,13 +52,12 @@ pub enum CircuitGate {
     },
 }
 
-/// Validated logical circuit schema shared by future execution backends.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CircuitProgram {
     schema_version: u32,
     nqubits: usize,
     operations: Arc<[CircuitGate]>,
-    parameter_program: Arc<[ParameterExprNode]>,
+    angles: Arc<[AngleRef]>,
     nparameters: usize,
 }
 
@@ -75,7 +66,7 @@ impl CircuitProgram {
         schema_version: u32,
         nqubits: usize,
         operations: Vec<CircuitGate>,
-        parameter_program: Vec<ParameterExprNode>,
+        angles: Vec<AngleRef>,
         nparameters: usize,
     ) -> Result<Self, PauliError> {
         if schema_version != CIRCUIT_SCHEMA_VERSION {
@@ -83,15 +74,15 @@ impl CircuitProgram {
                 context: "unknown schema version",
             });
         }
-        validate_parameter_program(&parameter_program, nparameters)?;
+        validate_angles(&angles, nparameters)?;
         for operation in &operations {
-            validate_gate(operation, nqubits, parameter_program.len())?;
+            validate_gate(operation, nqubits, angles.len())?;
         }
         Ok(Self {
             schema_version,
             nqubits,
             operations: Arc::from(operations.into_boxed_slice()),
-            parameter_program: Arc::from(parameter_program.into_boxed_slice()),
+            angles: Arc::from(angles.into_boxed_slice()),
             nparameters,
         })
     }
@@ -99,24 +90,22 @@ impl CircuitProgram {
     pub fn schema_version(&self) -> u32 {
         self.schema_version
     }
-
     pub fn nqubits(&self) -> usize {
         self.nqubits
     }
-
     pub fn operations(&self) -> &[CircuitGate] {
         &self.operations
     }
-
-    pub fn parameter_program(&self) -> &[ParameterExprNode] {
-        &self.parameter_program
+    pub fn angles(&self) -> &[AngleRef] {
+        &self.angles
     }
-
+    pub fn angle_count(&self) -> usize {
+        self.angles.len()
+    }
     pub fn nparameters(&self) -> usize {
         self.nparameters
     }
 
-    /// Evaluate all expression nodes in one topological pass.
     pub fn evaluate_parameters(&self, parameters: &[f64]) -> Result<Vec<f64>, PauliError> {
         if parameters.len() != self.nparameters {
             return Err(PauliError::InvalidParameterLength {
@@ -127,133 +116,63 @@ impl CircuitProgram {
         if let Some(index) = parameters.iter().position(|value| !value.is_finite()) {
             return Err(PauliError::NonFiniteParameter { index });
         }
-        let mut values: Vec<f64> = Vec::with_capacity(self.parameter_program.len());
-        for node in self.parameter_program.iter() {
-            let value = match *node {
-                ParameterExprNode::Constant(value) => value,
-                ParameterExprNode::Slot(slot) => parameters[slot],
-                ParameterExprNode::Neg(child) => -values[child],
-                ParameterExprNode::Add(left, right) => values[left] + values[right],
-                ParameterExprNode::Sub(left, right) => values[left] - values[right],
-                ParameterExprNode::Mul(left, right) => values[left] * values[right],
-                ParameterExprNode::Div(left, right) => {
-                    if values[right] == 0.0 {
-                        return Err(PauliError::InvalidCircuit {
-                            context: "parameter expression divides by zero",
-                        });
-                    }
-                    values[left] / values[right]
-                }
-            };
-            values.push(value);
-        }
-        Ok(values)
+        self.angles
+            .iter()
+            .map(|angle| match *angle {
+                AngleRef::Static(value) => Ok(value),
+                AngleRef::Slot(slot) => Ok(parameters[slot]),
+            })
+            .collect()
     }
 
-    /// Reverse local angle derivatives through the shared expression DAG.
-    pub fn reverse_parameter_program(
+    pub fn gradient_from_angle_adjoint(
         &self,
-        values: &[f64],
-        node_adjoint: &[f64],
+        angle_adjoint: &[f64],
     ) -> Result<Vec<f64>, PauliError> {
-        if values.len() != self.parameter_program.len()
-            || node_adjoint.len() != self.parameter_program.len()
-        {
+        if angle_adjoint.len() != self.angles.len() {
             return Err(PauliError::InvalidCircuit {
-                context: "parameter reverse buffers have the wrong length",
+                context: "angle derivative buffer has the wrong length",
             });
         }
-        let mut adjoint = node_adjoint.to_vec();
         let mut gradient = vec![0.0; self.nparameters];
-        for index in (0..self.parameter_program.len()).rev() {
-            let contribution = adjoint[index];
-            match self.parameter_program[index] {
-                ParameterExprNode::Constant(_) => {}
-                ParameterExprNode::Slot(slot) => gradient[slot] += contribution,
-                ParameterExprNode::Neg(child) => adjoint[child] -= contribution,
-                ParameterExprNode::Add(left, right) => {
-                    adjoint[left] += contribution;
-                    adjoint[right] += contribution;
-                }
-                ParameterExprNode::Sub(left, right) => {
-                    adjoint[left] += contribution;
-                    adjoint[right] -= contribution;
-                }
-                ParameterExprNode::Mul(left, right) => {
-                    adjoint[left] += contribution * values[right];
-                    adjoint[right] += contribution * values[left];
-                }
-                ParameterExprNode::Div(left, right) => {
-                    if values[right] == 0.0 {
-                        return Err(PauliError::InvalidCircuit {
-                            context: "parameter expression divides by zero",
-                        });
-                    }
-                    adjoint[left] += contribution / values[right];
-                    adjoint[right] -= contribution * values[left] / values[right].powi(2);
-                }
+        for (adjoint, angle) in angle_adjoint.iter().zip(self.angles.iter()) {
+            if let AngleRef::Slot(slot) = *angle {
+                gradient[slot] += *adjoint;
             }
         }
         Ok(gradient)
     }
 }
 
-fn validate_parameter_program(
-    nodes: &[ParameterExprNode],
-    nparameters: usize,
-) -> Result<(), PauliError> {
-    let mut observed_slots = vec![false; nparameters];
-    for (index, node) in nodes.iter().enumerate() {
-        let operands = match *node {
-            ParameterExprNode::Constant(value) => {
-                if !value.is_finite() {
-                    return Err(PauliError::InvalidCircuit {
-                        context: "parameter expression constant is non-finite",
-                    });
-                }
-                None
+fn validate_angles(angles: &[AngleRef], nparameters: usize) -> Result<(), PauliError> {
+    let mut observed = vec![false; nparameters];
+    for angle in angles {
+        match *angle {
+            AngleRef::Static(value) if !value.is_finite() => {
+                return Err(PauliError::InvalidCircuit {
+                    context: "static circuit angle is non-finite",
+                });
             }
-            ParameterExprNode::Slot(slot) => {
+            AngleRef::Static(_) => {}
+            AngleRef::Slot(slot) => {
                 if slot >= nparameters {
                     return Err(PauliError::InvalidCircuit {
-                        context: "parameter slot is outside the declared range",
+                        context: "circuit angle slot is outside the declared range",
                     });
                 }
-                observed_slots[slot] = true;
-                None
-            }
-            ParameterExprNode::Neg(child) => Some([child, 0]),
-            ParameterExprNode::Add(left, right)
-            | ParameterExprNode::Sub(left, right)
-            | ParameterExprNode::Mul(left, right)
-            | ParameterExprNode::Div(left, right) => Some([left, right]),
-        };
-        if let Some(operands) = operands {
-            let count = if matches!(node, ParameterExprNode::Neg(_)) {
-                1
-            } else {
-                2
-            };
-            if operands[..count].iter().any(|child| *child >= index) {
-                return Err(PauliError::InvalidCircuit {
-                    context: "parameter expression is not topologically ordered",
-                });
+                observed[slot] = true;
             }
         }
     }
-    if observed_slots.iter().any(|observed| !observed) {
+    if observed.iter().any(|value| !value) {
         return Err(PauliError::InvalidCircuit {
-            context: "parameter slots must cover 0..nparameters-1 without holes",
+            context: "circuit angle slots must cover 0..nparameters-1 without holes",
         });
     }
     Ok(())
 }
 
-fn validate_gate(
-    gate: &CircuitGate,
-    nqubits: usize,
-    expression_count: usize,
-) -> Result<(), PauliError> {
+fn validate_gate(gate: &CircuitGate, nqubits: usize, angle_count: usize) -> Result<(), PauliError> {
     let check_wire = |wire: usize| {
         if wire >= nqubits {
             Err(PauliError::InvalidWire { wire, nqubits })
@@ -270,9 +189,9 @@ fn validate_gate(
         Ok(())
     };
     let check_angle = |angle: usize| {
-        if angle >= expression_count {
+        if angle >= angle_count {
             Err(PauliError::InvalidCircuit {
-                context: "gate angle node is outside the parameter program",
+                context: "gate angle is outside the circuit angle table",
             })
         } else {
             Ok(())
@@ -344,25 +263,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expression_program_evaluates_and_reverses() {
+    fn numerical_angle_table_evaluates_static_and_runtime_angles() {
         let program = CircuitProgram::new(
             CIRCUIT_SCHEMA_VERSION,
-            4,
-            vec![CircuitGate::Rz { wire: 0, angle: 3 }],
-            vec![
-                ParameterExprNode::Slot(0),
-                ParameterExprNode::Constant(2.0),
-                ParameterExprNode::Neg(1),
-                ParameterExprNode::Add(0, 2),
-            ],
+            2,
+            vec![CircuitGate::Rz { wire: 0, angle: 1 }],
+            vec![AngleRef::Static(2.0), AngleRef::Slot(0)],
             1,
         )
         .unwrap();
-        let values = program.evaluate_parameters(&[0.5]).unwrap();
-        assert_eq!(values, vec![0.5, 2.0, -2.0, -1.5]);
-        let gradient = program
-            .reverse_parameter_program(&values, &[0.0, 0.0, 0.0, 1.0])
-            .unwrap();
-        assert_eq!(gradient, vec![1.0]);
+        assert_eq!(program.evaluate_parameters(&[0.5]).unwrap(), vec![2.0, 0.5]);
+        assert_eq!(
+            program.gradient_from_angle_adjoint(&[3.0, 4.0]).unwrap(),
+            vec![4.0]
+        );
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::circuit_ir::{CircuitGate, CircuitProgram, ParameterExprNode};
+use crate::circuit_ir::{CircuitGate, CircuitProgram};
 use crate::error::PauliError;
 use crate::operator::PauliOperator;
 use crate::scalar::{is_exact_zero, Complex64};
@@ -672,7 +672,7 @@ impl U1CircuitPlan {
         )?;
         let value = inner_product(state, &value_state).re;
         let mut lambda = value_state;
-        let mut node_adjoint = vec![0.0; self.program.parameter_program().len()];
+        let mut angle_adjoint = vec![0.0; self.program.angle_count()];
         let mut state = state.to_vec();
         for gate in self.gates.iter().rev() {
             self.apply_inverse_gate(&mut state, gate, values)?;
@@ -681,15 +681,13 @@ impl U1CircuitPlan {
                 &lambda,
                 gate,
                 values,
-                &mut node_adjoint,
+                &mut angle_adjoint,
                 self.word_count,
                 &self.basis_words,
             )?;
             self.apply_inverse_gate(&mut lambda, gate, values)?;
         }
-        let gradient = self
-            .program
-            .reverse_parameter_program(values, &node_adjoint)?;
+        let gradient = self.program.gradient_from_angle_adjoint(&angle_adjoint)?;
         Ok((value, gradient))
     }
 
@@ -917,28 +915,14 @@ fn pair_micro_operation(gate: &CircuitGate) -> Option<PairMicroOp> {
 }
 
 fn static_expression_values(program: &CircuitProgram) -> Vec<Option<f64>> {
-    let mut values: Vec<Option<f64>> = Vec::with_capacity(program.parameter_program().len());
-    for node in program.parameter_program() {
-        let value = match *node {
-            ParameterExprNode::Constant(value) => Some(value),
-            ParameterExprNode::Slot(_) => None,
-            ParameterExprNode::Neg(child) => values[child].map(|value| -value),
-            ParameterExprNode::Add(left, right) => values[left]
-                .zip(values[right])
-                .map(|(left, right)| left + right),
-            ParameterExprNode::Sub(left, right) => values[left]
-                .zip(values[right])
-                .map(|(left, right)| left - right),
-            ParameterExprNode::Mul(left, right) => values[left]
-                .zip(values[right])
-                .map(|(left, right)| left * right),
-            ParameterExprNode::Div(left, right) => values[left]
-                .zip(values[right])
-                .and_then(|(left, right)| (right != 0.0).then_some(left / right)),
-        };
-        values.push(value);
-    }
-    values
+    program
+        .angles()
+        .iter()
+        .map(|angle| match *angle {
+            crate::circuit_ir::AngleRef::Static(value) => Some(value),
+            crate::circuit_ir::AngleRef::Slot(_) => None,
+        })
+        .collect()
 }
 
 fn static_diagonal_payload(

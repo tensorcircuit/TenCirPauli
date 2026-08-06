@@ -6,6 +6,8 @@ The standard automated benchmark suite lives under `benchmarks/python/`. The alg
 
 The manual U1 execution A/B cases are defined in `benchmarks/manual/u1_execution_ab.py`. Run `conda run -p .conda python benchmarks/manual/u1_execution_ab.py --output /private/tmp/u1_execution_ab.json` after a release extension build; it covers repeated same-pair blocks, diagonal-heavy static runs, adjoint gradients, facade cache versus stateless terminals, and grouped projected observables. Keep before/after outputs on the same machine and compare numerical metadata alongside medians.
 
+The actual-angle circuit boundary benchmark is `benchmarks/manual/circuit_differentiation_ab.py`. It records public forward expectation, occurrence-space native value-and-gradient, and optional warm JAX `jit(value_and_grad)` timings, including callback transfer metadata. Its forward tape uses zero runtime parameters while its gradient tape uses one private slot per angle occurrence, making the performance boundary explicit.
+
 ## Setup
 
 Install the benchmark extra in the active development environment, then make sure Rust, Cargo, and maturin come from the same selected toolchain:

@@ -15,10 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
-
 import tencirpauli as tcp
-from tencirpauli import advanced
 
 
 def _measure(function: Callable[[], object], repeats: int) -> float:
@@ -35,12 +32,11 @@ def _repeated_pair() -> dict[str, object]:
     circuit = tcp.U1Circuit(40, particle_number=5, occupied=list(range(5)))
     for index in range(32):
         circuit.iswap(0, 1, theta=0.013 + index * 0.001)
-    plan = circuit.compile()
-    value = _measure(lambda: plan.run(circuit._initial_state, ()), 5)
+    value = _measure(circuit.state, 5)
     return {
         "median_ms": value,
         "logical_gates": 32,
-        "compiled_gates": int(plan._native.gate_count),
+        "angle_count": circuit.angle_count,
         "dimension": circuit.dimension,
     }
 
@@ -49,50 +45,42 @@ def _diagonal_heavy() -> dict[str, object]:
     circuit = tcp.U1Circuit(20, particle_number=10, occupied=list(range(10)))
     for _ in range(32):
         circuit.rz(0, theta=0.01)
-    plan = circuit.compile()
-    value = _measure(lambda: plan.run(circuit._initial_state, ()), 7)
+    value = _measure(circuit.state, 7)
     return {
         "median_ms": value,
         "logical_gates": 32,
-        "compiled_gates": int(plan._native.gate_count),
+        "angle_count": circuit.angle_count,
         "dimension": circuit.dimension,
     }
 
 
 def _gradient() -> dict[str, object]:
     circuit = tcp.U1Circuit(20, particle_number=5, occupied=list(range(5)))
-    parameters = []
     for index in range(12):
-        parameter = tcp.Parameter(index)
-        parameters.append(0.07 + index * 0.01)
-        circuit.iswap(0, 1, theta=parameter)
-        circuit.rz(index % 4, theta=parameter)
+        circuit.iswap(0, 1, theta=0.07 + index * 0.01)
+        circuit.rz(index % 4, theta=0.07 + index * 0.01)
     observable = tcp.PauliOperator(20, [([3] + [0] * 19, 1.0)])
     value = _measure(
-        lambda: circuit.value_and_grad(observable, parameters=np.asarray(parameters)),
+        lambda: circuit.value_and_grad(observable),
         5,
     )
     return {
         "median_ms": value,
         "logical_gates": 24,
-        "compiled_gates": int(circuit.compile()._native.gate_count),
+        "angle_count": circuit.angle_count,
         "dimension": circuit.dimension,
     }
 
 
-def _pair_map_compile() -> dict[str, object]:
+def _pair_map_setup() -> dict[str, object]:
     circuit = tcp.U1Circuit(40, particle_number=5, occupied=list(range(5)))
     circuit.iswap(0, 1, theta=0.13)
 
-    def compile() -> advanced.U1CircuitPlan:
-        circuit._native_plan = None
-        return circuit.compile()
-
-    value = _measure(compile, 5)
+    value = _measure(circuit.state, 5)
     return {
         "median_ms": value,
         "dimension": circuit.dimension,
-        "compiled_gates": int(circuit.compile()._native.gate_count),
+        "angle_count": circuit.angle_count,
     }
 
 
@@ -101,16 +89,11 @@ def _facade_cache() -> dict[str, object]:
     codes = [0] * 40
     codes[0] = 3
     observable = tcp.PauliOperator(40, [(codes, 1.0)])
-    plan = circuit.compile()
     first = _measure(lambda: circuit.expectation(observable), 1)
     repeated = _measure(lambda: circuit.expectation(observable), 7)
-    stateless = _measure(
-        lambda: plan.expectation(circuit._initial_state, observable), 7
-    )
     return {
         "first_ms": first,
         "repeated_expectation_ms": repeated,
-        "stateless_expectation_ms": stateless,
         "dimension": circuit.dimension,
     }
 
@@ -129,9 +112,7 @@ def _projected_observable() -> dict[str, object]:
         structures.append(codes)
         coefficients.append(0.01 * (wire - 1))
     observable = tcp.PauliOperator(20, list(zip(structures, coefficients)))
-    value = _measure(
-        lambda: circuit.compile().expectation(circuit._initial_state, observable), 5
-    )
+    value = _measure(lambda: circuit.expectation(observable), 5)
     return {
         "median_ms": value,
         "terms": len(observable.terms),
@@ -143,7 +124,7 @@ CASES = {
     "repeated_pair": _repeated_pair,
     "diagonal_heavy": _diagonal_heavy,
     "gradient": _gradient,
-    "pair_map_compile": _pair_map_compile,
+    "pair_map_setup": _pair_map_setup,
     "facade_cache": _facade_cache,
     "projected_observable": _projected_observable,
 }

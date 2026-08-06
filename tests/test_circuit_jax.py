@@ -1,0 +1,94 @@
+"""JAX boundary tests for scalar circuit expectations."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+import tencirpauli as tcp
+
+
+def _jax() -> object:
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    return jax
+
+
+def test_propagation_jax_eager_jit_and_pytree_chain_rule() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+
+    def objective(tree: dict[str, object]) -> object:
+        circuit = tcp.PropagationCircuit(1)
+        circuit.ry(0, theta=tree["shared"])
+        circuit.ry(0, theta=tree["shared"])
+        circuit.rz(0, theta=2.0 * tree["scale"] + jnp.sin(tree["smooth"]))
+        return circuit.expectation_jax(observable)
+
+    point = {
+        "shared": jnp.asarray(0.13),
+        "scale": jnp.asarray(0.2),
+        "smooth": jnp.asarray(-0.1),
+    }
+    eager = jax.value_and_grad(objective)(point)
+    compiled = jax.jit(jax.value_and_grad(objective))(point)
+    np.testing.assert_allclose(eager[0], compiled[0])
+    np.testing.assert_allclose(eager[1]["shared"], compiled[1]["shared"])
+    np.testing.assert_allclose(eager[1]["scale"], compiled[1]["scale"])
+    np.testing.assert_allclose(eager[1]["smooth"], compiled[1]["smooth"])
+
+
+def test_u1_and_spps_jax_gradients_use_occurrence_space() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    observable = tcp.PauliOperator.from_terms(2, [("XX", 0.4), ("ZI", -0.7)])
+
+    def u1_objective(x: object) -> object:
+        circuit = tcp.U1Circuit(2, particle_number=1, occupied=[0])
+        circuit.iswap(0, 1, theta=2.0 * x[0] + jnp.sin(x[1]))
+        return circuit.expectation_jax(observable)
+
+    point = jnp.asarray([0.13, -0.27])
+    value, gradient = jax.value_and_grad(u1_objective)(point)
+    native_circuit = tcp.U1Circuit(2, particle_number=1, occupied=[0])
+    native_circuit.iswap(0, 1, theta=float(2.0 * point[0] + jnp.sin(point[1])))
+    native = native_circuit.value_and_grad(observable)
+    np.testing.assert_allclose(value, native.value)
+    np.testing.assert_allclose(
+        gradient,
+        native.gradient[0] * np.asarray([2.0, np.cos(float(point[1]))]),
+        atol=2e-12,
+    )
+
+    spps_observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+
+    def spps_objective(x: object) -> object:
+        circuit = tcp.SPPSCircuit(1)
+        circuit.ry(0, theta=x)
+        return circuit.expectation_jax(spps_observable, samples_per_term=64, seed=19)
+
+    spps_value, spps_gradient = jax.jit(jax.value_and_grad(spps_objective))(
+        jnp.asarray(0.2)
+    )
+    native_spps_circuit = tcp.SPPSCircuit(1)
+    native_spps_circuit.ry(0, theta=0.2)
+    native_spps = native_spps_circuit.value_and_grad(
+        spps_observable, samples_per_term=64, seed=19
+    )
+    np.testing.assert_allclose(spps_value, native_spps.value)
+    np.testing.assert_allclose(spps_gradient, native_spps.gradient[0])
+
+
+def test_jax_terminal_requires_float64() -> None:
+    jax = pytest.importorskip("jax")
+    previous = bool(jax.config.read("jax_enable_x64"))
+    jax.config.update("jax_enable_x64", False)
+    try:
+        circuit = tcp.PropagationCircuit(1)
+        circuit.ry(0, 0.2)
+        observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+        with pytest.raises(ValueError, match="jax_enable_x64"):
+            circuit.expectation_jax(observable)
+    finally:
+        jax.config.update("jax_enable_x64", previous)

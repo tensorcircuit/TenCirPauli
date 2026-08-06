@@ -10,14 +10,7 @@ import numpy as np
 
 from . import _native
 from ._validation import normalize_pauli_code
-from .circuit import (
-    Angle,
-    Parameter,
-    ParameterExpr,
-    _CircuitProgram,
-    _gate,
-    _LogicalGate,
-)
+from .circuit import Angle, _CircuitProgram, _concrete_angle, _gate, _LogicalGate
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     _check_allocation,
@@ -67,44 +60,23 @@ def _state_array(
 
 def _encode_program(
     program: _CircuitProgram,
+    *,
+    gradient: bool,
 ) -> tuple[
-    list[tuple[int, int, int, float]],
+    list[tuple[int, float]],
     list[tuple[int, int, int, int, list[int], list[float], list[float]]],
 ]:
-    nodes: list[tuple[int, int, int, float]] = []
-    node_indices: dict[object, int] = {}
-
-    def visit(value: object) -> int:
-        if isinstance(value, Parameter):
-            key: object = value
-            if key not in node_indices:
-                node_indices[key] = len(nodes)
-                nodes.append((1, value.slot, 0, 0.0))
-            return node_indices[key]
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            constant = float(value)
-            key = ("constant", constant)
-            if key not in node_indices:
-                node_indices[key] = len(nodes)
-                nodes.append((0, 0, 0, constant))
-            return node_indices[key]
-        if not isinstance(value, ParameterExpr):
-            raise TypeError(
-                "gate angle must be a real scalar, Parameter, or ParameterExpr"
-            )
-        child_indices = tuple(visit(child) for child in value.operands)
-        opcode = {"neg": 2, "add": 3, "sub": 4, "mul": 5, "div": 6}[value.operation]
-        key = (value.operation, child_indices)
-        if key not in node_indices:
-            left = child_indices[0]
-            right = child_indices[1] if len(child_indices) == 2 else 0
-            node_indices[key] = len(nodes)
-            nodes.append((opcode, left, right, 0.0))
-        return node_indices[key]
-
+    """Encode concrete or private runtime-slot U1 angles."""
+    angles: list[tuple[int, float]] = []
     encoded_gates = []
     for operation in program.operations:
-        angle = 0 if operation.angle is None else visit(operation.angle)
+        if operation.angle is None:
+            angle = 0
+        else:
+            angle = len(angles)
+            angles.append(
+                (angle, 0.0) if gradient else (-1, _concrete_angle(operation.angle))
+            )
         opcode = {
             "rz": 0,
             "rzz": 1,
@@ -126,7 +98,7 @@ def _encode_program(
                 [value.imag for value in payload],
             )
         )
-    return nodes, encoded_gates
+    return angles, encoded_gates
 
 
 def _pauli_codes(
@@ -201,7 +173,7 @@ class _FinalStateCache:
 
 
 @dataclass(frozen=True, init=False)
-class U1CircuitPlan:
+class _U1CircuitPlan:
     """Immutable compiled execution plan in a fixed-particle-number sector.
 
     The plan acts on vectors of length ``sector.dimension`` and never leaves
@@ -239,7 +211,7 @@ class U1CircuitPlan:
         selected = self._initial_state if initial_state is None else initial_state
         if selected is None:
             raise TypeError(
-                "initial_state must be provided for a standalone U1CircuitPlan"
+                "initial_state must be provided for a standalone U1 circuit plan"
             )
         return _state_array(selected, self.dimension)
 
@@ -318,7 +290,7 @@ class U1CircuitPlan:
         selected_state = self._initial_state if initial_state is None else initial_state
         if selected_state is None:
             raise TypeError(
-                "initial_state must be provided for a standalone U1CircuitPlan"
+                "initial_state must be provided for a standalone U1 circuit plan"
             )
         if observable._native_handle is None:
             raise RuntimeError("U1 observables must retain a native Pauli handle")
@@ -347,7 +319,7 @@ class U1CircuitPlan:
         selected_state = self._initial_state if initial_state is None else initial_state
         if selected_state is None:
             raise TypeError(
-                "initial_state must be provided for a standalone U1CircuitPlan"
+                "initial_state must be provided for a standalone U1 circuit plan"
             )
         if observable._native_handle is None:
             raise RuntimeError("U1 observables must retain a native Pauli handle")
@@ -367,8 +339,8 @@ class U1Circuit:
     Construct with ``particle_number`` and optionally an ``occupied`` basis
     initialization or an explicit restricted-sector ``initial_state``. Gates
     are diagonal or particle-number preserving, and
-    execution is deferred until a state, probability, expectation, or compiled
-    plan is requested.
+    execution is deferred until a state, probability, or expectation terminal
+    is requested.
 
     Examples:
         >>> import tencirpauli as tcp
@@ -445,7 +417,8 @@ class U1Circuit:
         initial.flags.writeable = False
         self._initial_state = initial
         self._program = _CircuitProgram(nqubits)
-        self._native_plan: Optional[U1CircuitPlan] = None
+        self._native_forward_plan: Optional[_U1CircuitPlan] = None
+        self._native_gradient_plan: Optional[_U1CircuitPlan] = None
         self._state_cache: Optional[_FinalStateCache] = None
         self._generation = 0
 
@@ -463,15 +436,16 @@ class U1Circuit:
         result._initial_state = other._initial_state.copy()
         result._initial_state.flags.writeable = False
         result._program = program
-        result._native_plan = None
+        result._native_forward_plan = None
+        result._native_gradient_plan = None
         result._state_cache = None
         result._generation = 0
         return result
 
     @property
-    def nparameters(self) -> int:
-        """Return the number of symbolic parameter slots in the circuit."""
-        return self._program.nparameters
+    def angle_count(self) -> int:
+        """Return the number of gradient-supported gate-angle occurrences."""
+        return self._program.angle_count
 
     @property
     def dimension(self) -> int:
@@ -482,7 +456,8 @@ class U1Circuit:
         self._program = self._program.with_operations(
             (*self._program.operations, operation)
         )
-        self._native_plan = None
+        self._native_forward_plan = None
+        self._native_gradient_plan = None
         self._state_cache = None
         self._generation += 1
 
@@ -535,26 +510,42 @@ class U1Circuit:
             )
         self._append(_gate("diagonal", indices, payload=values.tolist()))
 
-    def compile(self) -> U1CircuitPlan:
-        """Compile and cache the native fixed-sector execution plan."""
-        if self._native_plan is None:
-            expression_nodes, gates = _encode_program(self._program)
+    def _plan(self, gradient: bool) -> _U1CircuitPlan:
+        """Lower and cache one private static or occurrence-slot plan."""
+        attribute = "_native_gradient_plan" if gradient else "_native_forward_plan"
+        cached = cast(Optional[_U1CircuitPlan], getattr(self, attribute))
+        if cached is None:
+            angles, gates = _encode_program(self._program, gradient=gradient)
             native = _native.u1_circuit_plan(
                 self.nqubits,
                 self.particle_number,
                 1,
-                self.nparameters,
-                expression_nodes,
+                self.angle_count if gradient else 0,
+                angles,
                 gates,
                 _effective_max_bytes(self.max_bytes),
             )
-            self._native_plan = U1CircuitPlan(self.sector, native, self._initial_state)
-        return self._native_plan
+            cached = _U1CircuitPlan(self.sector, native, self._initial_state)
+            setattr(self, attribute, cached)
+        return cached
 
-    def _cached_final(
-        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]]
-    ) -> _FinalStateCache:
-        values = _parameter_array(parameters, self.nparameters)
+    def _angles(self) -> np.ndarray[Any, Any]:
+        return cast(
+            np.ndarray[Any, Any],
+            np.ascontiguousarray(
+                np.asarray(
+                    [
+                        _concrete_angle(operation.angle)
+                        for operation in self._program.operations
+                        if operation.angle is not None
+                    ],
+                    dtype=np.float64,
+                ),
+            ),
+        )
+
+    def _cached_final(self) -> _FinalStateCache:
+        values: np.ndarray[Any, Any] = np.empty(0, dtype=np.float64)
         parameter_bits = values.tobytes()
         cache = self._state_cache
         if (
@@ -562,55 +553,42 @@ class U1Circuit:
             or cache.generation != self._generation
             or cache.parameter_bits != parameter_bits
         ):
-            native = self.compile()._native.run_cached(self._initial_state, values)
+            native = self._plan(False)._native.run_cached(self._initial_state, values)
             cache = _FinalStateCache(self._generation, parameter_bits, native)
             self._state_cache = cache
         return cache
 
-    def state(
-        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
-    ) -> np.ndarray[Any, Any]:
+    def state(self) -> np.ndarray[Any, Any]:
         """Return the final state in restricted-sector ordering."""
-        cache = self._cached_final(parameters)
+        cache = self._cached_final()
         if cache.state is None:
             cache.state = _readonly(
                 np.asarray(cache.native.state_array(), dtype=np.complex128)
             )
         return cache.state
 
-    def probability(
-        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
-    ) -> np.ndarray[Any, Any]:
+    def probability(self) -> np.ndarray[Any, Any]:
         """Return probabilities in restricted-sector ordering."""
-        return _readonly(
-            np.asarray(self._cached_final(parameters).native.probability())
-        )
+        return _readonly(np.asarray(self._cached_final().native.probability()))
 
-    def state_full(
-        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
-    ) -> np.ndarray[Any, Any]:
+    def state_full(self) -> np.ndarray[Any, Any]:
         """Return the final state expanded to the full computational basis."""
-        return _readonly(np.asarray(self._cached_final(parameters).native.to_dense()))
+        return _readonly(np.asarray(self._cached_final().native.to_dense()))
 
-    def probability_full(
-        self, parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None
-    ) -> np.ndarray[Any, Any]:
+    def probability_full(self) -> np.ndarray[Any, Any]:
         """Expand and return probabilities over the full computational basis."""
-        return _readonly(
-            np.asarray(self._cached_final(parameters).native.probability_full())
-        )
+        return _readonly(np.asarray(self._cached_final().native.probability_full()))
 
     def expectation(
         self,
         observable: PauliOperator,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> complex:
         """Return a complex expectation for an arbitrary Pauli observable."""
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         if observable._native_handle is None:
             raise RuntimeError("U1 observables must retain a native Pauli handle")
-        real, imaginary = self._cached_final(parameters).native.expectation_handle(
+        real, imaginary = self._cached_final().native.expectation_handle(
             observable._native_handle
         )
         return complex(float(real), float(imaginary))
@@ -618,13 +596,12 @@ class U1Circuit:
     def value_and_grad(
         self,
         observable: PauliOperator,
-        *,
-        parameters: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
     ) -> U1CircuitValueAndGradient:
         """Return a real value and exact gradient for an exactly Hermitian observable.
 
         The returned owned array is read-only ``float64`` with one entry per
-        parameter slot. ``ValueError`` is raised for a non-Hermitian observable.
+        gate-angle occurrence. ``ValueError`` is raised for a non-Hermitian
+        observable.
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
@@ -632,11 +609,47 @@ class U1Circuit:
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
         if observable._native_handle is None:
             raise RuntimeError("U1 observables must retain a native Pauli handle")
-        value, gradient = self._cached_final(parameters).native.value_and_grad_handle(
-            observable._native_handle
+        value, gradient = self._plan(True)._native.value_and_grad_handle(
+            self._initial_state, observable._native_handle, self._angles()
         )
         return U1CircuitValueAndGradient(
             float(value), _readonly(np.asarray(gradient, dtype=np.float64))
+        )
+
+    def expectation_jax(self, observable: PauliOperator) -> Any:
+        """Return a JAX scalar with one native callback and a custom VJP."""
+        if not isinstance(observable, PauliOperator):
+            raise TypeError("observable must be a PauliOperator")
+        if not observable.is_hermitian():
+            raise ValueError("expectation_jax requires an exactly Hermitian observable")
+        if observable._native_handle is None:
+            raise RuntimeError("U1 observables must retain a native Pauli handle")
+        plan = self._plan(True)
+        initial_state = self._initial_state
+        native_observable = observable._native_handle
+
+        class _Objective:
+            def value_and_grad(
+                self,
+                parameters: np.ndarray[Any, Any],
+                *,
+                checkpoint_interval: Optional[int] = None,
+            ) -> Any:
+                del checkpoint_interval
+                value, gradient = plan._native.value_and_grad_handle(
+                    initial_state, native_observable, parameters
+                )
+                return type("_Result", (), {"value": value, "gradient": gradient})()
+
+        from .jax_support import native_expectation_jax
+
+        return native_expectation_jax(
+            tuple(
+                operation.angle
+                for operation in self._program.operations
+                if operation.angle is not None
+            ),
+            _Objective(),
         )
 
     @classmethod
@@ -644,24 +657,13 @@ class U1Circuit:
         cls,
         circuit: Any,
         *,
-        parameter_order: Optional[Sequence[Any]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1Circuit":
         """Convert a supported TensorCircuit U(1) circuit."""
         from .integrations.tensorcircuit import u1_circuit_from_tensorcircuit
 
-        conversion = u1_circuit_from_tensorcircuit(
-            circuit, parameter_order=parameter_order, max_bytes=max_bytes
-        )
+        conversion = u1_circuit_from_tensorcircuit(circuit, max_bytes=max_bytes)
         return conversion.circuit
-
-    def bind_parameters(self, values: Mapping[int, float]) -> "U1Circuit":
-        """Return a copy with selected parameter slots replaced by constants."""
-        return self._from_program(self, self._program.bind(values))
-
-    def remap_parameters(self, mapping: Mapping[int, int]) -> "U1Circuit":
-        """Return a copy with parameter slots renamed according to ``mapping``."""
-        return self._from_program(self, self._program.remap(mapping))
 
     def inverse(self) -> "U1Circuit":
         """Return a copy with the gate sequence inverted."""
@@ -670,19 +672,11 @@ class U1Circuit:
     def append(
         self,
         other: "U1Circuit",
-        *,
-        parameter_map: Optional[Mapping[int, int]] = None,
     ) -> "U1Circuit":
-        """Return the concatenation of two compatible U1 circuits.
-
-        ``parameter_map`` optionally remaps the appended circuit's parameter
-        slots before concatenation.
-        """
+        """Return the concatenation of two compatible U1 circuits."""
         if not isinstance(other, U1Circuit):
             raise TypeError("other must be a U1Circuit")
-        return self._from_program(
-            self, self._program.append(other._program, parameter_map)
-        )
+        return self._from_program(self, self._program.append(other._program))
 
     def to_qir(self) -> list[dict[str, object]]:
         """Serialize the circuit to deterministic JSON-like gate records."""
@@ -709,23 +703,11 @@ class U1Circuit:
             initial_state=cast(Any, circuit_params.get("initial_state")),
             max_bytes=max_bytes,
         )
-        parameter_order: tuple[object, ...] = tuple(
-            cast(Sequence[object], circuit_params.get("parameter_order", ()))
-        )
-        symbols: dict[object, Parameter] = {}
 
         def angle(value: object, default: float) -> Angle:
             if value is None:
                 return default
-            if isinstance(value, (Parameter, ParameterExpr, int, float)):
-                return value
-            if parameter_order and value in parameter_order:
-                if value not in symbols:
-                    symbols[value] = Parameter(parameter_order.index(value))
-                return symbols[value]
-            raise TypeError(
-                "QIR angles must be finite real values or direct parameters"
-            )
+            return _concrete_angle(value)
 
         for item in qir:
             name_value = item.get("name", item.get("gate"))
@@ -766,4 +748,4 @@ class U1Circuit:
         return circuit
 
 
-__all__ = ["U1Circuit", "U1CircuitPlan", "U1CircuitValueAndGradient"]
+__all__ = ["U1Circuit", "U1CircuitValueAndGradient"]

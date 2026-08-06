@@ -13,7 +13,6 @@ import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import tencirpauli as tcp
-from tencirpauli import advanced
 
 
 @dataclass(frozen=True)
@@ -43,15 +42,10 @@ def make_native(workload: U1Workload = WORKLOADS[0]) -> tcp.U1Circuit:
         particle_number=workload.particles,
         occupied=list(range(workload.particles)),
     )
-    layer_parameters = [tcp.Parameter(index) for index in range(workload.layers)]
     for layer in range(workload.layers):
         for wire in range(0, workload.nqubits - 1, 2):
-            circuit.iswap(wire, wire + 1, theta=layer_parameters[layer])
-            circuit.cphase(
-                wire,
-                wire + 1,
-                theta=-0.11 + 0.0 * layer_parameters[layer],
-            )
+            circuit.iswap(wire, wire + 1, theta=0.17 + 0.01 * layer)
+            circuit.cphase(wire, wire + 1, theta=-0.11)
     return circuit
 
 
@@ -100,11 +94,7 @@ def _jax_runner(
         for layer in range(workload.layers):
             for wire in range(0, workload.nqubits - 1, 2):
                 circuit.iswap(wire, wire + 1, theta=parameters[layer])
-                circuit.cphase(
-                    wire,
-                    wire + 1,
-                    theta=-0.11 + 0.0 * parameters[layer],
-                )
+                circuit.cphase(wire, wire + 1, theta=-0.11)
         return circuit.state()
 
     import jax
@@ -159,17 +149,14 @@ def _block_until_ready(value: Any) -> Any:
 
 @pytest.mark.performance_large
 @pytest.mark.parametrize("workload", WORKLOADS, ids=lambda item: item.name)
-def test_native_u1_compile(benchmark: BenchmarkFixture, workload: U1Workload) -> None:
-    circuit = make_native(workload)
+def test_native_u1_setup(benchmark: BenchmarkFixture, workload: U1Workload) -> None:
+    def setup_and_run() -> np.ndarray[Any, Any]:
+        return make_native(workload).state()
 
-    def compile_cold() -> advanced.U1CircuitPlan:
-        circuit._native_plan = None
-        return circuit.compile()
-
-    plan = benchmark(compile_cold)
-    assert plan.dimension == circuit.dimension
+    result = benchmark(setup_and_run)
+    assert result.shape == (math.comb(workload.nqubits, workload.particles),)
     benchmark.extra_info.update(
-        _metadata(circuit, "tencirpauli-rust-compile", workload)
+        _metadata(make_native(workload), "tencirpauli-rust-setup", workload)
     )
 
 
@@ -179,12 +166,8 @@ def test_native_u1_steady_state(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
     circuit = make_native(workload)
-    plan = circuit.compile()
-    parameters = native_parameters(workload)
-    expected = circuit.state(parameters)
-    result = benchmark.pedantic(
-        plan.run, args=(circuit._initial_state, parameters), rounds=5
-    )
+    expected = circuit.state()
+    result = benchmark.pedantic(circuit.state, rounds=5)
     np.testing.assert_allclose(result, expected, atol=1e-12, rtol=1e-12)
     benchmark.extra_info.update(_metadata(circuit, "tencirpauli-rust", workload))
 
@@ -194,11 +177,10 @@ def test_native_u1_steady_state(
 def test_native_u1_end_to_end(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
-    parameters = native_parameters(workload)
-    expected = make_native(workload).state(parameters)
+    expected = make_native(workload).state()
 
     def run() -> np.ndarray[Any, Any]:
-        return make_native(workload).state(parameters)
+        return make_native(workload).state()
 
     result = benchmark.pedantic(run, rounds=5)
     np.testing.assert_allclose(result, expected, atol=1e-12, rtol=1e-12)
@@ -213,7 +195,7 @@ def test_tensorcircuit_jax_jit_first_call(
     benchmark: BenchmarkFixture, workload: U1Workload
 ) -> None:
     runner, initial, angles = _jax_runner(workload)
-    expected = make_native(workload).state(native_parameters(workload))
+    expected = make_native(workload).state()
 
     def run() -> Any:
         return _block_until_ready(runner(initial, angles))

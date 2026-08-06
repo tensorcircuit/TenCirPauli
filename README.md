@@ -117,45 +117,39 @@ Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "
 
 ## Common circuit facade
 
-The circuit facade defines the target Python contract for the three circuit classes. The circuit structure is built once; runtime values are supplied as a parameter vector.
+The circuit facade accepts actual gate angles through `theta=`. Direct gradients are returned in deterministic gate-occurrence order; JAX owns any outer parameter sharing or arithmetic.
 
 ```python
 import tencirpauli as tcp
 
-p0 = tcp.Parameter(0)
-p1 = tcp.Parameter(1)
-
 circuit = tcp.U1Circuit(nqubits=4, particle_number=2, occupied=[0, 1])
-circuit.iswap(0, 1, theta=p0)
-circuit.rzz(1, 2, theta=2.0 * p1 + 0.1)
+circuit.iswap(0, 1, theta=0.2)
+circuit.rzz(1, 2, theta=-0.5)
 
 hamiltonian = tcp.PauliOperator.from_terms(
     4,
     (("XXII", 0.5), ("YYII", 0.5), ("ZIZI", -0.2)),
 )
 
-result = circuit.value_and_grad(
-    hamiltonian,
-    parameters=[0.2, -0.3],
-)
-energy = circuit.expectation(hamiltonian, parameters=[0.2, -0.3])
+result = circuit.value_and_grad(hamiltonian)
+energy = circuit.expectation(hamiltonian)
 ```
 
 The same high-level shape is used by the implemented `PropagationCircuit` and `SPPSCircuit` facades:
 
 ```python
 circuit = tcp.PropagationCircuit(nqubits=4, initial_state=tcp.ZeroState())
-circuit.ry(0, theta=p0)
+circuit.ry(0, theta=0.2)
 circuit.cnot(0, 1)
-circuit.rz(1, theta=p1)
+circuit.rz(1, theta=-0.3)
 
-result = circuit.value_and_grad(hamiltonian, parameters=[0.2, -0.3])
-energy = circuit.expectation(hamiltonian, parameters=[0.2, -0.3])
+result = circuit.value_and_grad(hamiltonian)
+energy = circuit.expectation(hamiltonian)
 ```
 
-`Parameter` reuse means shared differentiation. A static `theta=0.2` is not a differentiable parameter. Concrete NumPy arrays, Python sequences, and concrete JAX arrays are converted to host contiguous float64 vectors for native calls. Native circuit calls are not JAX-traceable; use the backend MVP path when the computation must remain inside a JAX graph.
+`expectation_jax()` accepts scalar JAX values or tracers and uses one host callback plus a first-order custom VJP. Build the circuit inside the traced objective when outer parameters are shared or transformed; TenCirPauli sees only independent gate-angle occurrences. The first JAX route requires `jax_enable_x64=True` and does not promise higher-order derivatives, `jvp`, or implicit batching.
 
-The current implementation contract and rollout status are recorded in [`docs/vibe/phase-alpha-spec.md`](docs/vibe/phase-alpha-spec.md).
+The current implementation contract and rollout status are recorded in the [`docs/vibe` index](docs/vibe/README.md).
 
 ## Backend MVP
 
@@ -196,7 +190,7 @@ result = engine.value_and_grad([0.125])
 
 `PropagationEngine` propagates the observable in reverse Heisenberg order. `max_weight=None` or a cutoff at least as large as `nqubits` is exact; a finite cutoff applies deterministic Pauli-weight projection after same-word contributions have been aggregated. The gradient is for the executed frozen sparse trace, not a dense derivative at support-change points.
 
-The facade adds the corresponding value-only form `circuit.expectation(observable, parameters=...)`; it must agree with `value_and_grad(...).value` for deterministic execution without computing a gradient.
+The circuit facade adds a value-only `expectation(observable)` terminal; it agrees with `value_and_grad(observable).value` and does not allocate a gradient buffer.
 
 `SPPSEngine` provides seeded stochastic value-and-gradient estimates with fixed or adaptive per-term sample budgets. Its result includes standard-error and stopping-proxy metadata and must not be interpreted as a deterministic gradient result.
 

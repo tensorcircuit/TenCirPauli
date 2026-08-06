@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+# TensorCircuit is an optional test-environment dependency; import it only
+# after the package imports so the whole module can be skipped cleanly.
+# ruff: noqa: I001
+
 import numpy as np
 import pytest
-import tensorcircuit as tc
 
 from tencirpauli import PauliOperator
 from tencirpauli.integrations.tensorcircuit import (
@@ -13,6 +16,8 @@ from tencirpauli.integrations.tensorcircuit import (
     require_tensorcircuit,
     u1_circuit_from_tensorcircuit,
 )
+
+tc = pytest.importorskip("tensorcircuit")
 
 
 def test_tensorcircuit_runtime_dependency_is_available() -> None:
@@ -49,18 +54,6 @@ def test_numeric_qir_tape_conversion() -> None:
     converted = gate_tape_from_circuit(circuit)
     assert converted.tape.nqubits == 2
     assert len(converted.tape) == 3
-    assert converted.parameters == ()
-
-
-def test_symbol_qir_tape_conversion_and_order() -> None:
-    sympy = pytest.importorskip("sympy")
-    theta, phi = sympy.symbols("theta phi")
-    circuit = tc.SymbolCircuit(2)
-    circuit.rx(0, theta=theta)
-    circuit.ry(1, theta=phi)
-    converted = gate_tape_from_circuit(circuit, parameter_order=(phi, theta))
-    assert converted.parameters == (phi, theta)
-    assert converted.tape.nparameters == 2
 
 
 def test_u1_qir_conversion_matches_native_state() -> None:
