@@ -1,0 +1,108 @@
+"""Compare TenCirPauli fermion-to-qubit mappings on deterministic workloads."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import statistics
+import sys
+import time
+from typing import Callable, Dict
+
+from common import MAPPING_NAMES, build_terms, pauli_summary
+
+import tencirpauli as tcp
+
+
+def _median_seconds(function: Callable[[], object], repetitions: int) -> float:
+    samples = []
+    for _ in range(repetitions):
+        start = time.perf_counter()
+        function()
+        samples.append(time.perf_counter() - start)
+    return statistics.median(samples)
+
+
+def _build_operator(n_modes: int, workload: str) -> tcp.FermionOperator:
+    return tcp.FermionOperator.from_terms(n_modes, build_terms(n_modes, workload))
+
+
+def _measure_mapping(
+    n_modes: int,
+    workload: str,
+    mapping: str,
+    repetitions: int,
+    emit_terms: bool,
+) -> Dict[str, object]:
+    operator = _build_operator(n_modes, workload)
+    mapping_plan = tcp.FermionQubitMapping.from_name(mapping, n_modes)
+    operator.map_fermions(mapping)
+    mapping_plan.map_fermion_operator(operator)
+
+    construction_seconds = _median_seconds(
+        lambda: _build_operator(n_modes, workload), repetitions
+    )
+    plan_seconds = _median_seconds(
+        lambda: tcp.FermionQubitMapping.from_name(mapping, n_modes), repetitions
+    )
+    mapping_seconds = _median_seconds(
+        lambda: operator.map_fermions(mapping), repetitions
+    )
+    reused_plan_seconds = _median_seconds(
+        lambda: mapping_plan.map_fermion_operator(operator), repetitions
+    )
+    end_to_end_seconds = _median_seconds(
+        lambda: _build_operator(n_modes, workload).map_fermions(mapping), repetitions
+    )
+
+    mapped = operator.map_fermions(mapping)
+    summary = pauli_summary(mapped.to_dict().items(), emit_terms=emit_terms)
+    return {
+        "mapping": mapping,
+        "construction_seconds_median": construction_seconds,
+        "plan_seconds_median": plan_seconds,
+        "mapping_seconds_median": mapping_seconds,
+        "reused_plan_seconds_median": reused_plan_seconds,
+        "end_to_end_seconds_median": end_to_end_seconds,
+        **summary,
+    }
+
+
+def run(
+    n_modes: int, workload: str, repetitions: int, emit_terms: bool = False
+) -> Dict[str, object]:
+    if isinstance(repetitions, bool) or repetitions < 1:
+        raise ValueError("repetitions must be positive")
+    results = [
+        _measure_mapping(n_modes, workload, mapping, repetitions, emit_terms)
+        for mapping in MAPPING_NAMES
+    ]
+    return {
+        "implementation": "tencirpauli",
+        "python": sys.executable,
+        "package": getattr(tcp, "__version__", "unknown"),
+        "n_modes": n_modes,
+        "workload": workload,
+        "input_term_count": len(build_terms(n_modes, workload)),
+        "repetitions": repetitions,
+        "results": results,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-modes", type=int, default=8)
+    parser.add_argument("--workload", default="hubbard")
+    parser.add_argument("--repetitions", type=int, default=7)
+    parser.add_argument("--emit-terms", action="store_true")
+    args = parser.parse_args()
+    print(
+        json.dumps(
+            run(args.n_modes, args.workload, args.repetitions, args.emit_terms),
+            sort_keys=True,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
