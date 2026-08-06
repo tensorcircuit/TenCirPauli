@@ -1009,6 +1009,7 @@ pub fn canonicalize_fermion_integrals(
                 })?;
             validate_integral_length(one_body.len(), n_squared)?;
             validate_integral_length(two_body.len(), n_fourth)?;
+            validate_spin_orbital_integrals(one_body, two_body, *n_modes)?;
             (
                 *n_modes,
                 count_spin_orbital_terms(one_body, two_body, *n_modes, constant),
@@ -1037,6 +1038,7 @@ pub fn canonicalize_fermion_integrals(
             ] {
                 validate_integral_length(length, n_fourth)?;
             }
+            validate_spin_block_integrals(blocks)?;
             (
                 blocks
                     .n_spatial
@@ -1088,6 +1090,111 @@ pub fn canonicalize_fermion_integrals(
 fn validate_integral_length(actual: usize, expected: usize) -> Result<(), PauliError> {
     if actual != expected {
         return Err(PauliError::InvalidStructureLength { expected, actual });
+    }
+    Ok(())
+}
+
+const INTEGRAL_RTOL: f64 = 1.0e-10;
+const INTEGRAL_ATOL: f64 = 1.0e-12;
+
+fn validate_spin_orbital_integrals(
+    one_body: &[Complex64],
+    two_body: &[Complex64],
+    n_modes: usize,
+) -> Result<(), PauliError> {
+    for p in 0..n_modes {
+        for q in 0..n_modes {
+            let index = p * n_modes + q;
+            let reverse = q * n_modes + p;
+            validate_hermitian_pair(
+                one_body[index],
+                one_body[reverse],
+                index,
+                "one_body must be Hermitian",
+            )?;
+            for r in 0..n_modes {
+                for s in 0..n_modes {
+                    let index = spin_orbital_index(n_modes, p, q, r, s);
+                    let reverse = spin_orbital_index(n_modes, r, s, p, q);
+                    validate_hermitian_pair(
+                        two_body[index],
+                        two_body[reverse],
+                        index,
+                        "two_body must satisfy Hermitian pair symmetry",
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_spin_block_integrals(blocks: &FermionSpinBlocks<'_>) -> Result<(), PauliError> {
+    for (values, context) in [
+        (blocks.one_alpha, "one_alpha must be Hermitian"),
+        (blocks.one_beta, "one_beta must be Hermitian"),
+    ] {
+        validate_matrix_pairs(values, blocks.n_spatial, context)?;
+    }
+    for (values, context) in [
+        (blocks.eri_aa, "eri_aa must satisfy Hermitian pair symmetry"),
+        (blocks.eri_ab, "eri_ab must satisfy Hermitian pair symmetry"),
+        (blocks.eri_ba, "eri_ba must satisfy Hermitian pair symmetry"),
+        (blocks.eri_bb, "eri_bb must satisfy Hermitian pair symmetry"),
+    ] {
+        validate_chemist_pairs(values, blocks.n_spatial, context)?;
+    }
+    Ok(())
+}
+
+fn validate_matrix_pairs(
+    values: &[Complex64],
+    n: usize,
+    context: &'static str,
+) -> Result<(), PauliError> {
+    for p in 0..n {
+        for q in 0..n {
+            let index = p * n + q;
+            let reverse = q * n + p;
+            validate_hermitian_pair(values[index], values[reverse], index, context)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_chemist_pairs(
+    values: &[Complex64],
+    n_spatial: usize,
+    context: &'static str,
+) -> Result<(), PauliError> {
+    for p in 0..n_spatial {
+        for r in 0..n_spatial {
+            for q in 0..n_spatial {
+                for s in 0..n_spatial {
+                    let index = chemist_index(n_spatial, p, r, q, s);
+                    let reverse = chemist_index(n_spatial, r, p, s, q);
+                    validate_hermitian_pair(values[index], values[reverse], index, context)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_hermitian_pair(
+    left: Complex64,
+    right: Complex64,
+    index: usize,
+    context: &'static str,
+) -> Result<(), PauliError> {
+    if !left.re.is_finite() || !left.im.is_finite() {
+        return Err(PauliError::NonFiniteCoefficient { index });
+    }
+    if !right.re.is_finite() || !right.im.is_finite() {
+        return Err(PauliError::NonFiniteCoefficient { index });
+    }
+    if (left - right.conj()).norm() > INTEGRAL_ATOL + INTEGRAL_RTOL * right.norm() {
+        return Err(PauliError::NonHermitianIntegral { context });
     }
     Ok(())
 }

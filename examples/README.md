@@ -19,6 +19,6 @@ python examples/majorana_charge.py
 
 `majorana_charge.py` demonstrates exact Majorana conversion, a reusable Bravyi–Kitaev plan, additive particle-number sectors, and restricted matrix-free execution.
 
-`quantum_chemistry_pyscf.py` is an optional PySCF example. It imports an RHF H2 Hamiltonian, maps it explicitly to Pauli form, and runs a TensorCircuit JAX VQE with gradient descent through the backend MVP plan. Install PySCF with `pip install "tencirpauli[chemistry]"` before running it.
+`quantum_chemistry_pyscf.py` is an optional PySCF example. It constructs an H2 molecule, imports its default RHF Hamiltonian through `from_molecule()`, maps it explicitly to Pauli form, and runs a TensorCircuit JAX VQE with gradient descent through the backend MVP plan. Install PySCF with `pip install "tencirpauli[chemistry]"` before running it.
 
 Heavier, manually run end-to-end studies live under [`research/`](research/). They are not part of the CI example execution list; the first study compares a restricted Fermi–Hubbard MVP with QuSpin's `quantum_LinearOperator`.

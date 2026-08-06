@@ -13,6 +13,8 @@ pub enum PauliError {
     InvalidStructureLength { expected: usize, actual: usize },
     /// A non-finite coefficient was supplied.
     NonFiniteCoefficient { index: usize },
+    /// Molecular integral entries violate the supported Hermitian-pair contract.
+    NonHermitianIntegral { context: &'static str },
     /// A supposedly canonical term sequence is not strictly ordered and nonzero.
     NonCanonicalTerms { index: usize },
     /// A requested dimension cannot be represented or allocated.
@@ -86,6 +88,9 @@ impl fmt::Display for PauliError {
             }
             Self::NonFiniteCoefficient { index } => {
                 write!(formatter, "coefficient at index {index} is not finite")
+            }
+            Self::NonHermitianIntegral { context } => {
+                write!(formatter, "{context}")
             }
             Self::NonCanonicalTerms { index } => {
                 write!(

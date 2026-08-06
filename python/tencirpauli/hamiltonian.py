@@ -518,14 +518,6 @@ class BackendMVPPlan:
         """Apply the plan using its default memory limit."""
         return self.apply(state)
 
-    def to_scipy_linear_operator(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> Any:
-        """Expose this backend MVP plan as a SciPy ``LinearOperator``."""
-        from .integrations.scipy import to_scipy_linear_operator
-
-        return to_scipy_linear_operator(self, max_bytes=max_bytes)
-
     def _apply_direct_weyl(
         self, state: Sequence[complex], max_bytes: Optional[int]
     ) -> np.ndarray[Any, Any]:

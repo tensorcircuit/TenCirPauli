@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use numpy::{
-    Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray4,
-    PyReadwriteArray1, PyUntypedArrayMethods,
+    dtype, Complex64 as NumpyComplex128, PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods,
+    PyReadonlyArray1, PyReadonlyArrayDyn, PyReadwriteArray1, PyUntypedArray, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -87,6 +88,89 @@ type HybridFlatParts = (
     Vec<usize>,
     Vec<Complex64>,
 );
+
+enum IntegralArray<'py> {
+    Real(PyReadonlyArrayDyn<'py, f64>),
+    Complex(PyReadonlyArrayDyn<'py, NumpyComplex128>),
+}
+
+enum IntegralValues<'a> {
+    Real(&'a [f64]),
+    Complex(&'a [NumpyComplex128]),
+}
+
+impl IntegralArray<'_> {
+    fn values(&self, name: &str) -> PyResult<IntegralValues<'_>> {
+        match self {
+            Self::Real(array) => {
+                Ok(IntegralValues::Real(array.as_slice().map_err(|_| {
+                    PyValueError::new_err(format!("{name} must be C-contiguous"))
+                })?))
+            }
+            Self::Complex(array) => {
+                Ok(IntegralValues::Complex(array.as_slice().map_err(|_| {
+                    PyValueError::new_err(format!("{name} must be C-contiguous"))
+                })?))
+            }
+        }
+    }
+}
+
+impl IntegralValues<'_> {
+    fn complex_values(&self) -> Cow<'_, [Complex64]> {
+        match self {
+            Self::Real(values) => Cow::Owned(
+                values
+                    .iter()
+                    .copied()
+                    .map(|value| Complex64::new(value, 0.0))
+                    .collect(),
+            ),
+            Self::Complex(values) => Cow::Borrowed(*values),
+        }
+    }
+}
+
+fn integral_array<'py>(
+    value: Bound<'py, PyAny>,
+    expected_shape: &[usize],
+    name: &str,
+) -> PyResult<IntegralArray<'py>> {
+    let array = value.downcast::<PyUntypedArray>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(format!("{name} must be a NumPy array"))
+    })?;
+    if array.shape() != expected_shape {
+        return Err(PyValueError::new_err(format!(
+            "{name} must have shape {:?}, got {:?}",
+            expected_shape,
+            array.shape()
+        )));
+    }
+    if !array.is_c_contiguous() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be C-contiguous"
+        )));
+    }
+    let f64_dtype = dtype::<f64>(array.py());
+    if array.dtype().is_equiv_to(&f64_dtype) {
+        let typed = array.downcast::<PyArrayDyn<f64>>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(format!("{name} must have dtype float64"))
+        })?;
+        return Ok(IntegralArray::Real(typed.readonly()));
+    }
+    let complex_dtype = dtype::<NumpyComplex128>(array.py());
+    if array.dtype().is_equiv_to(&complex_dtype) {
+        let typed = array
+            .downcast::<PyArrayDyn<NumpyComplex128>>()
+            .map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(format!("{name} must have dtype complex128"))
+            })?;
+        return Ok(IntegralArray::Complex(typed.readonly()));
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(format!(
+        "{name} must have dtype float64 or complex128"
+    )))
+}
 type NumpyHybridOutput<'py> = (
     usize,
     usize,
@@ -1746,42 +1830,37 @@ pub(crate) fn structured_fermion_canonicalize(
 #[pyfunction]
 pub(crate) fn structured_fermion_integrals(
     py: Python<'_>,
-    one_body: PyReadonlyArray2<'_, NumpyComplex128>,
-    two_body: PyReadonlyArray4<'_, NumpyComplex128>,
+    one_body: Bound<'_, PyAny>,
+    two_body: Bound<'_, PyAny>,
     constant_re: f64,
     constant_im: f64,
     max_bytes: u128,
 ) -> PyResult<NativeFermionOperatorHandle> {
-    let one_shape = one_body.shape();
-    if one_shape[0] != one_shape[1] {
+    let one_untyped = one_body
+        .downcast::<PyUntypedArray>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("one_body must be a NumPy array"))?;
+    if one_untyped.ndim() != 2 || one_untyped.shape()[0] != one_untyped.shape()[1] {
         return Err(PyValueError::new_err("one_body must have a square shape"));
     }
-    let n_modes = one_shape[0];
-    let two_shape = two_body.shape();
-    if two_shape != [n_modes, n_modes, n_modes, n_modes] {
-        return Err(PyValueError::new_err(format!(
-            "two_body must have shape ({n_modes}, {n_modes}, {n_modes}, {n_modes})"
-        )));
-    }
-    let one_body = one_body
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("one_body must be C-contiguous"))?;
-    let two_body = two_body
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("two_body must be C-contiguous"))?;
-    let result = py
-        .allow_threads(|| {
-            canonicalize_fermion_integrals(
-                FermionIntegralSource::SpinOrbital {
-                    n_modes,
-                    one_body,
-                    two_body,
-                },
-                Complex64::new(constant_re, constant_im),
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
+    let n_modes = one_untyped.shape()[0];
+    let one_body = integral_array(one_body, &[n_modes, n_modes], "one_body")?;
+    let two_body = integral_array(two_body, &[n_modes, n_modes, n_modes, n_modes], "two_body")?;
+    let one_values = one_body.values("one_body")?;
+    let two_values = two_body.values("two_body")?;
+    let result = py.allow_threads(|| -> PyResult<_> {
+        let one_body = one_values.complex_values();
+        let two_body = two_values.complex_values();
+        canonicalize_fermion_integrals(
+            FermionIntegralSource::SpinOrbital {
+                n_modes,
+                one_body: &one_body,
+                two_body: &two_body,
+            },
+            Complex64::new(constant_re, constant_im),
+            max_bytes,
+        )
+        .map_err(map_error)
+    })?;
     Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
 }
 
@@ -1790,82 +1869,59 @@ pub(crate) fn structured_fermion_integrals(
 pub(crate) fn structured_fermion_integral_blocks(
     py: Python<'_>,
     n_spatial: usize,
-    one_alpha: PyReadonlyArray2<'_, NumpyComplex128>,
-    one_beta: PyReadonlyArray2<'_, NumpyComplex128>,
-    eri_aa: PyReadonlyArray4<'_, NumpyComplex128>,
-    eri_ab: PyReadonlyArray4<'_, NumpyComplex128>,
-    eri_ba: PyReadonlyArray4<'_, NumpyComplex128>,
-    eri_bb: PyReadonlyArray4<'_, NumpyComplex128>,
+    one_alpha: Bound<'_, PyAny>,
+    one_beta: Bound<'_, PyAny>,
+    eri_aa: Bound<'_, PyAny>,
+    eri_ab: Bound<'_, PyAny>,
+    eri_ba: Bound<'_, PyAny>,
+    eri_bb: Bound<'_, PyAny>,
     ordering: u8,
     constant_re: f64,
     constant_im: f64,
     max_bytes: u128,
 ) -> PyResult<NativeFermionOperatorHandle> {
     let expected_one = [n_spatial, n_spatial];
-    for (name, shape) in [
-        ("one_alpha", one_alpha.shape()),
-        ("one_beta", one_beta.shape()),
-    ] {
-        if shape != expected_one {
-            return Err(PyValueError::new_err(format!(
-                "{name} must have shape ({n_spatial}, {n_spatial})"
-            )));
-        }
-    }
     let expected_eri = [n_spatial, n_spatial, n_spatial, n_spatial];
-    for (name, shape) in [
-        ("eri_aa", eri_aa.shape()),
-        ("eri_ab", eri_ab.shape()),
-        ("eri_ba", eri_ba.shape()),
-        ("eri_bb", eri_bb.shape()),
-    ] {
-        if shape != expected_eri {
-            return Err(PyValueError::new_err(format!(
-                "{name} must have shape ({n_spatial}, {n_spatial}, {n_spatial}, {n_spatial})"
-            )));
-        }
-    }
+    let one_alpha = integral_array(one_alpha, &expected_one, "one_alpha")?;
+    let one_beta = integral_array(one_beta, &expected_one, "one_beta")?;
+    let eri_aa = integral_array(eri_aa, &expected_eri, "eri_aa")?;
+    let eri_ab = integral_array(eri_ab, &expected_eri, "eri_ab")?;
+    let eri_ba = integral_array(eri_ba, &expected_eri, "eri_ba")?;
+    let eri_bb = integral_array(eri_bb, &expected_eri, "eri_bb")?;
+    let one_alpha_values = one_alpha.values("one_alpha")?;
+    let one_beta_values = one_beta.values("one_beta")?;
+    let eri_aa_values = eri_aa.values("eri_aa")?;
+    let eri_ab_values = eri_ab.values("eri_ab")?;
+    let eri_ba_values = eri_ba.values("eri_ba")?;
+    let eri_bb_values = eri_bb.values("eri_bb")?;
     let ordering = match ordering {
         0 => FermionSpinOrdering::Interleaved,
         1 => FermionSpinOrdering::AlphaThenBeta,
         _ => return Err(PyValueError::new_err("unknown spin-orbital ordering")),
     };
-    let one_alpha = one_alpha
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("one_alpha must be C-contiguous"))?;
-    let one_beta = one_beta
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("one_beta must be C-contiguous"))?;
-    let eri_aa = eri_aa
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("eri_aa must be C-contiguous"))?;
-    let eri_ab = eri_ab
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("eri_ab must be C-contiguous"))?;
-    let eri_ba = eri_ba
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("eri_ba must be C-contiguous"))?;
-    let eri_bb = eri_bb
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("eri_bb must be C-contiguous"))?;
-    let result = py
-        .allow_threads(|| {
-            canonicalize_fermion_integrals(
-                FermionIntegralSource::SpinBlocks(FermionSpinBlocks {
-                    n_spatial,
-                    one_alpha,
-                    one_beta,
-                    eri_aa,
-                    eri_ab,
-                    eri_ba,
-                    eri_bb,
-                    ordering,
-                }),
-                Complex64::new(constant_re, constant_im),
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| -> PyResult<_> {
+        let one_alpha = one_alpha_values.complex_values();
+        let one_beta = one_beta_values.complex_values();
+        let eri_aa = eri_aa_values.complex_values();
+        let eri_ab = eri_ab_values.complex_values();
+        let eri_ba = eri_ba_values.complex_values();
+        let eri_bb = eri_bb_values.complex_values();
+        canonicalize_fermion_integrals(
+            FermionIntegralSource::SpinBlocks(FermionSpinBlocks {
+                n_spatial,
+                one_alpha: &one_alpha,
+                one_beta: &one_beta,
+                eri_aa: &eri_aa,
+                eri_ab: &eri_ab,
+                eri_ba: &eri_ba,
+                eri_bb: &eri_bb,
+                ordering,
+            }),
+            Complex64::new(constant_re, constant_im),
+            max_bytes,
+        )
+        .map_err(map_error)
+    })?;
     Ok(NativeFermionOperatorHandle::from_result(
         n_spatial
             .checked_mul(2)

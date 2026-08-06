@@ -57,6 +57,12 @@ def test_pauli_convenience_linear_operator_compiles_and_reuses_native_plan() -> 
         operator.native_mvp_plan().to_scipy_linear_operator(max_bytes=1).matvec(vector)
 
 
+def test_backend_plan_does_not_advertise_native_scipy_interop() -> None:
+    operator = tcp.PauliOperator.from_terms(2, (("XX", 0.5), ("ZI", -0.25)))
+    backend_plan = operator.backend_mvp_plan()
+    assert not hasattr(backend_plan, "to_scipy_linear_operator")
+
+
 @pytest.mark.parametrize(
     "storage, plan_type", [("lazy", "ChargeLazyMvpPlan"), ("eager", "ChargeMvpPlan")]
 )

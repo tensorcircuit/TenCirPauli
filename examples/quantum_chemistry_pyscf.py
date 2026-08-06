@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import optax
 import tensorcircuit as tc
 
-from tencirpauli.integrations.pyscf import from_scf
+from tencirpauli.integrations.pyscf import from_molecule
 from tencirpauli.integrations.tensorcircuit import backend_mvp
 
 
@@ -15,15 +15,14 @@ def main() -> None:
     jax.config.update("jax_enable_x64", True)
     tc.set_backend("jax")
     tc.set_dtype("complex128")
-    from pyscf import gto, scf
+    from pyscf import gto
 
     molecule = gto.M(
         atom="H 0 0 0; H 0 0 0.74",
         basis="sto-3g",
         unit="Angstrom",
     )
-    mean_field = scf.RHF(molecule).run()
-    fermion_hamiltonian = from_scf(mean_field)
+    fermion_hamiltonian = from_molecule(molecule)
     pauli_hamiltonian = fermion_hamiltonian.map_fermions("jordan_wigner")
     backend_plan = pauli_hamiltonian.backend_mvp_plan()
     apply_backend_mvp = backend_mvp(backend_plan)
