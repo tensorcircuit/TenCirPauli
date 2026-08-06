@@ -1,4 +1,4 @@
-"""Phase 8 public API contract tests."""
+"""Public API contract tests."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pytest
 
 import tencirpauli as tcp
 from tencirpauli import advanced
+from tencirpauli.structured import _StructuredOperator
 
 
 def test_top_level_and_advanced_manifests_are_separated() -> None:
@@ -249,25 +250,51 @@ def test_propagation_engine_term_count_is_consumed_canonical_count() -> None:
     assert engine.term_count == 1
 
 
-def test_u1_exact_hermiticity_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tencirpauli.pauli as pauli_module
+def test_u1_exact_hermiticity_uses_the_native_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_materialization(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Hermiticity must not materialize Pauli arrays")
 
-    calls = 0
-    original = pauli_module._native.pauli_operator_is_hermitian
-
-    def counted(*args: object, **kwargs: object) -> bool:
-        nonlocal calls
-        calls += 1
-        return bool(original(*args, **kwargs))
-
-    monkeypatch.setattr(pauli_module._native, "pauli_operator_is_hermitian", counted)
+    monkeypatch.setattr(tcp.PauliOperator, "_arrays", fail_materialization)
     observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
     circuit = tcp.U1Circuit(1, particle_number=0)
     circuit.value_and_grad(observable)
     circuit.value_and_grad(observable)
     plan = circuit.compile()
     plan.value_and_grad(None, observable)
-    assert calls == 1
+
+
+def test_equal_operator_values_have_equal_hashes_without_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operators = (
+        tcp.PauliOperator.from_terms(1, [("X", 1.0)]),
+        tcp.MajoranaOperator.from_terms(1, [((0,), 1.0)]),
+        tcp.FermionOperator.from_terms(1, [(((0, "create"), (0, "annihilate")), 1.0)]),
+        tcp.BosonOperator.from_terms(1, [(((0, "create"), (0, "annihilate")), 1.0)]),
+        tcp.QuditWeylOperator.from_terms(3, [(((0, 0, 0),), 1.0)], n_sites=1),
+        tcp.OperatorSpace(qubits=1).qubit.z(0),
+    )
+
+    def fail_materialization(*args: object, **kwargs: object) -> object:
+        raise AssertionError("value equality and hashing must remain native")
+
+    monkeypatch.setattr(tcp.PauliOperator, "_arrays", fail_materialization)
+    monkeypatch.setattr(
+        _StructuredOperator, "_materialized_terms", fail_materialization
+    )
+    monkeypatch.setattr(tcp.MajoranaOperator, "terms", property(fail_materialization))
+
+    for operator in operators:
+        adjoint = operator.adjoint()
+        assert operator == adjoint
+        assert hash(operator) == hash(adjoint)
+
+    pauli_plus_zero = tcp.PauliOperator.from_terms(1, [("X", complex(1.0, 0.0))])
+    pauli_minus_zero = tcp.PauliOperator.from_terms(1, [("X", complex(1.0, -0.0))])
+    assert pauli_plus_zero == pauli_minus_zero
+    assert hash(pauli_plus_zero) == hash(pauli_minus_zero)
 
 
 def test_advanced_reference_is_published() -> None:

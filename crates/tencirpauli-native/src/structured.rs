@@ -1,19 +1,22 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    binary_boson_terms, binary_fermion_terms, binary_hybrid_terms, canonicalize_boson_terms,
-    canonicalize_fermion_terms, canonicalize_hybrid_terms, fermion_to_majorana_terms,
-    jordan_wigner_hybrid_terms, jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms,
-    multiply_hybrid_terms, structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix,
-    BosonCanonicalResult, Complex64, FermionBatch, FermionCanonicalResult, HybridBatch,
-    HybridLayout, HybridRawBatch, StructuredMvpPlan as CoreStructuredMvpPlan, StructuredOperation,
+    analyze_hybrid_charge, binary_boson_terms, binary_fermion_terms, binary_hybrid_terms,
+    canonicalize_boson_terms, canonicalize_fermion_terms, canonicalize_hybrid_terms,
+    embed_hybrid_terms, fermion_to_majorana_terms, hash_complex, hybrid_terms_conserve_charge,
+    jordan_wigner_hybrid_terms, jordan_wigner_hybrid_terms_trusted, jordan_wigner_terms,
+    multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms, structured_dense_matrix,
+    structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult, Complex64, FermionBatch,
+    FermionCanonicalResult, HybridBatch, HybridLayout, HybridRawBatch,
+    StructuredMvpPlan as CoreStructuredMvpPlan, StructuredOperation,
 };
 
-use crate::convert::{complex_coefficients, map_error, split_complex};
+use crate::convert::{complex_coefficients, map_error};
 use crate::majorana::NativeMajoranaOperatorHandle;
 use crate::operator::NativePauliOperatorHandle;
 
@@ -31,9 +34,6 @@ type NumpyBosonOutput<'py> = (
     Bound<'py, PyArray1<usize>>,
     Bound<'py, PyArray1<NumpyComplex128>>,
 );
-type JordanWignerOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
-type FermionInput = (Vec<Vec<u32>>, Vec<Vec<u32>>, Vec<f64>, Vec<f64>);
-type BosonInput = (Vec<Vec<(u32, u32, u32)>>, Vec<f64>, Vec<f64>);
 type HybridInput = (
     Vec<bool>,
     Vec<Vec<u32>>,
@@ -57,7 +57,18 @@ type HybridRawInput = (
     Vec<f64>,
     Vec<f64>,
 );
-type StructuredSparseOutput = (usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
+type StructuredSparseOutput<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+type DirectWeylFlatParts = (Vec<u32>, Vec<u32>, Vec<Complex64>);
+type NumpyDirectWeylFlat<'py> = (
+    Bound<'py, PyArray1<u32>>,
+    Bound<'py, PyArray1<u32>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
 type HybridFlatParts = (
     Vec<u8>,
     Vec<u32>,
@@ -162,6 +173,17 @@ impl NativeFermionOperatorHandle {
             },
             result,
         )
+    }
+
+    fn content_hash_inner(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.n_modes.hash(&mut hasher);
+        self.creation.hash(&mut hasher);
+        self.annihilation.hash(&mut hasher);
+        for coefficient in &self.coefficients {
+            hash_complex(*coefficient, &mut hasher);
+        }
+        hasher.finish()
     }
 }
 
@@ -401,6 +423,19 @@ impl NativeFermionOperatorHandle {
             )
         })
     }
+
+    fn content_eq(&self, py: Python<'_>, other: &Self) -> bool {
+        py.allow_threads(|| {
+            self.n_modes == other.n_modes
+                && self.creation == other.creation
+                && self.annihilation == other.annihilation
+                && self.coefficients == other.coefficients
+        })
+    }
+
+    fn content_hash(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| self.content_hash_inner())
+    }
 }
 
 #[pyclass(module = "tencirpauli._native")]
@@ -444,6 +479,16 @@ impl NativeBosonOperatorHandle {
             },
             result,
         )
+    }
+
+    fn content_hash_inner(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.n_modes.hash(&mut hasher);
+        self.blocks.hash(&mut hasher);
+        for coefficient in &self.coefficients {
+            hash_complex(*coefficient, &mut hasher);
+        }
+        hasher.finish()
     }
 }
 
@@ -1020,6 +1065,61 @@ impl NativeHybridOperatorHandle {
         )
     }
 
+    fn direct_weyl_flat_parts(
+        &self,
+        max_bytes: u128,
+    ) -> Result<DirectWeylFlatParts, tencir_pauli_core::PauliError> {
+        if self.layout.n_modes != 0 || self.layout.n_bosons != 0 || self.layout.nqubits != 0 {
+            return Err(tencir_pauli_core::PauliError::InvalidStructureLength {
+                expected: self.layout.n_qudit_sites,
+                actual: 0,
+            });
+        }
+        let flat_len = self
+            .term_count()
+            .checked_mul(self.layout.n_qudit_sites)
+            .ok_or(tencir_pauli_core::PauliError::Overflow {
+                context: "estimating direct Weyl backend plan",
+            })?;
+        let requested = (flat_len as u128)
+            .checked_mul(8)
+            .and_then(|value| value.checked_add((self.term_count() as u128) * 16))
+            .ok_or(tencir_pauli_core::PauliError::Overflow {
+                context: "estimating direct Weyl backend plan",
+            })?;
+        if requested > max_bytes {
+            return Err(tencir_pauli_core::PauliError::MemoryLimit {
+                requested,
+                limit: max_bytes,
+            });
+        }
+        let mut a_exponents = vec![0_u32; flat_len];
+        let mut b_exponents = vec![0_u32; flat_len];
+        for index in 0..self.term_count() {
+            for &(site, a, b) in &self.result.qudit_triples[index] {
+                let site = usize::try_from(site).map_err(|_| {
+                    tencir_pauli_core::PauliError::InvalidIndex {
+                        context: "direct Weyl backend plan site",
+                    }
+                })?;
+                if site >= self.layout.n_qudit_sites {
+                    return Err(tencir_pauli_core::PauliError::InvalidIndex {
+                        context: "direct Weyl backend plan site",
+                    });
+                }
+                let offset = index
+                    .checked_mul(self.layout.n_qudit_sites)
+                    .and_then(|value| value.checked_add(site))
+                    .ok_or(tencir_pauli_core::PauliError::Overflow {
+                        context: "estimating direct Weyl backend plan",
+                    })?;
+                a_exponents[offset] = a;
+                b_exponents[offset] = b;
+            }
+        }
+        Ok((a_exponents, b_exponents, self.result.coefficients.clone()))
+    }
+
     fn has_raw_fermions_inner(&self) -> bool {
         self.result.fermion_present.iter().any(|&present| present)
     }
@@ -1034,6 +1134,29 @@ impl NativeHybridOperatorHandle {
             .iter()
             .zip(&self.result.mapped_present)
             .any(|(&raw, &mapped)| raw && mapped)
+    }
+
+    fn content_hash_inner(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.layout.n_modes.hash(&mut hasher);
+        self.layout.n_bosons.hash(&mut hasher);
+        self.layout.nqubits.hash(&mut hasher);
+        self.layout.n_qudit_sites.hash(&mut hasher);
+        self.layout.qudit_dimension.hash(&mut hasher);
+        self.result.fermion_present.hash(&mut hasher);
+        self.result.fermion_creation.hash(&mut hasher);
+        self.result.fermion_annihilation.hash(&mut hasher);
+        self.result.boson_present.hash(&mut hasher);
+        self.result.boson_blocks.hash(&mut hasher);
+        self.result.qubit_codes.hash(&mut hasher);
+        self.result.mapped_present.hash(&mut hasher);
+        self.result.mapped_codes.hash(&mut hasher);
+        self.result.qudit_present.hash(&mut hasher);
+        self.result.qudit_triples.hash(&mut hasher);
+        for coefficient in &self.result.coefficients {
+            hash_complex(*coefficient, &mut hasher);
+        }
+        hasher.finish()
     }
 
     fn adjoint_result(&self) -> Result<Self, String> {
@@ -1178,7 +1301,7 @@ impl NativeHybridOperatorHandle {
         }
         let result = py
             .allow_threads(|| {
-                jordan_wigner_hybrid_terms(self.layout, self.batch(), max_bytes as u128)
+                jordan_wigner_hybrid_terms_trusted(self.layout, self.batch(), max_bytes as u128)
             })
             .map_err(map_error)?;
         Ok(Self::from_result(self.layout, result))
@@ -1195,6 +1318,27 @@ impl NativeHybridOperatorHandle {
             Ok::<bool, String>(same_hybrid_coefficients(self, &adjoint, tolerance))
         })
         .map_err(PyValueError::new_err)
+    }
+
+    fn content_eq(&self, py: Python<'_>, other: &Self) -> bool {
+        py.allow_threads(|| {
+            self.layout == other.layout
+                && self.result.fermion_present == other.result.fermion_present
+                && self.result.fermion_creation == other.result.fermion_creation
+                && self.result.fermion_annihilation == other.result.fermion_annihilation
+                && self.result.boson_present == other.result.boson_present
+                && self.result.boson_blocks == other.result.boson_blocks
+                && self.result.qubit_codes == other.result.qubit_codes
+                && self.result.mapped_present == other.result.mapped_present
+                && self.result.mapped_codes == other.result.mapped_codes
+                && self.result.qudit_present == other.result.qudit_present
+                && self.result.qudit_triples == other.result.qudit_triples
+                && self.result.coefficients == other.result.coefficients
+        })
+    }
+
+    fn content_hash(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| self.content_hash_inner())
     }
 
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyHybridOutput<'py> {
@@ -1221,6 +1365,21 @@ impl NativeHybridOperatorHandle {
         )
     }
 
+    fn direct_weyl_flat<'py>(
+        &self,
+        py: Python<'py>,
+        max_bytes: u128,
+    ) -> PyResult<NumpyDirectWeylFlat<'py>> {
+        let (a_exponents, b_exponents, coefficients) = py
+            .allow_threads(|| self.direct_weyl_flat_parts(max_bytes))
+            .map_err(map_error)?;
+        Ok((
+            PyArray1::from_vec(py, a_exponents),
+            PyArray1::from_vec(py, b_exponents),
+            PyArray1::from_vec(py, coefficients),
+        ))
+    }
+
     fn to_pauli(
         &self,
         py: Python<'_>,
@@ -1231,6 +1390,144 @@ impl NativeHybridOperatorHandle {
             .allow_threads(|| hybrid_to_pauli(&self.layout, &self.result, &axes, max_bytes as u128))
             .map_err(map_error)?;
         Ok(NativePauliOperatorHandle::from_operator(operator))
+    }
+
+    fn to_fermion(&self, py: Python<'_>) -> PyResult<NativeFermionOperatorHandle> {
+        if self.layout.n_bosons != 0 || self.layout.nqubits != 0 || self.layout.n_qudit_sites != 0 {
+            return Err(PyValueError::new_err(
+                "hybrid handle is not a pure fermion layout",
+            ));
+        }
+        py.allow_threads(|| {
+            if self.result.boson_present.iter().any(|&value| value)
+                || self.result.mapped_present.iter().any(|&value| value)
+                || self.result.qudit_present.iter().any(|&value| value)
+                || self
+                    .result
+                    .qubit_codes
+                    .iter()
+                    .any(|codes| !codes.is_empty())
+            {
+                return Err("hybrid handle contains non-fermion factors");
+            }
+            Ok(NativeFermionOperatorHandle::from_result(
+                self.layout.n_modes,
+                (
+                    self.result.fermion_creation.clone(),
+                    self.result.fermion_annihilation.clone(),
+                    self.result.coefficients.clone(),
+                ),
+            ))
+        })
+        .map_err(PyValueError::new_err)
+    }
+
+    fn to_boson(&self, py: Python<'_>) -> PyResult<NativeBosonOperatorHandle> {
+        if self.layout.n_modes != 0 || self.layout.nqubits != 0 || self.layout.n_qudit_sites != 0 {
+            return Err(PyValueError::new_err(
+                "hybrid handle is not a pure boson layout",
+            ));
+        }
+        py.allow_threads(|| {
+            if self.result.fermion_present.iter().any(|&value| value)
+                || self.result.mapped_present.iter().any(|&value| value)
+                || self.result.qudit_present.iter().any(|&value| value)
+                || self
+                    .result
+                    .qubit_codes
+                    .iter()
+                    .any(|codes| !codes.is_empty())
+            {
+                return Err("hybrid handle contains non-boson factors");
+            }
+            Ok(NativeBosonOperatorHandle::from_result(
+                self.layout.n_bosons,
+                (
+                    self.result.boson_blocks.clone(),
+                    self.result.coefficients.clone(),
+                ),
+            ))
+        })
+        .map_err(PyValueError::new_err)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn embed(
+        &self,
+        py: Python<'_>,
+        target_n_modes: usize,
+        target_n_bosons: usize,
+        target_nqubits: usize,
+        target_n_qudit_sites: usize,
+        target_qudit_dimension: usize,
+        fermion_map: Vec<usize>,
+        boson_map: Vec<usize>,
+        qubit_map: Vec<usize>,
+        qudit_map: Vec<usize>,
+        max_bytes: usize,
+    ) -> PyResult<Self> {
+        let target_layout = HybridLayout {
+            n_modes: target_n_modes,
+            n_bosons: target_n_bosons,
+            nqubits: target_nqubits,
+            n_qudit_sites: target_n_qudit_sites,
+            qudit_dimension: target_qudit_dimension,
+        };
+        let result = py
+            .allow_threads(|| {
+                embed_hybrid_terms(
+                    self.layout,
+                    target_layout,
+                    self.batch(),
+                    &fermion_map,
+                    &boson_map,
+                    &qubit_map,
+                    &qudit_map,
+                    max_bytes as u128,
+                )
+            })
+            .map_err(map_error)?;
+        Ok(Self::from_result(target_layout, result))
+    }
+
+    fn analyze_charge(
+        &self,
+        py: Python<'_>,
+        fermion_weights: Vec<f64>,
+        boson_weights: Vec<f64>,
+        qubit_levels: Vec<(f64, f64)>,
+        max_bytes: usize,
+    ) -> PyResult<(bool, usize)> {
+        py.allow_threads(|| {
+            analyze_hybrid_charge(
+                self.layout,
+                self.batch(),
+                &fermion_weights,
+                &boson_weights,
+                &qubit_levels,
+                max_bytes as u128,
+            )
+        })
+        .map_err(map_error)
+    }
+
+    fn termwise_conserves_charge(
+        &self,
+        py: Python<'_>,
+        fermion_weights: Vec<f64>,
+        boson_weights: Vec<f64>,
+        qubit_levels: Vec<(f64, f64)>,
+    ) -> PyResult<bool> {
+        py.allow_threads(|| {
+            hybrid_terms_conserve_charge(
+                self.layout,
+                self.batch(),
+                &fermion_weights,
+                &boson_weights,
+                &qubit_levels,
+            )
+        })
+        .map_err(map_error)
     }
 }
 
@@ -1355,6 +1652,18 @@ impl NativeBosonOperatorHandle {
     fn to_hybrid(&self, py: Python<'_>) -> NativeHybridOperatorHandle {
         py.allow_threads(|| self.to_hybrid_result())
     }
+
+    fn content_eq(&self, py: Python<'_>, other: &Self) -> bool {
+        py.allow_threads(|| {
+            self.n_modes == other.n_modes
+                && self.blocks == other.blocks
+                && self.coefficients == other.coefficients
+        })
+    }
+
+    fn content_hash(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| self.content_hash_inner())
+    }
 }
 
 #[pyclass(module = "tencirpauli._native")]
@@ -1423,64 +1732,11 @@ pub(crate) fn structured_fermion_canonicalize(
     coefficients_im: Vec<f64>,
     max_bytes: u128,
 ) -> PyResult<NativeFermionOperatorHandle> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes))
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| {
+        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes).map_err(map_error)
+    })?;
     Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-pub(crate) fn structured_fermion_multiply(
-    py: Python<'_>,
-    n_modes: usize,
-    left: FermionInput,
-    right: FermionInput,
-    max_bytes: u128,
-) -> PyResult<NativeFermionOperatorHandle> {
-    let (left_creation, left_annihilation, left_re, left_im) = left;
-    let (right_creation, right_annihilation, right_re, right_im) = right;
-    let left_coefficients = complex_coefficients(left_re, left_im)?;
-    let right_coefficients = complex_coefficients(right_re, right_im)?;
-    let result = py
-        .allow_threads(|| {
-            multiply_fermion_terms(
-                n_modes,
-                FermionBatch {
-                    creation: &left_creation,
-                    annihilation: &left_annihilation,
-                    coefficients: &left_coefficients,
-                },
-                FermionBatch {
-                    creation: &right_creation,
-                    annihilation: &right_annihilation,
-                    coefficients: &right_coefficients,
-                },
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
-    Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-pub(crate) fn structured_fermion_jordan_wigner(
-    py: Python<'_>,
-    n_modes: usize,
-    creation: Vec<Vec<u32>>,
-    annihilation: Vec<Vec<u32>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<JordanWignerOutput> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| {
-            jordan_wigner_terms(n_modes, &creation, &annihilation, &coefficients, max_bytes)
-        })
-        .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&result.1);
-    Ok((result.0, real, imaginary))
 }
 
 #[pyfunction]
@@ -1492,125 +1748,11 @@ pub(crate) fn structured_boson_canonicalize(
     coefficients_im: Vec<f64>,
     max_bytes: u128,
 ) -> PyResult<NativeBosonOperatorHandle> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| canonicalize_boson_terms(n_modes, &factors, &coefficients, max_bytes))
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| {
+        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        canonicalize_boson_terms(n_modes, &factors, &coefficients, max_bytes).map_err(map_error)
+    })?;
     Ok(NativeBosonOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-pub(crate) fn structured_boson_multiply(
-    py: Python<'_>,
-    n_modes: usize,
-    left: BosonInput,
-    right: BosonInput,
-    max_bytes: u128,
-) -> PyResult<NativeBosonOperatorHandle> {
-    let (left_blocks, left_re, left_im) = left;
-    let (right_blocks, right_re, right_im) = right;
-    let left_coefficients = complex_coefficients(left_re, left_im)?;
-    let right_coefficients = complex_coefficients(right_re, right_im)?;
-    let result = py
-        .allow_threads(|| {
-            multiply_boson_terms(
-                n_modes,
-                &left_blocks,
-                &left_coefficients,
-                &right_blocks,
-                &right_coefficients,
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
-    Ok(NativeBosonOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn structured_hybrid_multiply(
-    py: Python<'_>,
-    n_modes: usize,
-    n_bosons: usize,
-    nqubits: usize,
-    n_qudit_sites: usize,
-    qudit_dimension: usize,
-    left: HybridInput,
-    right: HybridInput,
-    max_bytes: u128,
-) -> PyResult<NativeHybridOperatorHandle> {
-    let (
-        left_fermion_present,
-        left_fermion_creation,
-        left_fermion_annihilation,
-        left_boson_present,
-        left_boson_blocks,
-        left_qubit_codes,
-        left_mapped_present,
-        left_mapped_codes,
-        left_qudit_present,
-        left_qudit_triples,
-        left_re,
-        left_im,
-    ) = left;
-    let (
-        right_fermion_present,
-        right_fermion_creation,
-        right_fermion_annihilation,
-        right_boson_present,
-        right_boson_blocks,
-        right_qubit_codes,
-        right_mapped_present,
-        right_mapped_codes,
-        right_qudit_present,
-        right_qudit_triples,
-        right_re,
-        right_im,
-    ) = right;
-    let left_coefficients = complex_coefficients(left_re, left_im)?;
-    let right_coefficients = complex_coefficients(right_re, right_im)?;
-    let layout = HybridLayout {
-        n_modes,
-        n_bosons,
-        nqubits,
-        n_qudit_sites,
-        qudit_dimension,
-    };
-    let result = py
-        .allow_threads(|| {
-            multiply_hybrid_terms(
-                layout,
-                HybridBatch {
-                    fermion_present: &left_fermion_present,
-                    fermion_creation: &left_fermion_creation,
-                    fermion_annihilation: &left_fermion_annihilation,
-                    boson_present: &left_boson_present,
-                    boson_blocks: &left_boson_blocks,
-                    qubit_codes: &left_qubit_codes,
-                    mapped_present: &left_mapped_present,
-                    mapped_codes: &left_mapped_codes,
-                    qudit_present: &left_qudit_present,
-                    qudit_triples: &left_qudit_triples,
-                    coefficients: &left_coefficients,
-                },
-                HybridBatch {
-                    fermion_present: &right_fermion_present,
-                    fermion_creation: &right_fermion_creation,
-                    fermion_annihilation: &right_fermion_annihilation,
-                    boson_present: &right_boson_present,
-                    boson_blocks: &right_boson_blocks,
-                    qubit_codes: &right_qubit_codes,
-                    mapped_present: &right_mapped_present,
-                    mapped_codes: &right_mapped_codes,
-                    qudit_present: &right_qudit_present,
-                    qudit_triples: &right_qudit_triples,
-                    coefficients: &right_coefficients,
-                },
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
-    Ok(NativeHybridOperatorHandle::from_result(layout, result))
 }
 
 #[pyfunction]
@@ -1634,7 +1776,6 @@ pub(crate) fn structured_hybrid_canonicalize(
         coefficients_re,
         coefficients_im,
     ) = input;
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
     let layout = HybridLayout {
         n_modes,
         n_bosons,
@@ -1642,22 +1783,22 @@ pub(crate) fn structured_hybrid_canonicalize(
         n_qudit_sites,
         qudit_dimension,
     };
-    let result = py
-        .allow_threads(|| {
-            canonicalize_hybrid_terms(
-                layout,
-                HybridRawBatch {
-                    fermion_factors: &fermion_factors,
-                    boson_factors: &boson_factors,
-                    qubit_codes: &qubit_codes,
-                    qudit_present: &qudit_present,
-                    qudit_triples: &qudit_triples,
-                    coefficients: &coefficients,
-                },
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| {
+        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        canonicalize_hybrid_terms(
+            layout,
+            HybridRawBatch {
+                fermion_factors: &fermion_factors,
+                boson_factors: &boson_factors,
+                qubit_codes: &qubit_codes,
+                qudit_present: &qudit_present,
+                qudit_triples: &qudit_triples,
+                coefficients: &coefficients,
+            },
+            max_bytes,
+        )
+        .map_err(map_error)
+    })?;
     Ok(NativeHybridOperatorHandle::from_result(layout, result))
 }
 
@@ -1687,7 +1828,6 @@ pub(crate) fn structured_hybrid_jordan_wigner(
         coefficients_re,
         coefficients_im,
     ) = input;
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
     let layout = HybridLayout {
         n_modes,
         n_bosons,
@@ -1695,118 +1835,28 @@ pub(crate) fn structured_hybrid_jordan_wigner(
         n_qudit_sites,
         qudit_dimension,
     };
-    let result = py
-        .allow_threads(|| {
-            jordan_wigner_hybrid_terms(
-                layout,
-                HybridBatch {
-                    fermion_present: &fermion_present,
-                    fermion_creation: &fermion_creation,
-                    fermion_annihilation: &fermion_annihilation,
-                    boson_present: &boson_present,
-                    boson_blocks: &boson_blocks,
-                    qubit_codes: &qubit_codes,
-                    mapped_present: &mapped_present,
-                    mapped_codes: &mapped_codes,
-                    qudit_present: &qudit_present,
-                    qudit_triples: &qudit_triples,
-                    coefficients: &coefficients,
-                },
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| {
+        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        jordan_wigner_hybrid_terms(
+            layout,
+            HybridBatch {
+                fermion_present: &fermion_present,
+                fermion_creation: &fermion_creation,
+                fermion_annihilation: &fermion_annihilation,
+                boson_present: &boson_present,
+                boson_blocks: &boson_blocks,
+                qubit_codes: &qubit_codes,
+                mapped_present: &mapped_present,
+                mapped_codes: &mapped_codes,
+                qudit_present: &qudit_present,
+                qudit_triples: &qudit_triples,
+                coefficients: &coefficients,
+            },
+            max_bytes,
+        )
+        .map_err(map_error)
+    })?;
     Ok(NativeHybridOperatorHandle::from_result(layout, result))
-}
-
-#[pyfunction]
-pub(crate) fn structured_dense(
-    py: Python<'_>,
-    local_dimensions: Vec<usize>,
-    operations: Vec<Vec<(usize, u8, u32, u32)>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<(usize, Bound<'_, PyArray1<NumpyComplex128>>)> {
-    if operations.len() != coefficients_re.len() {
-        return Err(PyValueError::new_err(
-            "operation and coefficient lengths differ",
-        ));
-    }
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let operations = operations
-        .into_iter()
-        .map(|term| {
-            term.into_iter()
-                .map(|(axis, kind, p, q)| StructuredOperation { axis, kind, p, q })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let (dimension, values) = py
-        .allow_threads(|| {
-            structured_dense_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
-        })
-        .map_err(map_error)?;
-    Ok((dimension, PyArray1::from_vec(py, values)))
-}
-
-#[pyfunction]
-pub(crate) fn structured_sparse(
-    py: Python<'_>,
-    local_dimensions: Vec<usize>,
-    operations: Vec<Vec<(usize, u8, u32, u32)>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<StructuredSparseOutput> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let operations = operations
-        .into_iter()
-        .map(|term| {
-            term.into_iter()
-                .map(|(axis, kind, p, q)| StructuredOperation { axis, kind, p, q })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let result = py
-        .allow_threads(|| {
-            structured_sparse_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
-        })
-        .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&result.values);
-    Ok((
-        result.dimension,
-        result.rows,
-        result.columns,
-        real,
-        imaginary,
-    ))
-}
-
-#[pyfunction]
-pub(crate) fn structured_sparse_plan(
-    py: Python<'_>,
-    local_dimensions: Vec<usize>,
-    operations: Vec<Vec<(usize, u8, u32, u32)>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<StructuredMvpPlan> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let operations = operations
-        .into_iter()
-        .map(|term| {
-            term.into_iter()
-                .map(|(axis, kind, p, q)| StructuredOperation { axis, kind, p, q })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let plan = py
-        .allow_threads(|| {
-            structured_mvp_plan(local_dimensions, operations, coefficients, max_bytes)
-        })
-        .map_err(map_error)?;
-    Ok(StructuredMvpPlan { plan })
 }
 
 fn lower_hybrid_operations(
@@ -1918,13 +1968,13 @@ pub(crate) fn structured_dense_handle<'py>(
 }
 
 #[pyfunction]
-pub(crate) fn structured_sparse_handle(
-    py: Python<'_>,
+pub(crate) fn structured_sparse_handle<'py>(
+    py: Python<'py>,
     handle: &NativeHybridOperatorHandle,
     local_dimensions: Vec<usize>,
     axes: Vec<(u8, usize)>,
     max_bytes: u128,
-) -> PyResult<StructuredSparseOutput> {
+) -> PyResult<StructuredSparseOutput<'py>> {
     let result = py
         .allow_threads(|| {
             let operations = lower_hybrid_operations(&handle.result, &axes)?;
@@ -1932,13 +1982,11 @@ pub(crate) fn structured_sparse_handle(
             structured_sparse_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
         })
         .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&result.values);
     Ok((
         result.dimension,
-        result.rows,
-        result.columns,
-        real,
-        imaginary,
+        PyArray1::from_vec(py, result.rows),
+        PyArray1::from_vec(py, result.columns),
+        PyArray1::from_vec(py, result.values),
     ))
 }
 

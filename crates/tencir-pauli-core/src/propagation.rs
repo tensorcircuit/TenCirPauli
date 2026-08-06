@@ -75,6 +75,72 @@ struct CompiledPropagationProgram {
     transition_bytes: usize,
 }
 
+/// Immutable validated gate tape shared by propagation engines.
+#[derive(Clone, Debug)]
+pub struct PropagationTape {
+    nqubits: usize,
+    operations: Arc<[GateOperation]>,
+    nparameters: usize,
+    transition_bytes: usize,
+}
+
+impl PropagationTape {
+    pub fn new(
+        nqubits: usize,
+        operations: Vec<GateOperation>,
+        max_bytes: Option<u128>,
+    ) -> Result<Arc<Self>, PauliError> {
+        let mut slots = HashSet::new();
+        for operation in &operations {
+            if let Some(slot) = operation.parameter_slot() {
+                slots.insert(slot);
+            }
+        }
+        let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
+        if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
+            return Err(PauliError::InvalidClifford {
+                context: "parameter slots must cover 0..nparameters-1 without holes",
+            });
+        }
+        let transition_bytes =
+            operations
+                .iter()
+                .map(operation_storage_bytes)
+                .try_fold(0usize, |sum, value| {
+                    sum.checked_add(value).ok_or(PauliError::Overflow {
+                        context: "estimating propagation transition storage",
+                    })
+                })?;
+        check_budget(
+            transition_bytes,
+            max_bytes,
+            "propagation transition storage",
+        )?;
+        Ok(Arc::new(Self {
+            nqubits,
+            operations: Arc::from(operations.into_boxed_slice()),
+            nparameters,
+            transition_bytes,
+        }))
+    }
+
+    pub fn nqubits(&self) -> usize {
+        self.nqubits
+    }
+
+    pub fn nparameters(&self) -> usize {
+        self.nparameters
+    }
+
+    pub fn gate_count(&self) -> usize {
+        self.operations.len()
+    }
+
+    pub fn operations(&self) -> &[GateOperation] {
+        &self.operations
+    }
+}
+
 /// An immutable compiled propagation engine.
 #[derive(Clone, Debug)]
 pub struct PropagationEngine {
@@ -102,6 +168,18 @@ impl PropagationEngine {
         max_bytes: Option<u128>,
     ) -> Result<Self, PauliError> {
         let program = compile_program(nqubits, operations, initial_state, max_weight, max_bytes)?;
+        Self::from_program(program, observable)
+    }
+
+    /// Build an engine from a previously validated shared gate tape.
+    pub fn from_tape(
+        tape: Arc<PropagationTape>,
+        observable: PauliOperator,
+        initial_state: ProductState,
+        max_weight: Option<usize>,
+        max_bytes: Option<u128>,
+    ) -> Result<Self, PauliError> {
+        let program = program_from_tape(tape, initial_state, max_weight, max_bytes)?;
         Self::from_program(program, observable)
     }
 
@@ -259,7 +337,6 @@ impl PropagationEngine {
         let mut gradient = vec![0.0; self.program.nparameters];
         let mut output_indices =
             FxHashMap::with_capacity_and_hasher(current.len(), Default::default());
-
         for checkpoint_index in (0..checkpoints.len().saturating_sub(1)).rev() {
             let (start, block_start) = &checkpoints[checkpoint_index];
             let (end, _) = &checkpoints[checkpoint_index + 1];
@@ -322,9 +399,6 @@ impl PropagationEngine {
                     &mut gradient,
                 )?;
             }
-        }
-        if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
-            return Err(PauliError::NonFiniteCoefficient { index: 0 });
         }
         Ok(PropagationValueAndGradient { value, gradient })
     }
@@ -486,40 +560,25 @@ fn compile_program(
     max_bytes: Option<u128>,
 ) -> Result<Arc<CompiledPropagationProgram>, PauliError> {
     validate_state(nqubits, &initial_state)?;
-    let mut slots = HashSet::new();
-    for operation in &operations {
-        if let Some(slot) = operation.parameter_slot() {
-            slots.insert(slot);
-        }
-    }
-    let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
-    if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
-        return Err(PauliError::InvalidClifford {
-            context: "parameter slots must cover 0..nparameters-1 without holes",
-        });
-    }
-    let transition_bytes =
-        operations
-            .iter()
-            .map(operation_storage_bytes)
-            .try_fold(0usize, |sum, value| {
-                sum.checked_add(value).ok_or(PauliError::Overflow {
-                    context: "estimating propagation transition storage",
-                })
-            })?;
-    check_budget(
-        transition_bytes,
-        max_bytes,
-        "propagation transition storage",
-    )?;
+    let tape = PropagationTape::new(nqubits, operations, max_bytes)?;
+    program_from_tape(tape, initial_state, max_weight, max_bytes)
+}
+
+fn program_from_tape(
+    tape: Arc<PropagationTape>,
+    initial_state: ProductState,
+    max_weight: Option<usize>,
+    max_bytes: Option<u128>,
+) -> Result<Arc<CompiledPropagationProgram>, PauliError> {
+    validate_state(tape.nqubits, &initial_state)?;
     Ok(Arc::new(CompiledPropagationProgram {
-        nqubits,
-        operations: Arc::from(operations.into_boxed_slice()),
+        nqubits: tape.nqubits,
+        operations: Arc::clone(&tape.operations),
         initial_state,
         max_weight,
         max_bytes,
-        nparameters,
-        transition_bytes,
+        nparameters: tape.nparameters,
+        transition_bytes: tape.transition_bytes,
     }))
 }
 
@@ -534,6 +593,25 @@ impl PropagationBatch {
         max_bytes: Option<u128>,
     ) -> Result<Self, PauliError> {
         let program = compile_program(nqubits, operations, initial_state, max_weight, max_bytes)?;
+        Self::from_program(program, observables)
+    }
+
+    /// Build independent observable engines from a previously validated tape.
+    pub fn from_tape(
+        tape: Arc<PropagationTape>,
+        observables: Vec<PauliOperator>,
+        initial_state: ProductState,
+        max_weight: Option<usize>,
+        max_bytes: Option<u128>,
+    ) -> Result<Self, PauliError> {
+        let program = program_from_tape(tape, initial_state, max_weight, max_bytes)?;
+        Self::from_program(program, observables)
+    }
+
+    fn from_program(
+        program: Arc<CompiledPropagationProgram>,
+        observables: Vec<PauliOperator>,
+    ) -> Result<Self, PauliError> {
         let observable_bytes = observables.iter().try_fold(0usize, |sum, observable| {
             if observable.nqubits() != program.nqubits {
                 return Err(PauliError::IncompatibleQubitCounts {
@@ -1279,9 +1357,9 @@ fn apply_operation(
     match &operation.kind {
         GateKind::Clifford1 { gate, wire } => {
             let mut result = Vec::with_capacity(terms.len());
-            for (term_index, mut term) in terms.into_iter().enumerate() {
+            for mut term in terms {
                 let multiplier = apply_clifford1_in_place(&mut term.key, *gate, *wire);
-                term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
+                term.coefficient *= multiplier;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
                 {
@@ -1292,9 +1370,9 @@ fn apply_operation(
         }
         GateKind::Clifford2 { gate, wire0, wire1 } => {
             let mut result = Vec::with_capacity(terms.len());
-            for (term_index, mut term) in terms.into_iter().enumerate() {
+            for mut term in terms {
                 let multiplier = apply_clifford2_in_place(&mut term.key, *gate, *wire0, *wire1);
-                term.coefficient = checked_scale(term.coefficient, multiplier, term_index)?;
+                term.coefficient *= multiplier;
                 if !is_exact_zero(term.coefficient)
                     && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
                 {
@@ -1312,24 +1390,15 @@ fn apply_operation(
             let (cosine, sine) = resolve_parameter(*parameter, parameters)?;
             let mut contributions = Vec::with_capacity(terms.len().saturating_mul(2));
             let generator_code = rotation_code(*axis);
-            for (term_index, term) in terms.into_iter().enumerate() {
+            for term in terms {
                 let (product, phase) =
                     multiply_by_generator(&term.key, generator_code, *wire0, *wire1);
                 match phase {
                     PauliPhase::PlusI | PauliPhase::MinusI => {
-                        contributions.push((
-                            term.key,
-                            checked_scale(term.coefficient, cosine, term_index)?,
-                        ));
+                        contributions.push((term.key, term.coefficient * cosine));
                         if sine != 0.0 {
-                            contributions.push((
-                                product,
-                                checked_scale(
-                                    term.coefficient,
-                                    sine * phase_sign_i(phase),
-                                    term_index,
-                                )?,
-                            ));
+                            contributions
+                                .push((product, term.coefficient * (sine * phase_sign_i(phase))));
                         }
                     }
                     PauliPhase::PlusOne | PauliPhase::MinusOne => {
@@ -1345,7 +1414,7 @@ fn apply_operation(
             transitions,
         } => {
             let mut contributions = Vec::new();
-            for (term_index, term) in terms.into_iter().enumerate() {
+            for term in terms {
                 let input = local_index(&term.key, *wire0, *wire1);
                 for &(output, coefficient) in &transitions[input] {
                     let mut key = term.key.clone();
@@ -1354,10 +1423,7 @@ fn apply_operation(
                     if let Some(second_wire) = wire1 {
                         key.set_code(*second_wire, second);
                     }
-                    contributions.push((
-                        key,
-                        checked_scale(term.coefficient, coefficient, term_index)?,
-                    ));
+                    contributions.push((key, term.coefficient * coefficient));
                 }
             }
             aggregate(contributions, nqubits, cutoff)
@@ -1400,11 +1466,6 @@ fn reverse_frame(
             },
         )?;
     }
-    if input_lambda.iter().any(|value| !value.is_finite())
-        || gradient.iter().any(|value| !value.is_finite())
-    {
-        return Err(PauliError::NonFiniteCoefficient { index: 0 });
-    }
     Ok(input_lambda)
 }
 
@@ -1424,7 +1485,7 @@ where
     F: FnMut(usize, f64, f64, Option<usize>),
 {
     let mut emit = |key: PackedKey, multiplier: f64, derivative: f64, slot: Option<usize>| {
-        let scaled = checked_scale(term.coefficient, multiplier, 0)?;
+        let scaled = term.coefficient * multiplier;
         if is_exact_zero(scaled) || cutoff.is_some_and(|limit| key.weight(nqubits) > limit) {
             return Ok::<(), PauliError>(());
         }
@@ -1506,14 +1567,8 @@ fn aggregate(
         Default::default(),
     );
     for (key, coefficient) in contributions {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient {
-                index: values.len(),
-            });
-        }
-        let index = values.len();
         if let Some(current) = values.get_mut(&key) {
-            checked_add(current, coefficient, index)?;
+            *current += coefficient;
         } else {
             values.insert(key, coefficient);
         }
@@ -1528,33 +1583,6 @@ fn aggregate(
             && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
     });
     Ok(ordered)
-}
-
-fn checked_add(
-    current: &mut Complex64,
-    incoming: Complex64,
-    index: usize,
-) -> Result<(), PauliError> {
-    current.re += incoming.re;
-    current.im += incoming.im;
-    if current.re.is_finite() && current.im.is_finite() {
-        Ok(())
-    } else {
-        Err(PauliError::NonFiniteCoefficient { index })
-    }
-}
-
-fn checked_scale(
-    coefficient: Complex64,
-    scale: f64,
-    index: usize,
-) -> Result<Complex64, PauliError> {
-    let scaled = Complex64::new(coefficient.re * scale, coefficient.im * scale);
-    if scaled.re.is_finite() && scaled.im.is_finite() {
-        Ok(scaled)
-    } else {
-        Err(PauliError::NonFiniteCoefficient { index })
-    }
 }
 
 pub(crate) fn map_clifford1(key: &PackedKey, gate: Clifford1, wire: usize) -> (PackedKey, f64) {
@@ -2013,7 +2041,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_aggregation_rejects_finite_input_overflow() {
+    fn dynamic_aggregation_keeps_ordinary_float_overflow() {
         let word = PauliWord::from_codes(1, &[1]).unwrap();
         let key = PackedKey::from_word(&word);
         let result = aggregate(
@@ -2024,9 +2052,6 @@ mod tests {
             1,
             None,
         );
-        assert!(matches!(
-            result,
-            Err(PauliError::NonFiniteCoefficient { index: 1 })
-        ));
+        assert!(result.unwrap()[0].coefficient.re.is_infinite());
     }
 }

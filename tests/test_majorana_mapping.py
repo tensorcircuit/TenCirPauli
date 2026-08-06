@@ -82,6 +82,29 @@ def _encoded_basis_permutation(plan: tcp.FermionQubitMapping) -> np.ndarray:
     return result
 
 
+def _transform_pauli_with_cnots(
+    codes: tuple[int, ...], operations: tuple[tuple[int, int], ...]
+) -> tuple[tuple[int, ...], complex]:
+    product = (
+        ((0, 1.0 + 0j), (1, 1.0 + 0j), (2, 1.0 + 0j), (3, 1.0 + 0j)),
+        ((1, 1.0 + 0j), (0, 1.0 + 0j), (3, 1.0j), (2, -1.0j)),
+        ((2, 1.0 + 0j), (3, -1.0j), (0, 1.0 + 0j), (1, 1.0j)),
+        ((3, 1.0 + 0j), (2, 1.0j), (1, -1.0j), (0, 1.0 + 0j)),
+    )
+    control_images = ((0, 0), (1, 1), (2, 1), (3, 0))
+    target_images = ((0, 0), (0, 1), (3, 2), (3, 3))
+    result = list(codes)
+    phase = 1.0 + 0j
+    for control, target in operations:
+        control_code, target_code = control_images[result[control]]
+        image_control, image_target = target_images[result[target]]
+        result[control], local_phase = product[control_code][image_control]
+        phase *= local_phase
+        result[target], local_phase = product[target_code][image_target]
+        phase *= local_phase
+    return tuple(result), phase
+
+
 def test_majorana_word_signs_and_canonical_constructor() -> None:
     with pytest.raises(ValueError, match="sorted"):
         tcp.MajoranaWord(2, (1, 0))
@@ -241,7 +264,7 @@ def test_native_mapping_batch_matches_python_clifford_reference(name: str) -> No
             (transformed, term.coefficient * phase)
             for term in operator.terms
             for transformed, phase in (
-                plan._transform_codes_with_phase(term.word.to_codes()),
+                _transform_pauli_with_cnots(term.word.to_codes(), plan.cnot_operations),
             )
         ),
     )

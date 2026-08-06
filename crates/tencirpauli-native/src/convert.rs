@@ -3,16 +3,7 @@ use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{Complex64, PauliError, PauliOperator};
 
-pub(crate) type CanonicalizeOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
 pub(crate) type CanonicalizeBatchOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>, Vec<usize>, Vec<u8>);
-pub(crate) type CanonicalizeInput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>);
-pub(crate) type BackendPlanOutput = (u8, usize, usize, Vec<u64>, Vec<u64>, Vec<f64>, Vec<f64>);
-pub(crate) type NumpySparseOutput<'py> = (
-    usize,
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<NumpyComplex128>>,
-);
 pub(crate) type NumpyCanonicalizeBatchOutput<'py> = (
     usize,
     Bound<'py, PyArray1<u8>>,
@@ -59,23 +50,18 @@ pub(crate) fn complex_coefficients(re: Vec<f64>, im: Vec<f64>) -> PyResult<Vec<C
             im.len()
         )));
     }
-    Ok(re
-        .into_iter()
+    re.into_iter()
         .zip(im)
-        .map(|(real, imaginary)| Complex64::new(real, imaginary))
-        .collect())
-}
-
-pub(crate) fn operator_output(operator: &PauliOperator) -> CanonicalizeOutput {
-    let mut result_structures = Vec::with_capacity(operator.terms().len());
-    let mut result_re = Vec::with_capacity(operator.terms().len());
-    let mut result_im = Vec::with_capacity(operator.terms().len());
-    for term in operator.terms() {
-        result_structures.push(term.word.codes());
-        result_re.push(term.coefficient.re);
-        result_im.push(term.coefficient.im);
-    }
-    (result_structures, result_re, result_im)
+        .enumerate()
+        .map(|(index, (real, imaginary))| {
+            if !real.is_finite() || !imaginary.is_finite() {
+                return Err(PyValueError::new_err(format!(
+                    "coefficient at index {index} must be finite"
+                )));
+            }
+            Ok(Complex64::new(real, imaginary))
+        })
+        .collect::<PyResult<Vec<_>>>()
 }
 
 pub(crate) fn operator_packed_flat_output(
@@ -147,10 +133,6 @@ pub(crate) fn phase_code(phase: tencir_pauli_core::PauliPhase) -> u8 {
         tencir_pauli_core::PauliPhase::MinusOne => 2,
         tencir_pauli_core::PauliPhase::MinusI => 3,
     }
-}
-
-pub(crate) fn split_complex(values: &[Complex64]) -> (Vec<f64>, Vec<f64>) {
-    values.iter().map(|value| (value.re, value.im)).unzip()
 }
 
 pub(crate) fn build_operator(

@@ -1,4 +1,4 @@
-"""Release benchmarks for Phase 9 handle-native producer boundaries."""
+"""Release benchmarks for handle-native producer boundaries."""
 
 from __future__ import annotations
 

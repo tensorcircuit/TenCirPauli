@@ -262,6 +262,9 @@ class _CircuitBuilder:
         self._operations: list[_PropagationOperation] = []
         self._generation = 0
         self._cached_plan: Optional[tuple[Any, ...]] = None
+        self._native_gate_tape_cache: Optional[
+            tuple[int, GateTape, tuple[Angle, ...]]
+        ] = None
 
     _supports_ptm = False
 
@@ -339,6 +342,7 @@ class _CircuitBuilder:
             self._operations.append(operation)
         self._generation += 1
         self._cached_plan = None
+        self._native_gate_tape_cache = None
 
     def x(self, wire: int) -> None:
         """Append an X gate on ``wire``."""
@@ -401,6 +405,9 @@ class _CircuitBuilder:
         self._append("rzz", (wire0, wire1), theta)
 
     def _native_tape(self) -> tuple[GateTape, tuple[Angle, ...]]:
+        cached = self._native_gate_tape_cache
+        if cached is not None and cached[0] == self._generation:
+            return cached[1], cached[2]
         tape = GateTape(self.nqubits)
         dynamic: list[Angle] = []
         for operation in self._operations:
@@ -430,7 +437,9 @@ class _CircuitBuilder:
                 getattr(tape, name)(*operation.wires, parameter=slot)
             else:
                 getattr(tape, name)(*operation.wires, angle=float(operation.theta))
-        return tape, tuple(dynamic)
+        result = (tape, tuple(dynamic))
+        self._native_gate_tape_cache = (self._generation, result[0], result[1])
+        return result
 
     def _plan_key(
         self,
@@ -498,6 +507,7 @@ class _CircuitBuilder:
         ]
         result._generation = len(result._operations)
         result._cached_plan = None
+        result._native_gate_tape_cache = None
         return result
 
     @classmethod
@@ -660,6 +670,7 @@ class _CircuitBuilder:
         result._operations = operations
         result._generation = len(operations)
         result._cached_plan = None
+        result._native_gate_tape_cache = None
         return result
 
 

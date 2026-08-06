@@ -3,10 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{MvpPlan, MvpStrategy};
 
-use crate::convert::{
-    build_canonical_operator, map_error, numpy_complex_array, split_complex, BackendPlanOutput,
-    NumpySparseOutput,
-};
+use crate::convert::{map_error, numpy_complex_array};
 use crate::operator::NativePauliOperatorHandle;
 
 type NumpyDenseOutput<'py> = (usize, Bound<'py, PyArray1<NumpyComplex128>>);
@@ -17,6 +14,14 @@ type NumpyCooOutput<'py> = (
     Bound<'py, PyArray1<NumpyComplex128>>,
 );
 type NumpyCsrOutput<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+type BackendPlanOutput<'py> = (
+    u8,
+    usize,
     usize,
     Bound<'py, PyArray1<u64>>,
     Bound<'py, PyArray1<u64>>,
@@ -111,23 +116,21 @@ pub(crate) fn pauli_mvp_plan_handle(
 }
 
 #[pyfunction]
-pub(crate) fn pauli_backend_plan_handle(
-    py: Python<'_>,
+pub(crate) fn pauli_backend_plan_handle<'py>(
+    py: Python<'py>,
     handle: &NativePauliOperatorHandle,
     max_bytes: usize,
-) -> PyResult<BackendPlanOutput> {
+) -> PyResult<BackendPlanOutput<'py>> {
     let plan = py
         .allow_threads(|| handle.core().backend_mvp_plan(max_bytes as u128))
         .map_err(map_error)?;
-    let (real, imaginary) = split_complex(&plan.coefficients);
     Ok((
         1,
         plan.nqubits,
         plan.word_count,
-        plan.x_words,
-        plan.z_words,
-        real,
-        imaginary,
+        PyArray1::from_vec(py, plan.x_words),
+        PyArray1::from_vec(py, plan.z_words),
+        numpy_complex_array(py, plan.coefficients),
     ))
 }
 
@@ -185,141 +188,4 @@ impl NativeMvpPlan {
         })
         .map_err(map_error)
     }
-}
-
-#[pyfunction]
-pub(crate) fn pauli_dense_array<'py>(
-    py: Python<'py>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<(usize, Bound<'py, PyArray1<NumpyComplex128>>)> {
-    let (dimension, values) = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.dense_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    Ok((dimension, numpy_complex_array(py, values)))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_coo_array<'py>(
-    py: Python<'py>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<NumpySparseOutput<'py>> {
-    let matrix = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.coo_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    Ok((
-        matrix.dimension,
-        PyArray1::from_vec(py, matrix.rows),
-        PyArray1::from_vec(py, matrix.columns),
-        numpy_complex_array(py, matrix.values),
-    ))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_csr_array<'py>(
-    py: Python<'py>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<NumpySparseOutput<'py>> {
-    let matrix = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator.csr_matrix(max_bytes as u128).map_err(map_error)
-    })?;
-    Ok((
-        matrix.dimension,
-        PyArray1::from_vec(py, matrix.indptr),
-        PyArray1::from_vec(py, matrix.columns),
-        numpy_complex_array(py, matrix.values),
-    ))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_mvp_array<'py>(
-    py: Python<'py>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    state: PyReadonlyArray1<'py, NumpyComplex128>,
-    max_bytes: usize,
-) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
-    let operator = py.allow_threads(|| {
-        build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)
-    })?;
-    let state_slice = state
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
-    let values = py
-        .allow_threads(|| operator.mvp(state_slice, max_bytes as u128))
-        .map_err(map_error)?;
-    Ok(PyArray1::from_vec(py, values))
-}
-
-#[pyfunction]
-#[pyo3(signature = (nqubits, structures, coefficients_re, coefficients_im, max_bytes, storage="lazy"))]
-pub(crate) fn pauli_mvp_plan(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-    storage: &str,
-) -> PyResult<NativeMvpPlan> {
-    let plan = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        match storage {
-            "lazy" => tencir_pauli_core::MvpPlan::from_operator(&operator),
-            "eager" => operator.mvp_plan(max_bytes as u128),
-            _ => Err(tencir_pauli_core::PauliError::InvalidSector {
-                context: "storage must be either 'eager' or 'lazy'",
-            }),
-        }
-        .map_err(map_error)
-    })?;
-    Ok(NativeMvpPlan { plan })
-}
-
-#[pyfunction]
-pub(crate) fn pauli_backend_plan(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<BackendPlanOutput> {
-    let plan = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        operator
-            .backend_mvp_plan(max_bytes as u128)
-            .map_err(map_error)
-    })?;
-    let (real, imaginary) = split_complex(&plan.coefficients);
-    Ok((
-        1,
-        plan.nqubits,
-        plan.word_count,
-        plan.x_words,
-        plan.z_words,
-        real,
-        imaginary,
-    ))
 }

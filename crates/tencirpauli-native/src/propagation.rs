@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
@@ -5,10 +6,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     Clifford1, Clifford2, GateOperation, ParameterRef, PauliOperator, ProductState,
-    PropagationBatch, PropagationEngine, PropagationStats, RotationAxis,
+    PropagationBatch, PropagationEngine, PropagationStats, PropagationTape, RotationAxis,
 };
 
-use crate::convert::{build_canonical_operator, map_error};
+use crate::convert::map_error;
 use crate::operator::NativePauliOperatorHandle;
 
 type ProfileOutput = (f64, usize, usize, usize, usize, Vec<usize>, f64);
@@ -22,6 +23,35 @@ pub(crate) struct NativePropagationEngine {
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativePropagationBatch {
     batch: PropagationBatch,
+}
+
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct NativeGateTape {
+    tape: Arc<PropagationTape>,
+}
+
+impl NativeGateTape {
+    pub(crate) fn core_tape(&self) -> Arc<PropagationTape> {
+        Arc::clone(&self.tape)
+    }
+}
+
+#[pymethods]
+impl NativeGateTape {
+    #[getter]
+    fn nqubits(&self) -> usize {
+        self.tape.nqubits()
+    }
+
+    #[getter]
+    fn nparameters(&self) -> usize {
+        self.tape.nparameters()
+    }
+
+    #[getter]
+    fn gate_count(&self) -> usize {
+        self.tape.gate_count()
+    }
 }
 
 #[pymethods]
@@ -211,50 +241,32 @@ impl NativePropagationBatch {
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, operations, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
-pub(crate) fn pauli_propagation_engine(
+#[pyo3(signature = (nqubits, operations, max_bytes=None))]
+pub(crate) fn pauli_gate_tape(
     py: Python<'_>,
     nqubits: usize,
     operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    state_kind: u8,
-    state_bits: Vec<u8>,
-    state_values: Vec<f64>,
-    max_weight: Option<usize>,
     max_bytes: Option<usize>,
-) -> PyResult<NativePropagationEngine> {
-    let engine = py.allow_threads(|| {
+) -> PyResult<NativeGateTape> {
+    let tape = py.allow_threads(|| {
         let compiled = operations
             .into_iter()
             .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
                 compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        PropagationEngine::new(
-            nqubits,
-            compiled,
-            operator,
-            state,
-            max_weight,
-            max_bytes.map(|value| value as u128),
-        )
-        .map_err(map_error)
+        PropagationTape::new(nqubits, compiled, max_bytes.map(|value| value as u128))
+            .map_err(map_error)
     })?;
-    Ok(NativePropagationEngine { engine })
+    Ok(NativeGateTape { tape })
 }
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, operations, observable, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
-pub(crate) fn pauli_propagation_engine_handle(
+#[pyo3(signature = (tape, observable, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
+pub(crate) fn pauli_propagation_engine_tape(
     py: Python<'_>,
-    nqubits: usize,
-    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    tape: &NativeGateTape,
     observable: &NativePauliOperatorHandle,
     state_kind: u8,
     state_bits: Vec<u8>,
@@ -262,18 +274,12 @@ pub(crate) fn pauli_propagation_engine_handle(
     max_weight: Option<usize>,
     max_bytes: Option<usize>,
 ) -> PyResult<NativePropagationEngine> {
+    let tape = tape.core_tape();
     let operator = observable.core();
     let engine = py.allow_threads(|| {
-        let compiled = operations
-            .into_iter()
-            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
-                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        PropagationEngine::new(
-            nqubits,
-            compiled,
+        let state = compile_state(tape.nqubits(), state_kind, state_bits, state_values)?;
+        PropagationEngine::from_tape(
+            tape,
             operator.clone(),
             state,
             max_weight,
@@ -286,80 +292,10 @@ pub(crate) fn pauli_propagation_engine_handle(
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, operations, observable_offsets, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
-pub(crate) fn pauli_propagation_batch(
+#[pyo3(signature = (tape, observables, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
+pub(crate) fn pauli_propagation_batch_handles_tape(
     py: Python<'_>,
-    nqubits: usize,
-    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
-    observable_offsets: Vec<usize>,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    state_kind: u8,
-    state_bits: Vec<u8>,
-    state_values: Vec<f64>,
-    max_weight: Option<usize>,
-    max_bytes: Option<usize>,
-) -> PyResult<NativePropagationBatch> {
-    let batch = py.allow_threads(|| {
-        if observable_offsets.is_empty() || observable_offsets[0] != 0 {
-            return Err(PyValueError::new_err(
-                "observable_offsets must start with zero",
-            ));
-        }
-        if observable_offsets
-            .windows(2)
-            .any(|window| window[0] > window[1])
-        {
-            return Err(PyValueError::new_err(
-                "observable_offsets must be monotonically non-decreasing",
-            ));
-        }
-        let term_count = structures.len();
-        if observable_offsets.last().copied() != Some(term_count)
-            || coefficients_re.len() != term_count
-            || coefficients_im.len() != term_count
-        {
-            return Err(PyValueError::new_err(
-                "observable offsets and flattened coefficient lengths do not match",
-            ));
-        }
-        let compiled = operations
-            .into_iter()
-            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
-                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut observables = Vec::with_capacity(observable_offsets.len() - 1);
-        for window in observable_offsets.windows(2) {
-            observables.push(build_canonical_operator(
-                nqubits,
-                &structures[window[0]..window[1]],
-                &coefficients_re[window[0]..window[1]],
-                &coefficients_im[window[0]..window[1]],
-            )?);
-        }
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        PropagationBatch::new(
-            nqubits,
-            compiled,
-            observables,
-            state,
-            max_weight,
-            max_bytes.map(|value| value as u128),
-        )
-        .map_err(map_error)
-    })?;
-    Ok(NativePropagationBatch { batch })
-}
-
-#[allow(clippy::too_many_arguments)]
-#[pyfunction]
-#[pyo3(signature = (nqubits, operations, observables, state_kind, state_bits, state_values, max_weight=None, max_bytes=None))]
-pub(crate) fn pauli_propagation_batch_handles(
-    py: Python<'_>,
-    nqubits: usize,
-    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    tape: &NativeGateTape,
     observables: Vec<Py<NativePauliOperatorHandle>>,
     state_kind: u8,
     state_bits: Vec<u8>,
@@ -367,22 +303,20 @@ pub(crate) fn pauli_propagation_batch_handles(
     max_weight: Option<usize>,
     max_bytes: Option<usize>,
 ) -> PyResult<NativePropagationBatch> {
-    let operators = observables
+    let borrowed = observables
         .iter()
-        .map(|observable| observable.borrow(py).core().clone())
+        .map(|observable| observable.borrow(py))
         .collect::<Vec<_>>();
+    let operators = borrowed
+        .iter()
+        .map(|observable| observable.core())
+        .collect::<Vec<_>>();
+    let tape = Arc::clone(&tape.tape);
     let batch = py.allow_threads(|| {
-        let compiled = operations
-            .into_iter()
-            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
-                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        PropagationBatch::new(
-            nqubits,
-            compiled,
-            operators,
+        let state = compile_state(tape.nqubits(), state_kind, state_bits, state_values)?;
+        PropagationBatch::from_tape(
+            tape,
+            operators.into_iter().cloned().collect::<Vec<_>>(),
             state,
             max_weight,
             max_bytes.map(|value| value as u128),

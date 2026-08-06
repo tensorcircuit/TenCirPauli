@@ -3,9 +3,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 
-use crate::convert::{build_canonical_operator, map_error};
+use crate::convert::map_error;
 use crate::operator::NativePauliOperatorHandle;
-use crate::propagation::{compile_operation, compile_state};
+use crate::propagation::{compile_state, NativeGateTape};
 
 type SppsOutput<'py> = (
     f64,
@@ -114,50 +114,10 @@ impl NativeSPPSEngine {
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (nqubits, operations, structures, coefficients_re, coefficients_im, state_kind, state_bits, state_values, smoothing=0.01, max_bytes=None))]
-pub(crate) fn pauli_spps_engine(
+#[pyo3(signature = (tape, observable, state_kind, state_bits, state_values, smoothing=0.01, max_bytes=None))]
+pub(crate) fn pauli_spps_engine_tape(
     py: Python<'_>,
-    nqubits: usize,
-    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    state_kind: u8,
-    state_bits: Vec<u8>,
-    state_values: Vec<f64>,
-    smoothing: f64,
-    max_bytes: Option<usize>,
-) -> PyResult<NativeSPPSEngine> {
-    let engine = py.allow_threads(|| {
-        let compiled = operations
-            .into_iter()
-            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
-                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        SPPSEngine::new(
-            nqubits,
-            compiled,
-            operator,
-            state,
-            smoothing,
-            max_bytes.map(|value| value as u128),
-        )
-        .map_err(map_error)
-    })?;
-    Ok(NativeSPPSEngine { engine })
-}
-
-#[allow(clippy::too_many_arguments)]
-#[pyfunction]
-#[pyo3(signature = (nqubits, operations, observable, state_kind, state_bits, state_values, smoothing=0.01, max_bytes=None))]
-pub(crate) fn pauli_spps_engine_handle(
-    py: Python<'_>,
-    nqubits: usize,
-    operations: Vec<(u8, usize, usize, i64, f64, Vec<f64>)>,
+    tape: &NativeGateTape,
     observable: &NativePauliOperatorHandle,
     state_kind: u8,
     state_bits: Vec<u8>,
@@ -165,18 +125,13 @@ pub(crate) fn pauli_spps_engine_handle(
     smoothing: f64,
     max_bytes: Option<usize>,
 ) -> PyResult<NativeSPPSEngine> {
+    let tape = tape.core_tape();
+    let operator = observable.core();
     let engine = py.allow_threads(|| {
-        let compiled = operations
-            .into_iter()
-            .map(|(kind, wire0, wire1, parameter, angle, matrix)| {
-                compile_operation(nqubits, kind, wire0, wire1, parameter, angle, &matrix)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let state = compile_state(nqubits, state_kind, state_bits, state_values)?;
-        SPPSEngine::new(
-            nqubits,
-            compiled,
-            observable.core().clone(),
+        let state = compile_state(tape.nqubits(), state_kind, state_bits, state_values)?;
+        SPPSEngine::from_tape(
+            tape,
+            operator.clone(),
             state,
             smoothing,
             max_bytes.map(|value| value as u128),

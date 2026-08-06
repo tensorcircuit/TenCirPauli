@@ -1,4 +1,4 @@
-"""Phase 5.5 row-wise deterministic propagation tests."""
+"""batch propagation row-wise deterministic propagation tests."""
 
 from __future__ import annotations
 

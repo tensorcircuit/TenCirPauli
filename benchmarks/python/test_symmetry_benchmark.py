@@ -1,4 +1,4 @@
-"""Phase 2 symmetry setup and restricted-sector benchmarks."""
+"""symmetry symmetry setup and restricted-sector benchmarks."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def make_hopping(nqubits: int = 12) -> PauliOperator:
 
 
 def make_wide_hopping(nqubits: int) -> PauliOperator:
-    """Build the fixed Phase 5 nearest-neighbor hopping workload."""
+    """Build the fixed wide-sector nearest-neighbor hopping workload."""
     terms = []
     for index in range(nqubits - 1):
         prefix = "I" * index
@@ -137,7 +137,7 @@ def test_u1_restricted_coo(benchmark: BenchmarkFixture) -> None:
 
 @pytest.mark.performance_large
 @pytest.mark.parametrize("target", ["coo", "csr"])
-def test_phase5_128q_k2_sparse_materialization(
+def test_wide_sector_128q_k2_sparse_materialization(
     benchmark: BenchmarkFixture, target: str
 ) -> None:
     """Measure 128-qubit k=2 sparse output without allocating a dense target."""
@@ -192,7 +192,7 @@ def test_phase5_128q_k2_sparse_materialization(
         (512, 2),
     ],
 )
-def test_phase5_wide_u1_setup_and_mvp(
+def test_wide_sector_wide_u1_setup_and_mvp(
     benchmark: BenchmarkFixture, nqubits: int, particle_number: int
 ) -> None:
     operator = make_wide_hopping(nqubits)
@@ -235,7 +235,7 @@ def test_phase5_wide_u1_setup_and_mvp(
 
 
 @pytest.mark.performance_large
-def test_phase5_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -> None:
+def test_wide_sector_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -> None:
     """Measure cross-limb Z-group aggregation and long-range hopping setup."""
     operator = make_long_range_duplicate_x()
     sector = U1Sector(129, 2)
@@ -289,7 +289,7 @@ def test_phase5_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -> Non
         (512, 2),
     ],
 )
-def test_phase5_wide_u1_steady_mvp(
+def test_wide_sector_wide_u1_steady_mvp(
     benchmark: BenchmarkFixture, nqubits: int, particle_number: int
 ) -> None:
     operator = make_wide_hopping(nqubits)

@@ -289,9 +289,6 @@ pub fn prepare_charge_transition_plan_layout(
             return Err(invalid_sector());
         }
         validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
-        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
     }
     Ok(PreparedChargeTransitionPlanLayout {
         dimension,
@@ -353,17 +350,9 @@ fn apply_fermions(
     creation: &[u32],
     annihilation: &[u32],
     positions: &[usize],
+    packed: &mut Option<[u64; 2]>,
     coefficient: &mut Complex64,
 ) -> Result<bool, PauliError> {
-    let packed_parity = positions.len() <= 128;
-    let mut packed = [0_u64; 2];
-    if packed_parity {
-        for mode in 0..positions.len() {
-            if occupations[positions[mode]] != 0 {
-                packed[mode / 64] |= 1_u64 << (mode % 64);
-            }
-        }
-    }
     let mut apply = |mode: u32, create: bool| -> Result<bool, PauliError> {
         let mode = usize::try_from(mode).map_err(|_| invalid_sector())?;
         if mode >= positions.len() {
@@ -374,7 +363,7 @@ fn apply_fermions(
         if occupied > 1 {
             return Err(invalid_sector());
         }
-        let parity = if packed_parity {
+        let parity = if let Some(packed) = packed.as_ref() {
             if mode < 64 {
                 (packed[0] & if mode == 0 { 0 } else { (1_u64 << mode) - 1 }).count_ones() & 1
             } else {
@@ -395,7 +384,7 @@ fn apply_fermions(
                 return Ok(false);
             }
             occupations[position] = 1;
-            if packed_parity {
+            if let Some(packed) = packed.as_mut() {
                 packed[mode / 64] |= 1_u64 << (mode % 64);
             }
         } else {
@@ -403,7 +392,7 @@ fn apply_fermions(
                 return Ok(false);
             }
             occupations[position] = 0;
-            if packed_parity {
+            if let Some(packed) = packed.as_mut() {
                 packed[mode / 64] &= !(1_u64 << (mode % 64));
             }
         }
@@ -421,6 +410,26 @@ fn apply_fermions(
         }
     }
     Ok(true)
+}
+
+fn packed_fermion_source(
+    source: &[u64],
+    positions: &[usize],
+) -> Result<Option<[u64; 2]>, PauliError> {
+    if positions.len() > 128 {
+        return Ok(None);
+    }
+    let mut packed = [0_u64; 2];
+    for (mode, &position) in positions.iter().enumerate() {
+        let occupation = source[position];
+        if occupation > 1 {
+            return Err(invalid_sector());
+        }
+        if occupation != 0 {
+            packed[mode / 64] |= 1_u64 << (mode % 64);
+        }
+    }
+    Ok(Some(packed))
 }
 
 fn apply_bosons(
@@ -496,14 +505,17 @@ fn apply_charge_term(
     qubit_positions: &[usize],
     qudit_positions: &[usize],
     qudit_dimension: u64,
+    packed_source: Option<[u64; 2]>,
 ) -> Result<Option<Complex64>, PauliError> {
     destination.copy_from_slice(source);
     let mut value = term.coefficient;
+    let mut packed = packed_source;
     if !apply_fermions(
         destination,
         &term.fermion_creation,
         &term.fermion_annihilation,
         fermion_positions,
+        &mut packed,
         &mut value,
     )? {
         return Ok(None);
@@ -894,10 +906,7 @@ pub fn build_fast_fermion_mvp_plan(
     };
     let mode_count = index.sites * 2;
     let mut compact_terms = Vec::with_capacity(terms.len());
-    for (index, term) in terms.iter().enumerate() {
-        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
+    for term in terms.iter() {
         if term
             .fermion_creation
             .iter()
@@ -1120,9 +1129,6 @@ pub fn compile_charge_transitions(
             return Err(invalid_sector());
         }
         validate_qudit_term(term, index, qudit_positions.len(), qudit_dimension)?;
-        if !term.coefficient.re.is_finite() || !term.coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
     }
 
     let mut basis_index: FxHashMap<Vec<u64>, u64> =
@@ -1148,15 +1154,18 @@ pub fn compile_charge_transitions(
             context: "indexing charge-sector basis",
         })?;
         let source = &basis[start..start + axis_count];
+        let packed_source = packed_fermion_source(source, &fermion_positions)?;
         let mut destinations: BTreeMap<Vec<u64>, Complex64> = BTreeMap::new();
         for term in terms {
             let mut destination = source.to_vec();
             let mut value = term.coefficient;
+            let mut packed = packed_source;
             if !apply_fermions(
                 &mut destination,
                 &term.fermion_creation,
                 &term.fermion_annihilation,
                 &fermion_positions,
+                &mut packed,
                 &mut value,
             )? {
                 continue;
@@ -1295,14 +1304,17 @@ pub fn compile_charge_transitions_from_prepared_plan(
             &mut candidate_remaining,
         )?;
         destinations.clear();
+        let packed_source = packed_fermion_source(&source, fermion_positions)?;
         for term in terms {
             destination.copy_from_slice(&source);
             let mut value = term.coefficient;
+            let mut packed = packed_source;
             if !apply_fermions(
                 &mut destination,
                 &term.fermion_creation,
                 &term.fermion_annihilation,
                 fermion_positions,
+                &mut packed,
                 &mut value,
             )? {
                 continue;
@@ -1539,6 +1551,7 @@ pub fn apply_charge_mvp_from_prepared_plan_into(
             &mut remaining,
             &mut candidate_remaining,
         )?;
+        let packed_source = packed_fermion_source(&source, fermion_positions)?;
         destinations.clear();
         if termwise_conserved {
             for term in terms {
@@ -1552,6 +1565,7 @@ pub fn apply_charge_mvp_from_prepared_plan_into(
                     qubit_positions,
                     qudit_positions,
                     qudit_dimension,
+                    packed_source,
                 )?
                 else {
                     continue;
@@ -1580,6 +1594,7 @@ pub fn apply_charge_mvp_from_prepared_plan_into(
                     qubit_positions,
                     qudit_positions,
                     qudit_dimension,
+                    packed_source,
                 )?
                 else {
                     continue;

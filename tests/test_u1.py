@@ -85,7 +85,7 @@ def _reference_sparse(
     ("nqubits", "particle_number"),
     [(63, 1), (64, 2), (65, 1), (127, 2), (128, 1), (129, 2), (256, 2)],
 )
-def test_phase5_basis_order_and_packed_padding(
+def test_wide_sector_basis_order_and_packed_padding(
     nqubits: int, particle_number: int
 ) -> None:
     sector = tcp.U1Sector(nqubits, particle_number)
@@ -129,7 +129,7 @@ def test_phase5_basis_order_and_packed_padding(
         (256, 1),
     ],
 )
-def test_phase5_wide_restriction_matches_big_int_sparse_reference(
+def test_wide_sector_wide_restriction_matches_big_int_sparse_reference(
     nqubits: int, particle_number: int
 ) -> None:
     terms = _hopping_terms(nqubits)
@@ -152,7 +152,7 @@ def test_phase5_wide_restriction_matches_big_int_sparse_reference(
     )
 
 
-def test_phase5_leakage_is_checked_after_x_group_aggregation() -> None:
+def test_wide_sector_leakage_is_checked_after_x_group_aggregation() -> None:
     nqubits = 129
     sector = tcp.U1Sector(nqubits, 1)
     hopping = tcp.PauliOperator.from_terms(
@@ -170,7 +170,7 @@ def test_phase5_leakage_is_checked_after_x_group_aggregation() -> None:
         leaking.restrict_u1(sector)
 
 
-def test_phase5_complex_directed_hopping_crosses_a_limb_boundary() -> None:
+def test_wide_sector_complex_directed_hopping_crosses_a_limb_boundary() -> None:
     nqubits = 65
     coefficient = 0.7 + 0.2j
     terms = [

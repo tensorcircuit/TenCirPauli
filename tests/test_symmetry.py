@@ -1,4 +1,4 @@
-"""Phase 2 symmetry and fixed-sector differential tests."""
+"""symmetry symmetry and fixed-sector differential tests."""
 
 import numpy as np
 import pytest
@@ -265,7 +265,7 @@ def test_u1_native_restriction_supports_single_word_width_boundary() -> None:
     np.testing.assert_allclose(restricted.apply(np.asarray([2.0 + 3.0j])), [2.0 + 3.0j])
 
 
-def test_phase2_invalid_inputs_fail_explicitly() -> None:
+def test_symmetry_invalid_inputs_fail_explicitly() -> None:
     with pytest.raises(ValueError):
         tcp.U1Sector(2, 3)
     with pytest.raises((ValueError, IndexError)):

@@ -1,8 +1,9 @@
 use numpy::{Complex64 as NumpyComplex128, PyArray1};
 use pyo3::prelude::*;
+use std::hash::{Hash, Hasher};
 use tencir_pauli_core::{
-    binary_majorana_terms, canonicalize_majorana_terms, fermion_to_majorana_terms,
-    majorana_to_fermion_terms, multiply_majorana_terms, Complex64, MajoranaBatch,
+    binary_majorana_terms, canonicalize_majorana_terms, hash_complex, majorana_to_fermion_terms,
+    multiply_majorana_terms, Complex64, MajoranaBatch,
 };
 
 use crate::convert::{complex_coefficients, map_error};
@@ -33,6 +34,16 @@ impl NativeMajoranaOperatorHandle {
 
     pub(crate) fn native_parts(&self) -> (&[Vec<u64>], &[Complex64]) {
         (&self.indices, &self.coefficients)
+    }
+
+    fn content_hash_inner(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.n_modes.hash(&mut hasher);
+        self.indices.hash(&mut hasher);
+        for coefficient in &self.coefficients {
+            hash_complex(*coefficient, &mut hasher);
+        }
+        hasher.finish()
     }
 }
 
@@ -180,6 +191,18 @@ impl NativeMajoranaOperatorHandle {
         })
     }
 
+    fn content_eq(&self, py: Python<'_>, other: &Self) -> bool {
+        py.allow_threads(|| {
+            self.n_modes == other.n_modes
+                && self.indices == other.indices
+                && self.coefficients == other.coefficients
+        })
+    }
+
+    fn content_hash(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| self.content_hash_inner())
+    }
+
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyMajoranaOutput<'py> {
         let (indices, offsets, coefficients) = py.allow_threads(|| {
             let mut payload = Vec::new();
@@ -311,78 +334,9 @@ pub(crate) fn majorana_canonicalize(
     coefficients_im: Vec<f64>,
     max_bytes: u128,
 ) -> PyResult<NativeMajoranaOperatorHandle> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| canonicalize_majorana_terms(n_modes, &indices, &coefficients, max_bytes))
-        .map_err(map_error)?;
-    Ok(NativeMajoranaOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn majorana_multiply(
-    py: Python<'_>,
-    n_modes: usize,
-    left_indices: Vec<Vec<u64>>,
-    left_coefficients_re: Vec<f64>,
-    left_coefficients_im: Vec<f64>,
-    right_indices: Vec<Vec<u64>>,
-    right_coefficients_re: Vec<f64>,
-    right_coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<NativeMajoranaOperatorHandle> {
-    let left_coefficients = complex_coefficients(left_coefficients_re, left_coefficients_im)?;
-    let right_coefficients = complex_coefficients(right_coefficients_re, right_coefficients_im)?;
-    let result = py
-        .allow_threads(|| {
-            multiply_majorana_terms(
-                n_modes,
-                MajoranaBatch {
-                    indices: &left_indices,
-                    coefficients: &left_coefficients,
-                },
-                MajoranaBatch {
-                    indices: &right_indices,
-                    coefficients: &right_coefficients,
-                },
-                max_bytes,
-            )
-        })
-        .map_err(map_error)?;
-    Ok(NativeMajoranaOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-pub(crate) fn majorana_to_fermion(
-    py: Python<'_>,
-    n_modes: usize,
-    indices: Vec<Vec<u64>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<NativeFermionOperatorHandle> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| majorana_to_fermion_terms(n_modes, &indices, &coefficients, max_bytes))
-        .map_err(map_error)?;
-    Ok(NativeFermionOperatorHandle::from_result(n_modes, result))
-}
-
-#[pyfunction]
-pub(crate) fn fermion_to_majorana(
-    py: Python<'_>,
-    n_modes: usize,
-    creation: Vec<Vec<u32>>,
-    annihilation: Vec<Vec<u32>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: u128,
-) -> PyResult<NativeMajoranaOperatorHandle> {
-    let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-    let result = py
-        .allow_threads(|| {
-            fermion_to_majorana_terms(n_modes, &creation, &annihilation, &coefficients, max_bytes)
-        })
-        .map_err(map_error)?;
+    let result = py.allow_threads(|| {
+        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
+        canonicalize_majorana_terms(n_modes, &indices, &coefficients, max_bytes).map_err(map_error)
+    })?;
     Ok(NativeMajoranaOperatorHandle::from_result(n_modes, result))
 }

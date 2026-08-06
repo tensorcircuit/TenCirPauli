@@ -128,7 +128,7 @@ impl CircuitProgram {
             return Err(PauliError::NonFiniteParameter { index });
         }
         let mut values: Vec<f64> = Vec::with_capacity(self.parameter_program.len());
-        for (index, node) in self.parameter_program.iter().enumerate() {
+        for node in self.parameter_program.iter() {
             let value = match *node {
                 ParameterExprNode::Constant(value) => value,
                 ParameterExprNode::Slot(slot) => parameters[slot],
@@ -145,12 +145,6 @@ impl CircuitProgram {
                     values[left] / values[right]
                 }
             };
-            if !value.is_finite() {
-                return Err(PauliError::InvalidCircuit {
-                    context: "parameter expression is non-finite",
-                });
-            }
-            let _ = index;
             values.push(value);
         }
         Ok(values)
@@ -199,11 +193,6 @@ impl CircuitProgram {
                     adjoint[right] -= contribution * values[left] / values[right].powi(2);
                 }
             }
-        }
-        if gradient.iter().any(|value| !value.is_finite()) {
-            return Err(PauliError::InvalidCircuit {
-                context: "parameter expression gradient is non-finite",
-            });
         }
         Ok(gradient)
     }

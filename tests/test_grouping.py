@@ -1,6 +1,8 @@
-"""P3 deterministic grouping, compatibility, and reconstruction tests."""
+"""grouping deterministic grouping, compatibility, and reconstruction tests."""
 
 from __future__ import annotations
+
+import threading
 
 import numpy as np
 import pytest
@@ -55,6 +57,86 @@ def test_qwc_reconstruction_matches_term_eigenvalues() -> None:
         result.reconstruct(0, [[0.5, 0.0]])
     with pytest.raises(ValueError, match="shape"):
         result.reconstruct(0, [[0]])
+
+
+@pytest.mark.parametrize(
+    ("nqubits", "shots", "term_count", "support_density"),
+    ((3, 7, 8, 0.25), (70, 11, 16, 0.15), (70, 23, 32, 0.75)),
+)
+def test_qwc_reconstruction_matches_independent_numpy_oracle(
+    nqubits: int, shots: int, term_count: int, support_density: float
+) -> None:
+    rng = np.random.default_rng(20260806 + nqubits + term_count)
+    codes = np.where(
+        rng.random((term_count, nqubits)) < support_density,
+        rng.integers(1, 4, size=(term_count, nqubits)),
+        0,
+    ).astype(np.uint8)
+    for index in range(term_count):
+        codes[index, index % nqubits] = 3
+    operator = PauliOperator.from_code_arrays(codes, np.arange(1, term_count + 1))
+    result = operator.group_commuting()
+    bits = rng.integers(0, 2, size=(shots, nqubits), dtype=np.int8)
+    canonical_codes = np.asarray(
+        [term.word.to_codes() for term in operator.terms], dtype=np.uint8
+    )
+
+    for group_index, group in enumerate(result.groups):
+        expected = np.empty((shots, len(group)), dtype=np.int8)
+        for column, term_index in enumerate(group):
+            support = canonical_codes[term_index] != 0
+            parity = np.sum(bits[:, support], axis=1) & 1
+            expected[:, column] = np.where(parity == 0, 1, -1)
+        np.testing.assert_array_equal(result.reconstruct(group_index, bits), expected)
+
+
+def test_qwc_reconstruction_uses_native_residency_not_public_masks() -> None:
+    operator = PauliOperator.from_terms(
+        3, (("ZZI", 1.0), ("IZZ", 2.0), ("ZIZ", 3.0), ("III", 4.0))
+    )
+    result = operator.group_commuting()
+    bits = np.asarray([[0, 1, 0], [1, 0, 1]], dtype=np.int8)
+    expected = result.reconstruct(0, bits)
+    object.__setattr__(
+        result,
+        "reconstruction_masks",
+        tuple(tuple(0 for _ in group) for group in result.groups),
+    )
+    np.testing.assert_array_equal(result.reconstruct(0, bits), expected)
+
+
+def test_qwc_reconstruction_releases_gil_for_large_workload() -> None:
+    rng = np.random.default_rng(20260806)
+    nqubits, term_count, shots = 128, 48, 8_000
+    codes = np.where(
+        rng.random((term_count, nqubits)) < 0.5,
+        3,
+        0,
+    ).astype(np.uint8)
+    for index in range(term_count):
+        codes[index, index] = 3
+    result = PauliOperator.from_code_arrays(codes, np.ones(term_count))
+    grouping = result.group_commuting()
+    bits = rng.integers(0, 2, size=(shots, nqubits), dtype=np.int8)
+    progress = [0]
+    ready = threading.Event()
+    stop = threading.Event()
+
+    def observe() -> None:
+        ready.set()
+        while not stop.is_set():
+            progress[0] += 1
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    assert ready.wait(2.0)
+    try:
+        grouping.reconstruct(0, bits)
+    finally:
+        stop.set()
+        observer.join(2.0)
+    assert not observer.is_alive()
+    assert progress[0] > 0
 
 
 def test_general_commuting_is_separate_and_not_measurement_ready() -> None:

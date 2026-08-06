@@ -4,14 +4,16 @@ use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwrit
 use pyo3::prelude::*;
 use tencir_pauli_core::{
     apply_charge_csr_into, apply_charge_mvp_from_prepared_plan,
-    apply_charge_mvp_from_prepared_plan_into, build_charge_sector_plan,
-    build_compact_charge_sector_plan, build_fast_fermion_mvp_plan,
-    compile_charge_transitions_from_prepared_plan, estimate_charge_transition_terms_bytes,
-    prepare_charge_transition_plan_layout, ChargeSectorPlan, ChargeTransitionTerm, Complex64,
-    FastFermionMvpPlan, PauliError, PreparedChargeTransitionPlanLayout,
+    apply_charge_mvp_from_prepared_plan_into, build_compact_charge_sector_plan,
+    build_fast_fermion_mvp_plan, compile_charge_transitions_from_prepared_plan,
+    estimate_charge_transition_terms_bytes, prepare_charge_transition_plan_layout,
+    ChargeSectorPlan, ChargeTransitionTerm, Complex64, FastFermionMvpPlan, PauliError,
+    PreparedChargeTransitionPlanLayout,
 };
 
 use crate::convert::map_error;
+use crate::operator::NativePauliOperatorHandle;
+use crate::structured::NativeHybridOperatorHandle;
 
 type ChargeCsrArrays<'py> = (
     Bound<'py, PyArray1<u64>>,
@@ -85,6 +87,106 @@ fn charge_terms_from_inputs(
             coefficient: Complex64::new(coefficient.re, coefficient.im),
         })
         .collect())
+}
+
+fn charge_terms_from_pauli_handle(handle: &NativePauliOperatorHandle) -> Vec<ChargeTransitionTerm> {
+    handle
+        .core()
+        .terms()
+        .iter()
+        .map(|term| ChargeTransitionTerm {
+            fermion_creation: Vec::new(),
+            fermion_annihilation: Vec::new(),
+            boson_blocks: Vec::new(),
+            qubit_codes: term.word.codes(),
+            mapped_present: false,
+            mapped_codes: vec![0; 0],
+            qudit_present: false,
+            qudit_triples: Vec::new(),
+            coefficient: term.coefficient,
+        })
+        .collect()
+}
+
+fn charge_terms_from_hybrid_handle(
+    handle: &NativeHybridOperatorHandle,
+) -> Vec<ChargeTransitionTerm> {
+    let batch = handle.batch();
+    (0..batch.coefficients.len())
+        .map(|index| ChargeTransitionTerm {
+            fermion_creation: batch.fermion_creation[index].clone(),
+            fermion_annihilation: batch.fermion_annihilation[index].clone(),
+            boson_blocks: batch.boson_blocks[index].clone(),
+            qubit_codes: batch.qubit_codes[index].clone(),
+            mapped_present: batch.mapped_present[index],
+            mapped_codes: batch.mapped_codes[index].clone(),
+            qudit_present: batch.qudit_present[index],
+            qudit_triples: batch.qudit_triples[index].clone(),
+            coefficient: batch.coefficients[index],
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_native_charge_mvp_plan(
+    plan: Arc<ChargeSectorPlan>,
+    dimension: usize,
+    local_dimensions: Vec<u64>,
+    fermion_positions: Vec<u64>,
+    boson_positions: Vec<u64>,
+    qubit_positions: Vec<u64>,
+    qudit_positions: Vec<u64>,
+    qudit_dimension: u64,
+    terms: Vec<ChargeTransitionTerm>,
+    termwise_conserved: bool,
+    max_bytes: u128,
+    fast_fermion_particles: Option<usize>,
+) -> PyResult<NativeChargeMvpPlan> {
+    if dimension != plan.dimension() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "charge MVP dimension does not match its sector plan",
+        ));
+    }
+    let base_bytes = charge_plan_base_bytes(&plan, &terms).map_err(map_error)?;
+    let layout_budget = charge_remaining_budget(max_bytes, base_bytes).map_err(map_error)?;
+    let layout = prepare_charge_transition_plan_layout(
+        &plan,
+        dimension,
+        local_dimensions.clone(),
+        &fermion_positions,
+        &boson_positions,
+        &qubit_positions,
+        &qudit_positions,
+        qudit_dimension,
+        &terms,
+        layout_budget,
+    )
+    .map_err(map_error)?;
+    let fast_budget =
+        charge_remaining_budget(layout_budget, layout.estimated_bytes()).map_err(map_error)?;
+    let fast_fermion_plan = if termwise_conserved {
+        build_fast_fermion_mvp_plan(
+            &plan,
+            &local_dimensions,
+            &fermion_positions,
+            &boson_positions,
+            &qubit_positions,
+            &qudit_positions,
+            &terms,
+            fast_fermion_particles,
+            fast_budget,
+        )
+        .map_err(map_error)?
+    } else {
+        None
+    };
+    Ok(NativeChargeMvpPlan {
+        plan,
+        layout,
+        terms,
+        termwise_conserved,
+        fast_fermion_plan,
+    })
 }
 
 #[pyclass(module = "tencirpauli._native")]
@@ -183,50 +285,113 @@ impl NativeChargeSectorPlan {
             &qudit_present,
             &qudit_triples,
         )?;
-        if dimension != self.dimension() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "charge MVP dimension does not match its sector plan",
-            ));
-        }
-        let base_bytes = charge_plan_base_bytes(&self.plan, &terms).map_err(map_error)?;
-        let layout_budget = charge_remaining_budget(max_bytes, base_bytes).map_err(map_error)?;
-        let layout = prepare_charge_transition_plan_layout(
-            &self.plan,
+        build_native_charge_mvp_plan(
+            Arc::clone(&self.plan),
             dimension,
-            local_dimensions.clone(),
-            &fermion_positions,
-            &boson_positions,
-            &qubit_positions,
-            &qudit_positions,
+            local_dimensions,
+            fermion_positions,
+            boson_positions,
+            qubit_positions,
+            qudit_positions,
             qudit_dimension,
-            &terms,
-            layout_budget,
-        )
-        .map_err(map_error)?;
-        let fast_budget =
-            charge_remaining_budget(layout_budget, layout.estimated_bytes()).map_err(map_error)?;
-        let fast_fermion_plan = if termwise_conserved {
-            build_fast_fermion_mvp_plan(
-                &self.plan,
-                &local_dimensions,
-                &fermion_positions,
-                &boson_positions,
-                &qubit_positions,
-                &qudit_positions,
-                &terms,
-                fast_fermion_particles,
-                fast_budget,
-            )
-            .map_err(map_error)?
-        } else {
-            None
-        };
-        Ok(NativeChargeMvpPlan {
-            plan: Arc::clone(&self.plan),
-            layout,
             terms,
             termwise_conserved,
-            fast_fermion_plan,
+            max_bytes,
+            fast_fermion_particles,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        handle,
+        dimension,
+        local_dimensions,
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        termwise_conserved,
+        max_bytes,
+        fast_fermion_particles=None
+    ))]
+    fn compile_mvp_pauli_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativePauliOperatorHandle,
+        dimension: usize,
+        local_dimensions: Vec<u64>,
+        fermion_positions: Vec<u64>,
+        boson_positions: Vec<u64>,
+        qubit_positions: Vec<u64>,
+        qudit_positions: Vec<u64>,
+        termwise_conserved: bool,
+        max_bytes: u128,
+        fast_fermion_particles: Option<usize>,
+    ) -> PyResult<NativeChargeMvpPlan> {
+        let plan = Arc::clone(&self.plan);
+        py.allow_threads(move || {
+            build_native_charge_mvp_plan(
+                plan,
+                dimension,
+                local_dimensions,
+                fermion_positions,
+                boson_positions,
+                qubit_positions,
+                qudit_positions,
+                0,
+                charge_terms_from_pauli_handle(handle),
+                termwise_conserved,
+                max_bytes,
+                fast_fermion_particles,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        handle,
+        dimension,
+        local_dimensions,
+        fermion_positions,
+        boson_positions,
+        qubit_positions,
+        qudit_positions,
+        qudit_dimension,
+        termwise_conserved,
+        max_bytes,
+        fast_fermion_particles=None
+    ))]
+    fn compile_mvp_hybrid_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativeHybridOperatorHandle,
+        dimension: usize,
+        local_dimensions: Vec<u64>,
+        fermion_positions: Vec<u64>,
+        boson_positions: Vec<u64>,
+        qubit_positions: Vec<u64>,
+        qudit_positions: Vec<u64>,
+        qudit_dimension: u64,
+        termwise_conserved: bool,
+        max_bytes: u128,
+        fast_fermion_particles: Option<usize>,
+    ) -> PyResult<NativeChargeMvpPlan> {
+        let plan = Arc::clone(&self.plan);
+        py.allow_threads(move || {
+            build_native_charge_mvp_plan(
+                plan,
+                dimension,
+                local_dimensions,
+                fermion_positions,
+                boson_positions,
+                qubit_positions,
+                qudit_positions,
+                qudit_dimension,
+                charge_terms_from_hybrid_handle(handle),
+                termwise_conserved,
+                max_bytes,
+                fast_fermion_particles,
+            )
         })
     }
 }
@@ -600,24 +765,6 @@ impl NativeChargeEagerMvpPlan {
         }
         py.allow_threads(|| self.apply_values(state_values, output_values, true))
     }
-}
-
-#[pyfunction]
-pub(crate) fn charge_sector_plan(
-    py: Python<'_>,
-    local_dimensions: Vec<usize>,
-    contributions: Vec<Vec<Vec<i128>>>,
-    target: Vec<i128>,
-    max_bytes: u128,
-) -> PyResult<NativeChargeSectorPlan> {
-    let plan = py
-        .allow_threads(|| {
-            build_charge_sector_plan(local_dimensions, contributions, target, max_bytes)
-        })
-        .map_err(crate::convert::map_error)?;
-    Ok(NativeChargeSectorPlan {
-        plan: Arc::new(plan),
-    })
 }
 
 #[pyfunction]

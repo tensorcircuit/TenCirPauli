@@ -1,4 +1,4 @@
-"""Independent dense oracle for Phase 3 propagation tests."""
+"""Independent dense oracle for deterministic propagation propagation tests."""
 
 from __future__ import annotations
 

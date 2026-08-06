@@ -30,7 +30,6 @@ from .hamiltonian import (
 )
 from .structured import (
     FermionOperator,
-    _fermion_arrays,
     _fermion_from_native,
     _finite_complex,
 )
@@ -216,19 +215,6 @@ class MajoranaOperator:
         )
         self._initialize_native(n_modes, handle)
 
-    def _initialize(self, n_modes: int, aggregate: Dict[MajoranaWord, complex]) -> None:
-        terms = tuple(
-            MajoranaTerm(word, coefficient)
-            for word, coefficient in sorted(
-                aggregate.items(), key=lambda item: item[0].indices
-            )
-            if coefficient.real != 0.0 or coefficient.imag != 0.0
-        )
-        object.__setattr__(self, "n_modes", n_modes)
-        object.__setattr__(self, "_terms", terms)
-        object.__setattr__(self, "_native_handle", None)
-        object.__setattr__(self, "_locked", True)
-
     def _initialize_native(
         self,
         n_modes: int,
@@ -243,6 +229,21 @@ class MajoranaOperator:
         if getattr(self, "_locked", False):
             raise AttributeError("MajoranaOperator is immutable")
         object.__setattr__(self, name, value)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MajoranaOperator) or self.n_modes != other.n_modes:
+            return NotImplemented
+        left = self._native_handle
+        right = other._native_handle
+        if left is None or right is None:
+            raise RuntimeError("MajoranaOperator must retain native handles")
+        return bool(left.content_eq(right))
+
+    def __hash__(self) -> int:
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        return hash((self.n_modes, int(handle.content_hash())))
 
     @classmethod
     def from_terms(
@@ -278,16 +279,6 @@ class MajoranaOperator:
             1
         """
         return cls(n_modes, ((indices, coefficient),), max_bytes=max_bytes)
-
-    @classmethod
-    def _from_canonical(
-        cls,
-        n_modes: int,
-        aggregate: Dict[MajoranaWord, complex],
-    ) -> "MajoranaOperator":
-        instance = object.__new__(cls)
-        instance._initialize(n_modes, aggregate)
-        return instance
 
     @classmethod
     def _from_native(
@@ -326,24 +317,24 @@ class MajoranaOperator:
     @property
     def term_count(self) -> int:
         """Return the number of nonzero canonical terms."""
-        if self._native_handle is not None:
-            return self._native_handle.term_count
-        return len(self.terms)
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        return handle.term_count
 
     def to_dict(self) -> Dict[Tuple[int, ...], complex]:
         """Return canonical index tuples without constructing Majorana terms."""
-        if self._native_handle is not None:
-            _term_count, payload, offsets, coefficients = (
-                self._native_handle.materialize()
-            )
-            words = np.asarray(payload, dtype=np.uint64)
-            stops = np.asarray(offsets, dtype=np.uintp)
-            values = np.asarray(coefficients, dtype=np.complex128)
-            return {
-                tuple(int(index) for index in words[start:stop]): complex(value)
-                for (start, stop), value in zip(zip(stops[:-1], stops[1:]), values)
-            }
-        return {term.word.indices: term.coefficient for term in self.terms}
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        _term_count, payload, offsets, coefficients = handle.materialize()
+        words = np.asarray(payload, dtype=np.uint64)
+        stops = np.asarray(offsets, dtype=np.uintp)
+        values = np.asarray(coefficients, dtype=np.complex128)
+        return {
+            tuple(int(index) for index in words[start:stop]): complex(value)
+            for (start, stop), value in zip(zip(stops[:-1], stops[1:]), values)
+        }
 
     def __len__(self) -> int:
         return self.term_count
@@ -363,22 +354,13 @@ class MajoranaOperator:
     ) -> "MajoranaOperator":
         """Return the exact canonical sum of two equal-mode operators."""
         other = self._check_other(other)
-        if self._native_handle is not None and other._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.add(
-                    other._native_handle, _effective_max_bytes(max_bytes)
-                ),
-            )
-        left_terms = self.terms
-        right_terms = other.terms
-        aggregate: Dict[MajoranaWord, complex] = {
-            term.word: term.coefficient for term in left_terms
-        }
-        for term in right_terms:
-            aggregate[term.word] = aggregate.get(term.word, 0j) + term.coefficient
-        _guard_expansion(len(aggregate), max_bytes, "Majorana addition")
-        return self._from_canonical(self.n_modes, aggregate)
+        left = self._native_handle
+        right = other._native_handle
+        if left is None or right is None:
+            raise RuntimeError("MajoranaOperator operands must retain native handles")
+        return self._from_native(
+            self.n_modes, left.add(right, _effective_max_bytes(max_bytes))
+        )
 
     def scale(
         self,
@@ -389,15 +371,10 @@ class MajoranaOperator:
         """Return a new operator with every coefficient multiplied by ``coefficient``."""
         scalar = _finite_complex(coefficient, "scale")
         _guard_expansion(self.term_count, max_bytes, "Majorana scaling")
-        if self._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.scale(scalar.real, scalar.imag),
-            )
-        return self._from_canonical(
-            self.n_modes,
-            {term.word: term.coefficient * scalar for term in self.terms},
-        )
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        return self._from_native(self.n_modes, handle.scale(scalar.real, scalar.imag))
 
     def multiply(
         self,
@@ -409,35 +386,14 @@ class MajoranaOperator:
         other = self._check_other(other)
         pair_count = self.term_count * other.term_count
         _guard_expansion(pair_count, max_bytes, "Majorana multiplication")
-        if self._native_handle is not None and other._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.multiply(
-                    other._native_handle, _effective_max_bytes(max_bytes)
-                ),
-            )
-        else:
-            left_terms = self.terms
-            right_terms = other.terms
-            left_indices = tuple(term.word.indices for term in left_terms)
-            right_indices = tuple(term.word.indices for term in right_terms)
-            left_values = tuple(term.coefficient for term in left_terms)
-            right_values = tuple(term.coefficient for term in right_terms)
-            left_real = tuple(value.real for value in left_values)
-            left_imaginary = tuple(value.imag for value in left_values)
-            right_real = tuple(value.real for value in right_values)
-            right_imaginary = tuple(value.imag for value in right_values)
-        handle = _native.majorana_multiply(
+        left = self._native_handle
+        right = other._native_handle
+        if left is None or right is None:
+            raise RuntimeError("MajoranaOperator operands must retain native handles")
+        return self._from_native(
             self.n_modes,
-            [list(word) for word in left_indices],
-            list(left_real),
-            list(left_imaginary),
-            [list(word) for word in right_indices],
-            list(right_real),
-            list(right_imaginary),
-            _effective_max_bytes(max_bytes),
+            left.multiply(right, _effective_max_bytes(max_bytes)),
         )
-        return self._from_native(self.n_modes, handle)
 
     def commutator(
         self,
@@ -447,16 +403,12 @@ class MajoranaOperator:
     ) -> "MajoranaOperator":
         """Return the exact commutator ``self * other - other * self``."""
         other = self._check_other(other)
-        if self._native_handle is not None and other._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.commutator(
-                    other._native_handle, _effective_max_bytes(max_bytes)
-                ),
-            )
-        return self.multiply(other, max_bytes=max_bytes).add(
-            other.multiply(self, max_bytes=max_bytes).scale(-1, max_bytes=max_bytes),
-            max_bytes=max_bytes,
+        left = self._native_handle
+        right = other._native_handle
+        if left is None or right is None:
+            raise RuntimeError("MajoranaOperator operands must retain native handles")
+        return self._from_native(
+            self.n_modes, left.commutator(right, _effective_max_bytes(max_bytes))
         )
 
     def anticommutator(
@@ -467,15 +419,12 @@ class MajoranaOperator:
     ) -> "MajoranaOperator":
         """Return the exact anticommutator ``self * other + other * self``."""
         other = self._check_other(other)
-        if self._native_handle is not None and other._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.anticommutator(
-                    other._native_handle, _effective_max_bytes(max_bytes)
-                ),
-            )
-        return self.multiply(other, max_bytes=max_bytes).add(
-            other.multiply(self, max_bytes=max_bytes), max_bytes=max_bytes
+        left = self._native_handle
+        right = other._native_handle
+        if left is None or right is None:
+            raise RuntimeError("MajoranaOperator operands must retain native handles")
+        return self._from_native(
+            self.n_modes, left.anticommutator(right, _effective_max_bytes(max_bytes))
         )
 
     def adjoint(
@@ -483,16 +432,10 @@ class MajoranaOperator:
     ) -> "MajoranaOperator":
         """Return the exact coefficient-conjugated operator adjoint."""
         _guard_expansion(self.term_count, max_bytes, "Majorana adjoint")
-        if self._native_handle is not None:
-            return self._from_native(
-                self.n_modes,
-                self._native_handle.adjoint(),
-            )
-        aggregate: Dict[MajoranaWord, complex] = {}
-        for term in self.terms:
-            sign = term.word.adjoint().sign
-            aggregate[term.word] = term.coefficient.conjugate() * sign
-        return self._from_canonical(self.n_modes, aggregate)
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        return self._from_native(self.n_modes, handle.adjoint())
 
     def is_hermitian(self, tolerance: float = 0.0) -> bool:
         """Return whether the operator equals its adjoint within ``tolerance``."""
@@ -503,13 +446,10 @@ class MajoranaOperator:
             or tolerance < 0
         ):
             raise ValueError("Hermiticity tolerance must be finite and non-negative")
-        if self._native_handle is not None:
-            return bool(self._native_handle.is_hermitian(float(tolerance)))
-        left = self.to_dict()
-        right = self.adjoint().to_dict()
-        return left.keys() == right.keys() and all(
-            abs(left[key] - right[key]) <= tolerance for key in left
-        )
+        handle = self._native_handle
+        if handle is None:
+            raise RuntimeError("MajoranaOperator must retain a native handle")
+        return bool(handle.is_hermitian(float(tolerance)))
 
     def to_fermion(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -522,14 +462,7 @@ class MajoranaOperator:
         """
         handle = self._native_handle
         if handle is None:
-            terms = self.terms
-            handle = _native.majorana_canonicalize(
-                self.n_modes,
-                [list(term.word.indices) for term in terms],
-                [term.coefficient.real for term in terms],
-                [term.coefficient.imag for term in terms],
-                _effective_max_bytes(max_bytes),
-            )
+            raise RuntimeError("MajoranaOperator must retain a native handle")
         return _fermion_from_native(
             FermionOperator,
             self.n_modes,
@@ -621,8 +554,7 @@ class MajoranaOperator:
         return self * other
 
     def __repr__(self) -> str:
-        storage = "native" if self._native_handle is not None else "python"
-        return f"MajoranaOperator(n_modes={self.n_modes}, term_count={self.term_count}, storage={storage!r})"
+        return f"MajoranaOperator(n_modes={self.n_modes}, term_count={self.term_count})"
 
 
 def fermion_to_majorana(
@@ -633,18 +565,10 @@ def fermion_to_majorana(
     """Convert a canonical fermion operator through one native batch call."""
     if not isinstance(operator, FermionOperator):
         raise TypeError("fermion_to_majorana expects a FermionOperator")
-    if isinstance(operator._native_handle, _native.NativeFermionOperatorHandle):
-        return MajoranaOperator._from_native(
-            operator.space.fermions,
-            operator._native_handle.to_majorana(_effective_max_bytes(max_bytes)),
-        )
-    creation, annihilation, real, imaginary = _fermion_arrays(operator)
-    handle = _native.fermion_to_majorana(
+    handle = operator._native_handle
+    if not isinstance(handle, _native.NativeFermionOperatorHandle):
+        raise RuntimeError("FermionOperator must retain a native handle")
+    return MajoranaOperator._from_native(
         operator.space.fermions,
-        creation,
-        annihilation,
-        real,
-        imaginary,
-        _effective_max_bytes(max_bytes),
+        handle.to_majorana(_effective_max_bytes(max_bytes)),
     )
-    return MajoranaOperator._from_native(operator.space.fermions, handle)

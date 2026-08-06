@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::mem::size_of;
 
 use rayon::prelude::*;
+use std::sync::Arc;
 
 use crate::error::PauliError;
 use crate::gate::{Clifford1, Clifford2, GateKind, GateOperation, ParameterRef};
@@ -148,6 +149,24 @@ impl PathScratch {
 }
 
 impl SPPSEngine {
+    /// Compile an SPPS engine from a previously lowered propagation tape.
+    pub fn from_tape(
+        tape: Arc<crate::propagation::PropagationTape>,
+        observable: PauliOperator,
+        initial_state: ProductState,
+        smoothing: f64,
+        max_bytes: Option<u128>,
+    ) -> Result<Self, PauliError> {
+        Self::new(
+            tape.nqubits(),
+            tape.operations().to_vec(),
+            observable,
+            initial_state,
+            smoothing,
+            max_bytes,
+        )
+    }
+
     /// Compile a tape and a real Hermitian observable for SPPS.
     pub fn new(
         nqubits: usize,
@@ -849,11 +868,6 @@ fn run_samples(
                             *source_index,
                         );
                         if random < q {
-                            if q <= 0.0 {
-                                return Err(PauliError::NonFiniteCoefficient {
-                                    index: sample_index,
-                                });
-                            }
                             scratch.ratios.push(cosine / q);
                             if !stats.gradient_sum.is_empty() {
                                 scratch.derivatives.push(slot.map_or(0.0, |_| -sine / q));
@@ -866,11 +880,6 @@ fn run_samples(
                             if let Some(second_wire) = wire1 {
                                 current.set_code(*second_wire, mapped_second);
                             }
-                            if probability <= 0.0 {
-                                return Err(PauliError::NonFiniteCoefficient {
-                                    index: sample_index,
-                                });
-                            }
                             scratch.ratios.push(local_sign * sine / probability);
                             if !stats.gradient_sum.is_empty() {
                                 scratch
@@ -881,11 +890,6 @@ fn run_samples(
                         }
                     }
                 }
-            }
-            if !sign.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient {
-                    index: sample_index,
-                });
             }
         }
 
@@ -906,19 +910,9 @@ fn run_samples(
             scratch.suffix.resize(scratch.ratios.len() + 1, 1.0);
             for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
                 scratch.prefix[index + 1] = scratch.prefix[index] * ratio;
-                if !scratch.prefix[index + 1].is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient {
-                        index: sample_index,
-                    });
-                }
             }
             for index in (0..scratch.ratios.len()).rev() {
                 scratch.suffix[index] = scratch.ratios[index] * scratch.suffix[index + 1];
-                if !scratch.suffix[index].is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient {
-                        index: sample_index,
-                    });
-                }
             }
         } else {
             for (index, ratio) in scratch.ratios.iter().copied().enumerate() {
@@ -926,11 +920,6 @@ fn run_samples(
                     zero_index = index;
                 } else {
                     nonzero_product *= ratio;
-                    if !nonzero_product.is_finite() {
-                        return Err(PauliError::NonFiniteCoefficient {
-                            index: sample_index,
-                        });
-                    }
                 }
             }
         }
@@ -943,18 +932,8 @@ fn run_samples(
             0.0
         };
         let sample_value = value_factor * path_product;
-        if !sample_value.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient {
-                index: sample_index,
-            });
-        }
         stats.sum += sample_value;
         stats.sum_squared += sample_value * sample_value;
-        if !stats.sum.is_finite() || !stats.sum_squared.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient {
-                index: sample_index,
-            });
-        }
         if !stats.gradient_sum.is_empty() {
             for index in 0..scratch.ratios.len() {
                 if let Some(slot) = scratch.slots[index] {
@@ -969,11 +948,6 @@ fn run_samples(
                     };
                     stats.gradient_sum[slot] +=
                         value_factor * scratch.derivatives[index] * product_without_factor;
-                    if !stats.gradient_sum[slot].is_finite() {
-                        return Err(PauliError::NonFiniteCoefficient {
-                            index: sample_index,
-                        });
-                    }
                 }
             }
         }
@@ -1004,9 +978,6 @@ fn combine_fixed(
             *output += sum / count;
         }
     }
-    if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
-        return Err(PauliError::NonFiniteCoefficient { index: 0 });
-    }
     Ok((value, gradient, variance.max(0.0).sqrt()))
 }
 
@@ -1023,10 +994,7 @@ fn gradient_proxy(left: &TermStats, right: &TermStats) -> Result<f64, PauliError
         })
         .sum::<f64>();
     let result = 0.5 * squared.sqrt();
-    result
-        .is_finite()
-        .then_some(result)
-        .ok_or(PauliError::NonFiniteCoefficient { index: 0 })
+    Ok(result)
 }
 
 fn combine_adaptive(
@@ -1059,9 +1027,6 @@ fn combine_adaptive(
         {
             *output += 0.5 * (left_sum / left_count + right_sum / right_count);
         }
-    }
-    if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
-        return Err(PauliError::NonFiniteCoefficient { index: 0 });
     }
     Ok((value, gradient, variance.max(0.0).sqrt()))
 }

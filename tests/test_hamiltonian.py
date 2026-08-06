@@ -1,4 +1,4 @@
-"""P4 Hamiltonian target differential and allocation-guard tests."""
+"""Hamiltonian Hamiltonian target differential and allocation-guard tests."""
 
 from __future__ import annotations
 

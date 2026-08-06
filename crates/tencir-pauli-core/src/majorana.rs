@@ -177,9 +177,6 @@ fn finish(
 ) -> Result<MajoranaCanonicalResult, PauliError> {
     let mut ordered = Vec::with_capacity(aggregate.len());
     for (word, coefficient) in aggregate {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index: 0 });
-        }
         if coefficient.re != 0.0 || coefficient.im != 0.0 {
             ordered.push((word.to_indices(), coefficient));
         }
@@ -234,10 +231,7 @@ pub fn majorana_to_fermion_terms(
     }
 
     let mut branch_count = 0_u128;
-    for (index, (word, &coefficient)) in indices.iter().zip(coefficients).enumerate() {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
+    for (word, _) in indices.iter().zip(coefficients) {
         validate_canonical(n_modes, word)?;
         let degree = u32::try_from(word.len()).map_err(|_| PauliError::Overflow {
             context: "estimating Majorana-to-fermion expansion",
@@ -317,15 +311,7 @@ pub fn fermion_to_majorana_terms(
         });
     }
     let mut branch_count = 0_u128;
-    for (index, ((creates, annihilates), &coefficient)) in creation
-        .iter()
-        .zip(annihilation)
-        .zip(coefficients)
-        .enumerate()
-    {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
+    for ((creates, annihilates), _) in creation.iter().zip(annihilation).zip(coefficients) {
         for &mode in creates.iter().chain(annihilates) {
             if usize::try_from(mode)
                 .map(|mode| mode >= n_modes)
@@ -437,13 +423,7 @@ pub fn multiply_majorana_terms(
         .map(|word| PackedSupport::from_canonical(n_modes, word))
         .collect::<Result<Vec<_>, _>>()?;
     for (left_index, &left_coefficient) in left.coefficients.iter().enumerate() {
-        if !left_coefficient.re.is_finite() || !left_coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index: left_index });
-        }
         for (right_index, &right_coefficient) in right.coefficients.iter().enumerate() {
-            if !right_coefficient.re.is_finite() || !right_coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: right_index });
-            }
             let (word, sign) = multiply_words(&left_words[left_index], &right_words[right_index]);
             let value = left_coefficient * right_coefficient * f64::from(sign);
             *aggregate.entry(word).or_insert(Complex64::new(0.0, 0.0)) += value;
@@ -494,14 +474,8 @@ pub fn binary_majorana_terms(
         .collect::<Result<Vec<_>, _>>()?;
     let mut aggregate = FxHashMap::default();
     for (left_index, &left_coefficient) in left.coefficients.iter().enumerate() {
-        if !left_coefficient.re.is_finite() || !left_coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index: left_index });
-        }
         let left_degree = left.indices[left_index].len();
         for (right_index, &right_coefficient) in right.coefficients.iter().enumerate() {
-            if !right_coefficient.re.is_finite() || !right_coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: right_index });
-            }
             let overlap = left_words[left_index]
                 .limbs
                 .iter()
@@ -521,9 +495,6 @@ pub fn binary_majorana_terms(
                 continue;
             }
             let value = left_coefficient * right_coefficient * f64::from(factor);
-            if !value.re.is_finite() || !value.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: left_index });
-            }
             *aggregate.entry(word).or_insert(Complex64::new(0.0, 0.0)) += value;
             check_bytes(aggregate.len(), 192, max_bytes)?;
         }

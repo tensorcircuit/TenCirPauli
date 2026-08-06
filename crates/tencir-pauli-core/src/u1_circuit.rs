@@ -167,9 +167,6 @@ impl ProjectedObservablePlan {
                 _ => Complex64::new(0.0, -1.0),
             };
             let coefficient = term.coefficient * y_phase;
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: group_index });
-            }
             groups[group_index].1.push(ProjectedObservableTerm {
                 z_words: Arc::from(term.word.z_words().to_vec().into_boxed_slice()),
                 coefficient,
@@ -693,11 +690,6 @@ impl U1CircuitPlan {
         let gradient = self
             .program
             .reverse_parameter_program(values, &node_adjoint)?;
-        if !value.is_finite() || gradient.iter().any(|entry| !entry.is_finite()) {
-            return Err(PauliError::InvalidCircuit {
-                context: "circuit value or gradient is non-finite",
-            });
-        }
         Ok((value, gradient))
     }
 
@@ -944,7 +936,7 @@ fn static_expression_values(program: &CircuitProgram) -> Vec<Option<f64>> {
                 .zip(values[right])
                 .and_then(|(left, right)| (right != 0.0).then_some(left / right)),
         };
-        values.push(value.filter(|value| value.is_finite()));
+        values.push(value);
     }
     values
 }

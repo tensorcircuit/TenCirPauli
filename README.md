@@ -62,7 +62,7 @@ TensorCircuit / Python facade
         ├── U1Circuit
         ├── PropagationCircuit       (deterministic native facade)
         ├── SPPSCircuit              (stochastic native facade)
-        └── Majorana/mapping/charge  (structured Phase 7.5 facade)
+        └── Majorana/mapping/charge  (structured Majorana and charge facade)
         │
         ▼
 PyO3 batch boundary
@@ -107,9 +107,9 @@ Fermion, Boson, Qudit, Hybrid, and Majorana operators follow the same default la
 
 ## Structured operator algebra
 
-Phase 7 adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
+structured adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
 
-Phase 7.5 adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the frozen [`phase-7.5-spec.md`](docs/vibe/phase-7.5-spec.md).
+Majorana and charge adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the design index under [`docs/vibe/README.md`](docs/vibe/README.md).
 
 CPU-native MVP plans default to `storage="lazy"`; use `storage="eager"` when a reusable retained representation fits the budget. A restricted facade starts compact, and `mvp_plan(storage="eager")`, `dense()`, `coo()`, or `csr()` explicitly authorizes a thread-safe eager transition cache that later facade calls may reuse. Fixed plans never change storage, and `apply_into(input_state, output_state)` writes into caller-owned non-overlapping `complex128` buffers.
 
@@ -117,7 +117,7 @@ Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "
 
 ## Common circuit facade
 
-Phase Alpha defines the target Python contract for the three circuit classes. The circuit structure is built once; runtime values are supplied as a parameter vector.
+The circuit facade defines the target Python contract for the three circuit classes. The circuit structure is built once; runtime values are supplied as a parameter vector.
 
 ```python
 import tencirpauli as tcp
@@ -196,7 +196,7 @@ result = engine.value_and_grad([0.125])
 
 `PropagationEngine` propagates the observable in reverse Heisenberg order. `max_weight=None` or a cutoff at least as large as `nqubits` is exact; a finite cutoff applies deterministic Pauli-weight projection after same-word contributions have been aggregated. The gradient is for the executed frozen sparse trace, not a dense derivative at support-change points.
 
-The Phase Alpha facade adds the corresponding value-only form `circuit.expectation(observable, parameters=...)`; it must agree with `value_and_grad(...).value` for deterministic execution without computing a gradient.
+The facade adds the corresponding value-only form `circuit.expectation(observable, parameters=...)`; it must agree with `value_and_grad(...).value` for deterministic execution without computing a gradient.
 
 `SPPSEngine` provides seeded stochastic value-and-gradient estimates with fixed or adaptive per-term sample budgets. Its result includes standard-error and stopping-proxy metadata and must not be interpreted as a deterministic gradient result.
 

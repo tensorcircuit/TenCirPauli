@@ -79,6 +79,336 @@ type HybridKey = (
     Option<WeylKey>,
 );
 
+fn validate_embedding_map(
+    mapping: &[usize],
+    source_count: usize,
+    target_count: usize,
+) -> Result<(), PauliError> {
+    if mapping.len() != source_count || mapping.iter().any(|&value| value >= target_count) {
+        return Err(PauliError::InvalidStructureLength {
+            expected: source_count,
+            actual: mapping.len(),
+        });
+    }
+    let mut seen = FxHashMap::default();
+    for &value in mapping {
+        if seen.insert(value, ()).is_some() {
+            return Err(PauliError::InvalidStructureLength {
+                expected: source_count,
+                actual: mapping.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn embedding_sign(values: &[u32], mapping: &[usize], descending: bool) -> f64 {
+    let mut odd = false;
+    for (index, &value) in values.iter().enumerate() {
+        let left = mapping[value as usize];
+        for &right_value in &values[index + 1..] {
+            let right = mapping[right_value as usize];
+            if if descending {
+                left < right
+            } else {
+                left > right
+            } {
+                odd = !odd;
+            }
+        }
+    }
+    if odd {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// Embed a canonical mixed-domain operator into a larger ordered layout.
+///
+/// The source batch remains borrowed for the complete operation. Factors are
+/// remapped, fermionic permutation signs are applied, and collisions are
+/// aggregated before the canonical result crosses the FFI boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn embed_hybrid_terms(
+    source_layout: HybridLayout,
+    target_layout: HybridLayout,
+    batch: HybridBatch<'_>,
+    fermion_map: &[usize],
+    boson_map: &[usize],
+    qubit_map: &[usize],
+    qudit_map: &[usize],
+    max_bytes: u128,
+) -> Result<HybridCanonicalResult, PauliError> {
+    validate_embedding_map(fermion_map, source_layout.n_modes, target_layout.n_modes)?;
+    validate_embedding_map(boson_map, source_layout.n_bosons, target_layout.n_bosons)?;
+    validate_embedding_map(qubit_map, source_layout.nqubits, target_layout.nqubits)?;
+    validate_embedding_map(
+        qudit_map,
+        source_layout.n_qudit_sites,
+        target_layout.n_qudit_sites,
+    )?;
+    if source_layout.n_qudit_sites != 0
+        && source_layout.qudit_dimension != target_layout.qudit_dimension
+    {
+        return Err(PauliError::InvalidStructureLength {
+            expected: source_layout.qudit_dimension,
+            actual: target_layout.qudit_dimension,
+        });
+    }
+    check_structured_bytes(
+        batch.coefficients.len(),
+        max_bytes,
+        "structured embedding output",
+    )?;
+    let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
+    for index in 0..batch.coefficients.len() {
+        let fermion = if batch.fermion_present[index] {
+            let creation = batch.fermion_creation[index]
+                .iter()
+                .map(|&mode| fermion_map[mode as usize] as u32)
+                .collect::<Vec<_>>();
+            let annihilation = batch.fermion_annihilation[index]
+                .iter()
+                .map(|&mode| fermion_map[mode as usize] as u32)
+                .collect::<Vec<_>>();
+            let sign = embedding_sign(&batch.fermion_creation[index], fermion_map, false)
+                * embedding_sign(&batch.fermion_annihilation[index], fermion_map, true);
+            let mut creation = creation;
+            let mut annihilation = annihilation;
+            creation.sort_unstable();
+            annihilation.sort_unstable_by(|left, right| right.cmp(left));
+            Some((creation, annihilation, sign))
+        } else {
+            None
+        };
+        let boson = if batch.boson_present[index] {
+            let mut blocks = batch.boson_blocks[index]
+                .iter()
+                .map(|&(mode, creation, annihilation)| {
+                    (boson_map[mode as usize] as u32, creation, annihilation)
+                })
+                .collect::<Vec<_>>();
+            blocks.sort_unstable_by_key(|block| block.0);
+            Some(blocks)
+        } else {
+            None
+        };
+        let mut qubit = vec![0_u8; target_layout.nqubits];
+        for (source, &code) in batch.qubit_codes[index].iter().enumerate() {
+            qubit[qubit_map[source]] = code;
+        }
+        let mapped = if batch.mapped_present[index] {
+            let mut codes = vec![0_u8; target_layout.n_modes];
+            for (source, &code) in batch.mapped_codes[index].iter().enumerate() {
+                codes[fermion_map[source]] = code;
+            }
+            Some(codes)
+        } else {
+            None
+        };
+        let qudit = if batch.qudit_present[index] {
+            let mut triples = batch.qudit_triples[index]
+                .iter()
+                .map(|&(site, a, b)| (qudit_map[site as usize] as u32, a, b))
+                .collect::<Vec<_>>();
+            triples.sort_unstable_by_key(|triple| triple.0);
+            Some(triples)
+        } else {
+            None
+        };
+        let fermion_sign = fermion.as_ref().map_or(1.0, |(_, _, sign)| *sign);
+        let fermion_key = fermion.map(|(creation, annihilation, _)| (creation, annihilation));
+        push_aggregate(
+            &mut aggregate,
+            (fermion_key, boson, qubit, mapped, qudit),
+            batch.coefficients[index] * fermion_sign,
+            &mut total_values,
+            max_bytes,
+        )?;
+    }
+    finish_hybrid_aggregate(aggregate)
+}
+
+/// Analyze a diagonal additive charge directly on canonical hybrid storage.
+pub fn analyze_hybrid_charge(
+    layout: HybridLayout,
+    batch: HybridBatch<'_>,
+    fermion_weights: &[f64],
+    boson_weights: &[f64],
+    qubit_levels: &[(f64, f64)],
+    max_bytes: u128,
+) -> Result<(bool, usize), PauliError> {
+    if fermion_weights.len() != layout.n_modes
+        || boson_weights.len() != layout.n_bosons
+        || qubit_levels.len() != layout.nqubits
+    {
+        return Err(PauliError::InvalidStructureLength {
+            expected: layout.n_modes + layout.n_bosons + layout.nqubits,
+            actual: fermion_weights.len() + boson_weights.len() + qubit_levels.len(),
+        });
+    }
+    if batch.mapped_present.iter().any(|&present| present) {
+        return Err(PauliError::InvalidStructureLength {
+            expected: 0,
+            actual: 1,
+        });
+    }
+    check_structured_bytes(
+        batch.coefficients.len(),
+        max_bytes,
+        "estimating additive-charge analysis",
+    )?;
+    let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut total_values = 0usize;
+    for index in 0..batch.coefficients.len() {
+        let fermion_key = if batch.fermion_present[index] {
+            Some((
+                batch.fermion_creation[index].clone(),
+                batch.fermion_annihilation[index].clone(),
+            ))
+        } else {
+            None
+        };
+        let boson_key = if batch.boson_present[index] {
+            Some(batch.boson_blocks[index].clone())
+        } else {
+            None
+        };
+        let qubit_key = batch.qubit_codes[index].clone();
+        let qudit_key = if batch.qudit_present[index] {
+            Some(batch.qudit_triples[index].clone())
+        } else {
+            None
+        };
+        let base_key = (
+            fermion_key.clone(),
+            boson_key.clone(),
+            qubit_key.clone(),
+            None,
+            qudit_key.clone(),
+        );
+        let mut raw_delta = 0.0;
+        if batch.fermion_present[index] {
+            raw_delta += batch.fermion_creation[index]
+                .iter()
+                .map(|&mode| fermion_weights[mode as usize])
+                .sum::<f64>();
+            raw_delta -= batch.fermion_annihilation[index]
+                .iter()
+                .map(|&mode| fermion_weights[mode as usize])
+                .sum::<f64>();
+        }
+        if batch.boson_present[index] {
+            raw_delta += batch.boson_blocks[index]
+                .iter()
+                .map(|&(mode, creation, annihilation)| {
+                    boson_weights[mode as usize] * (creation as f64 - annihilation as f64)
+                })
+                .sum::<f64>();
+        }
+        if raw_delta != 0.0 {
+            push_aggregate(
+                &mut aggregate,
+                base_key.clone(),
+                batch.coefficients[index] * -raw_delta,
+                &mut total_values,
+                max_bytes,
+            )?;
+        }
+        for (qubit, &code) in qubit_key.iter().enumerate() {
+            if code != 1 && code != 2 {
+                continue;
+            }
+            let difference = qubit_levels[qubit].0 - qubit_levels[qubit].1;
+            if difference == 0.0 {
+                continue;
+            }
+            let mut changed = qubit_key.clone();
+            changed[qubit] = if code == 1 { 2 } else { 1 };
+            let key = (
+                fermion_key.clone(),
+                boson_key.clone(),
+                changed,
+                None,
+                qudit_key.clone(),
+            );
+            let scale = if code == 1 { -difference } else { difference };
+            push_aggregate(
+                &mut aggregate,
+                key,
+                batch.coefficients[index] * Complex64::new(0.0, scale),
+                &mut total_values,
+                max_bytes,
+            )?;
+        }
+    }
+    let nonzero = aggregate
+        .into_values()
+        .filter_map(|mut values| {
+            values.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
+            let value = deterministic_sum(values);
+            (!is_exact_zero(value)).then_some(())
+        })
+        .count();
+    Ok((nonzero == 0, nonzero))
+}
+
+/// Return whether every canonical hybrid term preserves a diagonal charge.
+pub fn hybrid_terms_conserve_charge(
+    layout: HybridLayout,
+    batch: HybridBatch<'_>,
+    fermion_weights: &[f64],
+    boson_weights: &[f64],
+    qubit_levels: &[(f64, f64)],
+) -> Result<bool, PauliError> {
+    if fermion_weights.len() != layout.n_modes
+        || boson_weights.len() != layout.n_bosons
+        || qubit_levels.len() != layout.nqubits
+    {
+        return Err(PauliError::InvalidStructureLength {
+            expected: layout.n_modes + layout.n_bosons + layout.nqubits,
+            actual: fermion_weights.len() + boson_weights.len() + qubit_levels.len(),
+        });
+    }
+    for index in 0..batch.coefficients.len() {
+        if batch.mapped_present[index] {
+            return Ok(false);
+        }
+        let mut delta = 0.0;
+        if batch.fermion_present[index] {
+            delta += batch.fermion_creation[index]
+                .iter()
+                .map(|&mode| fermion_weights[mode as usize])
+                .sum::<f64>();
+            delta -= batch.fermion_annihilation[index]
+                .iter()
+                .map(|&mode| fermion_weights[mode as usize])
+                .sum::<f64>();
+        }
+        if batch.boson_present[index] {
+            delta += batch.boson_blocks[index]
+                .iter()
+                .map(|&(mode, creation, annihilation)| {
+                    boson_weights[mode as usize] * (creation as f64 - annihilation as f64)
+                })
+                .sum::<f64>();
+        }
+        if delta != 0.0
+            || batch.qubit_codes[index]
+                .iter()
+                .enumerate()
+                .any(|(qubit, &code)| {
+                    (code == 1 || code == 2) && qubit_levels[qubit].0 != qubit_levels[qubit].1
+                })
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Multiply complete canonical hybrid operators in one coarse-grained call.
 pub fn multiply_hybrid_terms(
     layout: HybridLayout,
@@ -101,8 +431,6 @@ pub fn binary_hybrid_terms(
     forward_sign: i8,
     reverse_sign: i8,
 ) -> Result<HybridCanonicalResult, PauliError> {
-    validate_hybrid_batch(layout, &left)?;
-    validate_hybrid_batch(layout, &right)?;
     let pair_count = left
         .coefficients
         .len()
@@ -225,7 +553,6 @@ pub fn canonicalize_hybrid_terms(
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
     let mut total_values = 0usize;
     for index in 0..count {
-        validate_coefficient(batch.coefficients[index], index)?;
         if batch.qubit_codes[index].len() != layout.nqubits {
             return Err(PauliError::InvalidStructureLength {
                 expected: layout.nqubits,
@@ -534,7 +861,6 @@ fn finish_hybrid_aggregate(
     };
     for ((fermion, boson, qubit, mapped, qudit), values) in entries {
         let coefficient = deterministic_sum(values);
-        validate_coefficient(coefficient, 0)?;
         if is_exact_zero(coefficient) {
             continue;
         }
@@ -807,6 +1133,15 @@ pub fn jordan_wigner_hybrid_terms(
     max_bytes: u128,
 ) -> Result<HybridCanonicalResult, PauliError> {
     validate_hybrid_batch(layout, &batch)?;
+    jordan_wigner_hybrid_terms_trusted(layout, batch, max_bytes)
+}
+
+/// Map a canonical native hybrid handle without rescanning its storage.
+pub fn jordan_wigner_hybrid_terms_trusted(
+    layout: HybridLayout,
+    batch: HybridBatch<'_>,
+    max_bytes: u128,
+) -> Result<HybridCanonicalResult, PauliError> {
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
     let mut total_values = 0usize;
     for index in 0..batch.coefficients.len() {
@@ -1011,13 +1346,6 @@ pub fn binary_boson_terms(
             expected: left_blocks.len(),
             actual: left_coefficients.len(),
         });
-    }
-    for (index, coefficient) in left_coefficients
-        .iter()
-        .chain(right_coefficients)
-        .enumerate()
-    {
-        validate_coefficient(*coefficient, index)?;
     }
     for blocks in left_blocks.iter().chain(right_blocks) {
         validate_boson_blocks(n_modes, blocks)?;
@@ -1487,12 +1815,8 @@ fn add_integer_maps<K: Ord>(
 }
 
 fn checked_integer_to_f64(value: i128, context: &'static str) -> Result<f64, PauliError> {
-    let result = value as f64;
-    if result.is_finite() {
-        Ok(result)
-    } else {
-        Err(PauliError::Overflow { context })
-    }
+    let _ = context;
+    Ok(value as f64)
 }
 
 fn validate_coefficient(value: Complex64, index: usize) -> Result<(), PauliError> {
@@ -1516,7 +1840,6 @@ fn validate_fermion_arrays(
         });
     }
     for index in 0..creation.len() {
-        validate_coefficient(coefficients[index], index)?;
         if creation[index].windows(2).any(|pair| pair[0] >= pair[1])
             || annihilation[index]
                 .windows(2)
@@ -1577,7 +1900,6 @@ fn push_aggregate<K: Eq + std::hash::Hash>(
     total_values: &mut usize,
     max_bytes: u128,
 ) -> Result<(), PauliError> {
-    validate_coefficient(value, 0)?;
     let value_count = {
         let values = aggregate.entry(key).or_default();
         values.push(value);
@@ -1781,9 +2103,7 @@ impl StructuredMvpPlan {
         let mut output_digits = vec![0usize; self.local_dimensions.len()];
         for (column, state_value) in state.iter().enumerate() {
             decode_index(column, &self.local_dimensions, &mut digits);
-            for (term_index, (term, &coefficient)) in
-                self.terms.iter().zip(&self.coefficients).enumerate()
-            {
+            for (term, &coefficient) in self.terms.iter().zip(&self.coefficients) {
                 output_digits.copy_from_slice(&digits);
                 let mut amplitude = coefficient;
                 let mut valid = true;
@@ -1801,14 +2121,8 @@ impl StructuredMvpPlan {
                 if !valid {
                     continue;
                 }
-                if !amplitude.re.is_finite() || !amplitude.im.is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
-                }
                 let row = encode_index(&output_digits, &self.local_dimensions);
                 output[row] += amplitude * *state_value;
-                if !output[row].re.is_finite() || !output[row].im.is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
-                }
             }
         }
         Ok(())
@@ -1889,7 +2203,7 @@ pub fn structured_sparse_matrix(
     let mut output_digits = vec![0usize; local_dimensions.len()];
     for column in 0..dimension {
         decode_index(column, local_dimensions, &mut digits);
-        for (term_index, (term, &coefficient)) in terms.iter().zip(coefficients).enumerate() {
+        for (term, &coefficient) in terms.iter().zip(coefficients) {
             output_digits.copy_from_slice(&digits);
             let mut amplitude = coefficient;
             let mut valid = true;
@@ -1907,18 +2221,12 @@ pub fn structured_sparse_matrix(
             if !valid {
                 continue;
             }
-            if !amplitude.re.is_finite() || !amplitude.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: term_index });
-            }
             let row = encode_index(&output_digits, local_dimensions);
             let key = (row, column);
             let next_entry_count = entries.len().saturating_add(1);
             match entries.entry(key) {
                 Entry::Occupied(mut entry) => {
                     *entry.get_mut() += amplitude;
-                    if !entry.get().re.is_finite() || !entry.get().im.is_finite() {
-                        return Err(PauliError::NonFiniteCoefficient { index: term_index });
-                    }
                 }
                 Entry::Vacant(entry) => {
                     check_sparse_entry_bytes(next_entry_count, max_bytes)?;
@@ -1978,17 +2286,12 @@ pub fn structured_dense_matrix(
             limit: max_bytes,
         });
     }
-    for (index, &coefficient) in coefficients.iter().enumerate() {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
-    }
     let mut matrix = vec![Complex64::default(); entries];
     let mut digits = vec![0usize; local_dimensions.len()];
     let mut output_digits = vec![0usize; local_dimensions.len()];
     for column in 0..dimension {
         decode_index(column, local_dimensions, &mut digits);
-        for (term_index, (term, &coefficient)) in terms.iter().zip(coefficients).enumerate() {
+        for (term, &coefficient) in terms.iter().zip(coefficients) {
             output_digits.copy_from_slice(&digits);
             let mut amplitude = coefficient;
             let mut valid = true;
@@ -2007,9 +2310,6 @@ pub fn structured_dense_matrix(
                 let row = encode_index(&output_digits, local_dimensions);
                 let entry = &mut matrix[row * dimension + column];
                 *entry += amplitude;
-                if !entry.re.is_finite() || !entry.im.is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient { index: term_index });
-                }
             }
         }
     }
@@ -2059,11 +2359,6 @@ fn validate_structured_inputs(
             expected: 1,
             actual: 0,
         });
-    }
-    for (index, &coefficient) in coefficients.iter().enumerate() {
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient { index });
-        }
     }
     Ok(())
 }

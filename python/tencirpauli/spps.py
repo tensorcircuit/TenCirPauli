@@ -100,9 +100,8 @@ class SPPSEngine:
         kind, bits, values = _state_payload(initial_state, tape.nqubits)
         if observable._native_handle is None:
             raise RuntimeError("SPPS observables must retain a native Pauli handle")
-        self._native = _native.pauli_spps_engine_handle(
-            tape.nqubits,
-            tape._native_operations(),
+        self._native = _native.pauli_spps_engine_tape(
+            tape._native_handle(max_bytes),
             observable._native_handle,
             kind,
             bits,

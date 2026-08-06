@@ -20,7 +20,7 @@ RESULTS_ROOT = ROOT / ".benchmarks"
 RUST_TARGET = RESULTS_ROOT / "rust-target"
 PYTHON_STORAGE = RESULTS_ROOT / "python"
 RUNS_ROOT = RESULTS_ROOT / "runs"
-SUITES = ("all", "rust", "python", "phase7", "phase75")
+SUITES = ("all", "rust", "python", "structured", "majorana_charge")
 
 
 def command_environment() -> Dict[str, str]:
@@ -190,11 +190,11 @@ def record(label: str, suite: str) -> None:
             record_rust(label)
         if suite in ("all", "python"):
             record_python(label)
-        if suite == "phase7":
+        if suite == "structured":
             record_python(
                 label, ["benchmarks/python/test_structured_algebra_benchmark.py"]
             )
-        if suite == "phase75":
+        if suite == "majorana_charge":
             record_python(
                 label, ["benchmarks/python/test_majorana_mapping_charge_benchmark.py"]
             )
@@ -267,11 +267,11 @@ def compare(label: str, suite: Optional[str]) -> None:
         compare_rust(label)
     if selected_suite in ("all", "python"):
         compare_python(label)
-    if selected_suite == "phase7":
+    if selected_suite == "structured":
         compare_python(
             label, ["benchmarks/python/test_structured_algebra_benchmark.py"]
         )
-    if selected_suite == "phase75":
+    if selected_suite == "majorana_charge":
         compare_python(
             label, ["benchmarks/python/test_majorana_mapping_charge_benchmark.py"]
         )

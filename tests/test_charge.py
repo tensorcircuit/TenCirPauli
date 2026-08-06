@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import threading
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 
 import tencirpauli as tcp
 import tencirpauli.pauli as pauli_module
+from tencirpauli.structured import _StructuredOperator
 
 
 def _selected_basis(sector: tcp.ChargeSector) -> list[tuple[int, ...]]:
@@ -513,3 +515,85 @@ def test_native_restricted_compiler_uses_plan_rank_unrank_without_basis_table(
     restricted = operator.restrict_charge(sector)
     assert restricted.dimension == 6
     assert restricted.mvp_plan(storage="eager").transition_count == 4
+
+
+def test_native_charge_restriction_stays_on_handles_for_all_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_materialization(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("charge restriction must not materialize Python terms")
+
+    monkeypatch.setattr(tcp.PauliOperator, "_arrays", forbidden_materialization)
+    monkeypatch.setattr(
+        _StructuredOperator, "_materialized_terms", forbidden_materialization
+    )
+
+    pauli_space = tcp.OperatorSpace(qubits=2)
+    pauli_charge = tcp.AdditiveCharge(pauli_space, qubits={0: (0, 2), 1: (0, 4)})
+    pauli_sector = pauli_charge.sector(2)
+    pauli = tcp.PauliOperator.from_terms(2, [("ZZ", 1.0)])
+    assert pauli.restrict_charge(pauli_sector).mvp_plan(storage="eager").dimension == 1
+
+    fermion_space = tcp.OperatorSpace(fermions=2)
+    fermion_charge = tcp.AdditiveCharge(fermion_space, fermions={0: 1, 1: 1})
+    fermion_sector = fermion_charge.sector(1)
+    fermion = fermion_space.fermion.create(0) * fermion_space.fermion.annihilate(
+        1
+    ) + fermion_space.fermion.create(1) * fermion_space.fermion.annihilate(0)
+    assert (
+        fermion.restrict_charge(fermion_sector).mvp_plan(storage="eager").dimension == 2
+    )
+
+    boson_space = tcp.OperatorSpace(bosons=2)
+    boson_charge = tcp.AdditiveCharge(boson_space, bosons={0: 1, 1: 1})
+    boson_sector = boson_charge.sector(1)
+    boson = boson_space.boson.create(0) * boson_space.boson.annihilate(
+        1
+    ) + boson_space.boson.create(1) * boson_space.boson.annihilate(0)
+    assert boson.restrict_charge(boson_sector).mvp_plan(storage="eager").dimension == 2
+
+    hybrid_space = tcp.OperatorSpace(fermions=1, bosons=1)
+    hybrid_charge = tcp.AdditiveCharge(hybrid_space, fermions={0: 1}, bosons={0: 1})
+    hybrid_sector = hybrid_charge.sector(1)
+    hybrid = hybrid_space.fermion.create(0) * hybrid_space.boson.annihilate(
+        0
+    ) + hybrid_space.fermion.annihilate(0) * hybrid_space.boson.create(0)
+    assert (
+        hybrid.restrict_charge(hybrid_sector).mvp_plan(storage="eager").dimension == 2
+    )
+
+
+def test_native_charge_plan_construction_releases_gil() -> None:
+    n_modes = 120
+    space = tcp.OperatorSpace(fermions=n_modes)
+    charge = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(n_modes)})
+    sector = charge.sector(1)
+    terms = [
+        (
+            ((index, "create"), ((index + 1) % n_modes, "annihilate")),
+            1.0,
+        )
+        for index in range(n_modes)
+    ]
+    operator = tcp.FermionOperator.from_terms(n_modes, terms)
+    progress = [0]
+    ready = threading.Event()
+    stop = threading.Event()
+
+    def observe() -> None:
+        ready.set()
+        while not stop.is_set():
+            progress[0] += 1
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    assert ready.wait(2.0)
+    try:
+        restricted = operator.restrict_charge(sector)
+        assert restricted.dimension == n_modes
+    finally:
+        stop.set()
+        observer.join(2.0)
+    assert not observer.is_alive()
+    assert progress[0] > 0

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 
@@ -32,6 +32,7 @@ class QWCGroupingResult:
     term_count: int
     measurement_ready: bool
     mode: str
+    _native_handle: Optional[_native.NativeQwcGroupingHandle]
 
     def __init__(
         self,
@@ -40,7 +41,10 @@ class QWCGroupingResult:
         bases: Tuple[Tuple[int, ...], ...],
         reconstruction_masks: Tuple[Tuple[int, ...], ...],
         algorithm: str,
+        native_handle: Optional[_native.NativeQwcGroupingHandle] = None,
     ) -> None:
+        if native_handle is None:
+            raise RuntimeError("QWC grouping results require a native handle")
         normalized_groups = tuple(
             tuple(int(index) for index in group) for group in groups
         )
@@ -75,6 +79,7 @@ class QWCGroupingResult:
         object.__setattr__(self, "term_count", term_count)
         object.__setattr__(self, "measurement_ready", True)
         object.__setattr__(self, "mode", "qubit_wise")
+        object.__setattr__(self, "_native_handle", native_handle)
 
     def reconstruct(
         self, group_index: int, bitstrings: Sequence[Sequence[int]]
@@ -101,19 +106,19 @@ class QWCGroupingResult:
             raise ValueError(
                 f"bitstrings must have shape (shots, {self.nqubits}), got {raw_values.shape}"
             )
-        if raw_values.dtype.kind not in "biuf" or np.any(
-            (raw_values != 0) & (raw_values != 1)
-        ):
+        if raw_values.dtype.kind not in "biu":
             raise ValueError("bitstrings must contain only 0 and 1")
-        values = np.asarray(raw_values, dtype=np.int8)
-        output: np.ndarray[Any, Any] = np.empty(
-            (values.shape[0], len(self.groups[group_index])), dtype=np.int8
+        values = np.ascontiguousarray(raw_values, dtype=np.int64)
+        native_handle = self._native_handle
+        if native_handle is None:
+            raise RuntimeError("QWC grouping results must retain a native handle")
+        shots, group_size, flat = native_handle.reconstruct(
+            group_index, np.ascontiguousarray(values)
         )
-        for column, mask in enumerate(self.reconstruction_masks[group_index]):
-            support = tuple(index for index in range(self.nqubits) if mask >> index & 1)
-            parity = np.mod(values[:, support].sum(axis=1), 2) if support else 0
-            output[:, column] = 1 - 2 * parity
-        return output
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(flat, dtype=np.int8).reshape((shots, group_size)),
+        )
 
 
 @dataclass(frozen=True, init=False)
@@ -196,72 +201,35 @@ def group_operator(
         raise ValueError("mode must be 'qubit_wise' or 'general'")
     if algorithm_code is None:
         raise ValueError("algorithm must be 'largest_first' or 'dsatur'")
-    if operator._native_handle is not None:
-        native_groups, bases_raw, supports = _native.pauli_group_handle(
-            operator._native_handle, mode_code, algorithm_code, max_matrix_entries
+    handle = operator._native_handle
+    if handle is None:
+        raise RuntimeError("Pauli operators must retain native handles")
+    if mode == "qubit_wise":
+        native_groups, bases_raw, masks_raw, grouping_handle = (
+            _native.pauli_qwc_group_handle(handle, algorithm_code, max_matrix_entries)
         )
-        normalized_groups = tuple(
-            tuple(int(index) for index in group) for group in native_groups
+    else:
+        native_groups, bases_raw, _ = _native.pauli_group_handle(
+            handle, mode_code, algorithm_code, max_matrix_entries
         )
-        if mode == "general":
-            return GeneralCommutingGroupingResult(
-                operator.nqubits, normalized_groups, algorithm
-            )
-        native_bases = tuple(tuple(int(code) for code in basis) for basis in bases_raw)
-        native_masks = tuple(
-            tuple(sum(1 << int(qubit) for qubit in support) for support in group)
-            for group in supports
-        )
-        return QWCGroupingResult(
-            operator.nqubits,
-            normalized_groups,
-            native_bases,
-            native_masks,
-            algorithm,
-        )
-    structures = operator._arrays()[0]
-    size = len(structures)
-    if size * size > max_matrix_entries:
-        raise MemoryError(
-            f"grouping requires {size * size} compatibility entries, "
-            f"exceeding max_matrix_entries={max_matrix_entries}"
-        )
-    raw_groups = _native.pauli_group(
-        operator.nqubits,
-        structures,
-        mode_code,
-        algorithm_code,
-        max_matrix_entries,
-    )
     groups: Tuple[Tuple[int, ...], ...] = tuple(
-        tuple(int(index) for index in group) for group in raw_groups
+        tuple(int(index) for index in group) for group in native_groups
     )
     if mode == "general":
         return GeneralCommutingGroupingResult(operator.nqubits, groups, algorithm)
-    basis_values: list[tuple[int, ...]] = []
-    mask_values: list[tuple[int, ...]] = []
-    for group in groups:
-        basis = [0] * operator.nqubits
-        group_masks = []
-        for index in group:
-            codes = structures[index]
-            mask = 0
-            for qubit, code in enumerate(codes):
-                if code:
-                    mask |= 1 << qubit
-                    if basis[qubit] == 0:
-                        basis[qubit] = code
-                    elif basis[qubit] != code:
-                        raise RuntimeError(
-                            "native QWC grouping returned incompatible terms"
-                        )
-            group_masks.append(mask)
-        basis_values.append(tuple(basis))
-        mask_values.append(tuple(group_masks))
+    native_bases = tuple(tuple(int(code) for code in basis) for basis in bases_raw)
+    native_masks = tuple(
+        tuple(
+            sum(int(word) << (64 * word_index) for word_index, word in enumerate(words))
+            for words in group
+        )
+        for group in masks_raw
+    )
     return QWCGroupingResult(
         operator.nqubits,
         groups,
-        tuple(basis_values),
-        tuple(mask_values),
+        native_bases,
+        native_masks,
         algorithm,
+        grouping_handle,
     )

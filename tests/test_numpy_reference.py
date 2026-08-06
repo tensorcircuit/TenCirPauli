@@ -1,4 +1,4 @@
-"""P0 fixed vectors and randomized checks for the independent dense oracle."""
+"""fixed-vector fixed vectors and randomized checks for the independent dense oracle."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Small executable example for the Phase 7 structured algebra API."""
+"""Small executable example for the structured algebra API."""
 
 from __future__ import annotations
 

@@ -342,7 +342,7 @@ class U1CircuitPlan:
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
-        if not observable._exact_hermitian_value():
+        if not observable.is_hermitian():
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
         selected_state = self._initial_state if initial_state is None else initial_state
         if selected_state is None:
@@ -628,7 +628,7 @@ class U1Circuit:
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
-        if not observable._exact_hermitian_value():
+        if not observable.is_hermitian():
             raise ValueError("value_and_grad requires an exactly Hermitian observable")
         if observable._native_handle is None:
             raise RuntimeError("U1 observables must retain a native Pauli handle")

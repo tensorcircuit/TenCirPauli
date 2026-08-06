@@ -1,4 +1,4 @@
-"""Correctness and boundary tests for the Phase 3 propagation engine."""
+"""Correctness and boundary tests for the deterministic propagation propagation engine."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def test_projection_is_initial_and_per_gate_after_aggregation() -> None:
     )
 
 
-def test_aggregation_cancellation_and_overflow_are_reported() -> None:
+def test_aggregation_cancellation_is_applied_after_collision() -> None:
     collision = np.zeros((4, 4), dtype=np.float64)
     collision[0, 1] = 1.0
     collision[0, 2] = 1.0
@@ -123,32 +123,6 @@ def test_aggregation_cancellation_and_overflow_are_reported() -> None:
         max_weight=0,
     ).propagate_operator([])
     assert cancelling.terms == ()
-
-    overflow = advanced.PropagationEngine(
-        tape,
-        tcp.PauliOperator(1, [((1,), 1e308), ((2,), 1e308)]),
-    )
-    with pytest.raises(ValueError, match="not finite"):
-        overflow.propagate_operator([])
-    with pytest.raises(ValueError, match="not finite"):
-        overflow.expectation([])
-    with pytest.raises(ValueError, match="not finite"):
-        overflow.profile([])
-
-    rotation = advanced.GateTape(1)
-    rotation.rz(0, angle=np.pi / 4)
-    rotation_overflow = advanced.PropagationEngine(
-        rotation,
-        tcp.PauliOperator(
-            1,
-            [
-                ((1,), np.finfo(np.float64).max),
-                ((2,), np.finfo(np.float64).max),
-            ],
-        ),
-    )
-    with pytest.raises(ValueError, match="not finite"):
-        rotation_overflow.expectation([])
 
 
 def test_random_seeded_exact_and_projected_cases_match_dense_reference() -> None:

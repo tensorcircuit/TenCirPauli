@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
@@ -52,7 +53,15 @@ def test_public_qwc_grouping(benchmark: BenchmarkFixture, count: int) -> None:
     operator = make_operator(count)
     expected = operator.group_commuting()
     result = benchmark(operator.group_commuting)
-    assert result == expected
+    benchmark.extra_info["nqubits"] = operator.nqubits
+    benchmark.extra_info["support_density"] = float(
+        np.count_nonzero(operator._arrays()[0])
+        / (operator.term_count * operator.nqubits)
+    )
+    benchmark.extra_info["group_count"] = result.group_count
+    assert result.groups == expected.groups
+    assert result.bases == expected.bases
+    assert result.reconstruction_masks == expected.reconstruction_masks
 
 
 @pytest.mark.parametrize("count", (128, 1_024))
@@ -63,3 +72,39 @@ def test_python_qwc_grouping_baseline(benchmark: BenchmarkFixture, count: int) -
     expected = operator.group_commuting().groups
     result = benchmark(python_qwc_largest_first, structures)
     assert result == expected
+
+
+def _reconstruction_workload() -> tuple[PauliOperator, object, np.ndarray]:
+    nqubits, term_count, shots = 64, 96, 2_000
+    codes = np.zeros((term_count, nqubits), dtype=np.uint8)
+    for term_index in range(term_count):
+        for qubit in range(nqubits):
+            if (term_index * 17 + qubit * 5) % 11 < 3:
+                codes[term_index, qubit] = 3
+        codes[term_index, term_index % nqubits] = 3
+    operator = PauliOperator.from_code_arrays(codes, np.ones(term_count))
+    grouping = operator.group_commuting()
+    bits = np.random.default_rng(20260806).integers(
+        0, 2, size=(shots, nqubits), dtype=np.int8
+    )
+    return operator, grouping, bits
+
+
+def test_public_qwc_reconstruction(benchmark: BenchmarkFixture) -> None:
+    operator, grouping, bits = _reconstruction_workload()
+    result = benchmark(grouping.reconstruct, 0, bits)
+    support_density = float(
+        np.count_nonzero(operator._arrays()[0])
+        / (operator.term_count * operator.nqubits)
+    )
+    benchmark.extra_info.update(
+        {
+            "nqubits": operator.nqubits,
+            "shots": bits.shape[0],
+            "group_size": len(grouping.groups[0]),
+            "support_density": support_density,
+            "group_count": grouping.group_count,
+            "output_bytes": result.nbytes,
+        }
+    )
+    assert result.shape == (bits.shape[0], len(grouping.groups[0]))

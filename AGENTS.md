@@ -26,7 +26,7 @@ Judge against representative scientific workloads. Do not over-engineer for impl
 
 ## Non-Negotiable Rules
 
-- Keep the active milestone label (currently Phase 8.5) out of formal implementation artifacts: filenames and contents under `tests/`, `benchmarks/`, `python/`, `examples/`, and production source files must use capability or behavior names, not labels such as `phase85` or `Phase 8.5`. Milestone labels are allowed in `docs/vibe/` review, specification, status, and archival documents.
+- Milestone labels and numbered development-stage labels are development-only metadata and may appear only under `docs/vibe/`, in both filenames and file contents. Everywhere else, including `tests/`, `benchmarks/`, `python/`, `examples/`, `reference/`, production source, repository-level documentation, test names, benchmark names, identifiers, and user-facing messages, use capability or behavior names instead.
 - Keep FFI calls coarse-grained. Never cross PyO3 once per Pauli term, gate, or matrix element in a hot path.
 - Keep Python wrappers thin. Python owns the public API, friendly input normalization, small control metadata, explicit result materialization, and external-framework integration; Rust owns work that scales with operator terms, gates, term pairs, groups, symmetry rows, charge transitions, or basis states. Prefer lazy Python facades backed by native handles, keep handle-to-handle pipelines in Rust, and never materialize complete native data into Python merely to pass it back into Rust.
 - Use a canonical binary symplectic representation and test phase, qubit ordering, and endianness against dense references.

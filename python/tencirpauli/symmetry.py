@@ -213,7 +213,6 @@ class U1RestrictedOperator:
     _operator: Optional[PauliOperator]
     _lock: Any
     _lazy_estimate: int
-    _terms: Any
 
     def __init__(
         self,
@@ -229,14 +228,16 @@ class U1RestrictedOperator:
             raise ValueError("storage must be either 'eager' or 'lazy'")
         if storage == "lazy" and operator is None:
             raise ValueError("lazy U1 restriction requires the source operator")
+        if native_operator is None and native_lazy_plan is None:
+            raise RuntimeError("U1 restriction requires a native plan")
         object.__setattr__(self, "sector", sector)
         object.__setattr__(
             self,
             "dimension",
-            (
-                sector.dimension
-                if native_operator is None
-                else int(native_operator.dimension)
+            int(
+                native_operator.dimension
+                if native_operator is not None
+                else native_lazy_plan.dimension
             ),
         )
         object.__setattr__(self, "term_count", int(term_count))
@@ -245,15 +246,6 @@ class U1RestrictedOperator:
         object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_operator", operator)
         object.__setattr__(self, "_lock", threading.Lock())
-        object.__setattr__(
-            self,
-            "_terms",
-            (
-                ()
-                if native_operator is not None or native_lazy_plan is not None
-                else _u1_terms(operator)
-            ),
-        )
         object.__setattr__(
             self,
             "_lazy_estimate",
@@ -279,28 +271,19 @@ class U1RestrictedOperator:
             raise ValueError(
                 f"state must have shape ({self.dimension},), got {values.shape}"
             )
-        if self._native_operator is not None:
-            return cast(
-                np.ndarray[Any, Any],
-                np.asarray(
-                    self._native_operator.apply(
-                        np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                    ),
-                    dtype=np.complex128,
+        native = (
+            self._native_operator
+            if self._native_operator is not None
+            else self._native_lazy_plan
+        )
+        return cast(
+            np.ndarray[Any, Any],
+            np.asarray(
+                native.apply(
+                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
                 ),
-            )
-        if self._native_lazy_plan is not None:
-            return cast(
-                np.ndarray[Any, Any],
-                np.asarray(
-                    self._native_lazy_plan.apply(
-                        np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                    ),
-                    dtype=np.complex128,
-                ),
-            )
-        return _apply_u1_lazy(
-            self.sector, self._operator, values, max_bytes, self._terms
+                dtype=np.complex128,
+            ),
         )
 
     def apply_into(
@@ -312,28 +295,12 @@ class U1RestrictedOperator:
     ) -> None:
         """Apply into strict, non-overlapping caller-owned buffers."""
         _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        if self._native_operator is not None:
-            self._native_operator.apply_into(
-                input_state,
-                output_state,
-                _effective_max_bytes(max_bytes),
-            )
-            return
-        if self._native_lazy_plan is not None:
-            self._native_lazy_plan.apply_into(
-                input_state,
-                output_state,
-                _effective_max_bytes(max_bytes),
-            )
-            return
-        _apply_u1_lazy_into(
-            self.sector,
-            self._operator,
-            input_state,
-            output_state,
-            max_bytes,
-            self._terms,
+        native = (
+            self._native_operator
+            if self._native_operator is not None
+            else self._native_lazy_plan
         )
+        native.apply_into(input_state, output_state, _effective_max_bytes(max_bytes))
 
     def mvp_plan(
         self,
@@ -346,14 +313,15 @@ class U1RestrictedOperator:
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
         if storage == "lazy":
+            lazy = self._ensure_lazy(max_bytes)
             _check_allocation(
-                int(self._native_lazy_plan.estimated_bytes),
+                int(lazy.estimated_bytes),
                 max_bytes,
                 "U1 MVP plan",
             )
             return U1MvpPlan(
                 self.sector,
-                self._native_lazy_plan,
+                lazy,
                 self.term_count,
                 storage="lazy",
             )
@@ -376,6 +344,24 @@ class U1RestrictedOperator:
 
     def _ensure_eager(self, max_bytes: Optional[int]) -> Any:
         return self._ensure_eager_for_target(max_bytes, None)
+
+    def _ensure_lazy(self, max_bytes: Optional[int]) -> Any:
+        native = self._native_lazy_plan
+        if native is not None:
+            return native
+        if self._operator is None or self._operator._native_handle is None:
+            raise RuntimeError("U1 lazy cache requires a native Pauli handle")
+        with self._lock:
+            native = self._native_lazy_plan
+            if native is None:
+                _check_allocation(self._lazy_estimate, max_bytes, "U1 lazy MVP plan")
+                native = _native.pauli_restrict_u1_lazy_handle(
+                    self._operator._native_handle,
+                    self.sector.particle_number,
+                    _effective_max_bytes(max_bytes),
+                )
+                object.__setattr__(self, "_native_lazy_plan", native)
+            return native
 
     def _ensure_eager_for_target(
         self, max_bytes: Optional[int], target: Optional[str]
@@ -502,8 +488,6 @@ class U1MvpPlan:
     _native_plan: Any
     storage: str
     strategy: str
-    _operator: Optional[PauliOperator]
-    _terms: Any
 
     def __init__(
         self,
@@ -511,44 +495,33 @@ class U1MvpPlan:
         native_plan: Any,
         term_count: int = 0,
         *,
-        operator: Optional[PauliOperator] = None,
         storage: str = "eager",
     ) -> None:
         object.__setattr__(self, "sector", sector)
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
+        if native_plan is None:
+            raise RuntimeError("U1 MVP plan requires a native plan")
         object.__setattr__(
             self,
             "dimension",
-            sector.dimension if native_plan is None else int(native_plan.dimension),
+            int(native_plan.dimension),
         )
         object.__setattr__(self, "term_count", int(term_count))
-        lazy_native = native_plan is not None and hasattr(
-            native_plan, "estimated_bytes"
-        )
         object.__setattr__(
             self,
             "transition_count",
-            (
-                0
-                if native_plan is None or lazy_native
-                else int(native_plan.transition_count)
-            ),
+            0 if storage == "lazy" else int(native_plan.transition_count),
         )
         object.__setattr__(
             self,
             "estimated_bytes",
             int(
                 int(native_plan.estimated_bytes)
-                if lazy_native
+                if storage == "lazy"
                 else self.dimension * 16
                 + (self.dimension + 1) * 8
                 + self.transition_count * 32
-                + (
-                    term_count * (sector.nqubits // 8 + 32)
-                    if native_plan is None
-                    else 0
-                )
             ),
         )
         object.__setattr__(self, "basis_ordering", "qubit0_msb_matrix")
@@ -557,12 +530,6 @@ class U1MvpPlan:
         object.__setattr__(self, "storage", storage)
         object.__setattr__(
             self, "strategy", "u1_lazy" if storage == "lazy" else "u1_destination_major"
-        )
-        object.__setattr__(
-            self, "_operator", None if native_plan is not None else operator
-        )
-        object.__setattr__(
-            self, "_terms", () if native_plan is not None else _u1_terms(operator)
         )
 
     def apply(
@@ -577,10 +544,6 @@ class U1MvpPlan:
         if values.ndim != 1 or values.shape[0] != self.dimension:
             raise ValueError(
                 f"state must have shape ({self.dimension},), got {values.shape}"
-            )
-        if self._native_plan is None:
-            return _apply_u1_lazy(
-                self.sector, self._operator, values, max_bytes, self._terms
             )
         return cast(
             np.ndarray[Any, Any],
@@ -601,18 +564,8 @@ class U1MvpPlan:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
         _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        if self._native_plan is not None:
-            self._native_plan.apply_into(
-                input_state, output_state, _effective_max_bytes(max_bytes)
-            )
-            return
-        _apply_u1_lazy_into(
-            self.sector,
-            self._operator,
-            input_state,
-            output_state,
-            max_bytes,
-            self._terms,
+        self._native_plan.apply_into(
+            input_state, output_state, _effective_max_bytes(max_bytes)
         )
 
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
@@ -666,80 +619,6 @@ def _canonical_u1_sector(sector: object) -> Optional[U1Sector]:
         return candidate
     except (TypeError, ValueError, OverflowError):
         return None
-
-
-def _apply_u1_lazy(
-    sector: U1Sector,
-    operator: Optional[PauliOperator],
-    values: np.ndarray[Any, Any],
-    max_bytes: Optional[int],
-    term_data: Optional[Any] = None,
-) -> np.ndarray[Any, Any]:
-    """Apply Pauli terms directly in the fixed-weight basis.
-
-    This compact compatibility implementation deliberately enumerates only
-    sector basis states. Term masks and coefficients are read once from the
-    immutable operator; no full computational-basis vector is constructed.
-    """
-    if operator is None:
-        raise RuntimeError("lazy U1 plan has no source operator")
-    _check_allocation(sector.dimension * 16, max_bytes, "U1 MVP output")
-    output: np.ndarray[Any, Any] = np.zeros(sector.dimension, dtype=np.complex128)
-    _apply_u1_lazy_into(sector, operator, values, output, max_bytes, term_data)
-    return output
-
-
-def _apply_u1_lazy_into(
-    sector: U1Sector,
-    operator: Optional[PauliOperator],
-    values: np.ndarray[Any, Any],
-    output: np.ndarray[Any, Any],
-    max_bytes: Optional[int],
-    term_data: Optional[Any] = None,
-) -> None:
-    """Strict-buffer counterpart of :func:`_apply_u1_lazy`."""
-    if operator is None:
-        raise RuntimeError("lazy U1 plan has no source operator")
-    if output.shape != (sector.dimension,):
-        raise ValueError("U1 output shape does not match the sector dimension")
-    terms = _u1_terms(operator) if term_data is None else term_data
-    output.fill(0.0)
-    for column in range(sector.dimension):
-        source = sector.unrank(column)
-        aggregate: dict[int, complex] = {}
-        for structure, coefficient in terms:
-            destination = list(source)
-            phase = coefficient
-            for qubit, code in enumerate(structure):
-                bit = source[qubit]
-                if code == 1:
-                    destination[qubit] = 1 - bit
-                elif code == 2:
-                    destination[qubit] = 1 - bit
-                    phase *= 1j if bit == 0 else -1j
-                elif code == 3 and bit:
-                    phase = -phase
-            key = 0
-            for bit in destination:
-                key = (key << 1) | int(bit)
-            aggregate[key] = aggregate.get(key, 0j) + phase
-        for destination_key, coefficient in aggregate.items():
-            if coefficient == 0j:
-                continue
-            if bin(destination_key).count("1") != sector.particle_number:
-                raise ValueError("U1 restricted operator has nonzero sector leakage")
-            row = sector.rank(destination_key)
-            output[row] += coefficient * values[column]
-
-
-def _u1_terms(operator: Optional[PauliOperator]) -> Any:
-    if operator is None:
-        return ()
-    structures, real, imaginary = operator._arrays()
-    return tuple(
-        (tuple(int(code) for code in structure), complex(re, im))
-        for structure, re, im in zip(structures, real, imaginary)
-    )
 
 
 def _u1_materialization_bytes(

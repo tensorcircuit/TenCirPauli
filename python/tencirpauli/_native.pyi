@@ -42,6 +42,11 @@ class NativePauliOperatorHandle:
     ) -> tuple[Sequence[str], object]: ...
     def adjoint(self) -> "NativePauliOperatorHandle": ...
     def is_hermitian(self, tolerance: float) -> bool: ...
+    def termwise_conserves_charge(
+        self, qubit_levels: Sequence[tuple[float, float]]
+    ) -> bool: ...
+    def content_eq(self, other: "NativePauliOperatorHandle") -> bool: ...
+    def content_hash(self) -> int: ...
 
 class NativeFermionOperatorHandle:
     @property
@@ -68,6 +73,8 @@ class NativeFermionOperatorHandle:
     def to_majorana(self, max_bytes: int) -> "NativeMajoranaOperatorHandle": ...
     def to_hybrid(self) -> "NativeHybridOperatorHandle": ...
     def is_hermitian(self, tolerance: float) -> bool: ...
+    def content_eq(self, other: "NativeFermionOperatorHandle") -> bool: ...
+    def content_hash(self) -> int: ...
     def materialize(
         self,
     ) -> tuple[int, object, object, object, object, object]: ...
@@ -95,6 +102,8 @@ class NativeBosonOperatorHandle:
     ) -> "NativeBosonOperatorHandle": ...
     def to_hybrid(self) -> "NativeHybridOperatorHandle": ...
     def is_hermitian(self, tolerance: float) -> bool: ...
+    def content_eq(self, other: "NativeBosonOperatorHandle") -> bool: ...
+    def content_hash(self) -> int: ...
     def materialize(
         self,
     ) -> tuple[int, object, object, object]: ...
@@ -125,8 +134,39 @@ class NativeHybridOperatorHandle:
     def to_pauli(
         self, axes: Sequence[tuple[int, int]], max_bytes: int
     ) -> "NativePauliOperatorHandle": ...
+    def to_fermion(self) -> "NativeFermionOperatorHandle": ...
+    def to_boson(self) -> "NativeBosonOperatorHandle": ...
+    def embed(
+        self,
+        target_n_modes: int,
+        target_n_bosons: int,
+        target_nqubits: int,
+        target_n_qudit_sites: int,
+        target_qudit_dimension: int,
+        fermion_map: Sequence[int],
+        boson_map: Sequence[int],
+        qubit_map: Sequence[int],
+        qudit_map: Sequence[int],
+        max_bytes: int,
+    ) -> "NativeHybridOperatorHandle": ...
+    def analyze_charge(
+        self,
+        fermion_weights: Sequence[float],
+        boson_weights: Sequence[float],
+        qubit_levels: Sequence[tuple[float, float]],
+        max_bytes: int,
+    ) -> tuple[bool, int]: ...
+    def termwise_conserves_charge(
+        self,
+        fermion_weights: Sequence[float],
+        boson_weights: Sequence[float],
+        qubit_levels: Sequence[tuple[float, float]],
+    ) -> bool: ...
     def materialize(self) -> tuple[Any, ...]: ...
+    def direct_weyl_flat(self, max_bytes: int) -> tuple[object, object, object]: ...
     def is_hermitian(self, tolerance: float) -> bool: ...
+    def content_eq(self, other: "NativeHybridOperatorHandle") -> bool: ...
+    def content_hash(self) -> int: ...
 
 class NativeMajoranaOperatorHandle:
     @property
@@ -154,25 +194,21 @@ class NativeMajoranaOperatorHandle:
     ) -> tuple[int, object, object, object]: ...
     def to_fermion(self, max_bytes: int) -> "NativeFermionOperatorHandle": ...
     def is_hermitian(self, tolerance: float) -> bool: ...
+    def content_eq(self, other: "NativeMajoranaOperatorHandle") -> bool: ...
+    def content_hash(self) -> int: ...
 
 class NativeMappingPlan:
     @property
     def n_modes(self) -> int: ...
-    @property
-    def encoding(self) -> Sequence[Sequence[int]]: ...
-    @property
-    def inverse_encoding(self) -> Sequence[Sequence[int]]: ...
+    def encoding_flat(self) -> Sequence[int]: ...
+    def inverse_encoding_flat(self) -> Sequence[int]: ...
     @property
     def cnot_operations(self) -> Sequence[tuple[int, int]]: ...
     @property
+    def cnot_count(self) -> int: ...
+    @property
     def estimated_bytes(self) -> int: ...
-    def transform(
-        self,
-        structures: Sequence[Sequence[int]],
-        coefficients_re: Sequence[float],
-        coefficients_im: Sequence[float],
-        max_bytes: int,
-    ) -> tuple[object, Sequence[float], Sequence[float]]: ...
+    def encode_occupation(self, occupation: Sequence[int]) -> Sequence[int]: ...
     def transform_pauli_handle(
         self,
         handle: "NativePauliOperatorHandle",
@@ -184,32 +220,21 @@ class NativeMappingPlan:
         prefix_length: int,
         max_bytes: int,
     ) -> "NativePauliOperatorHandle": ...
-    def transform_majorana(
-        self,
-        indices: Sequence[Sequence[int]],
-        coefficients_re: Sequence[float],
-        coefficients_im: Sequence[float],
-        max_bytes: int,
-    ) -> tuple[object, Sequence[float], Sequence[float]]: ...
     def transform_majorana_handle(
         self,
         handle: "NativeMajoranaOperatorHandle",
         max_bytes: int,
     ) -> "NativePauliOperatorHandle": ...
-    def transform_hybrid(
-        self,
-        n_bosons: int,
-        n_qubits: int,
-        n_qudit_sites: int,
-        qudit_dimension: int,
-        input: object,
-        max_bytes: int,
-    ) -> "NativeHybridOperatorHandle": ...
     def transform_hybrid_handle(
         self,
         handle: "NativeHybridOperatorHandle",
         max_bytes: int,
     ) -> "NativeHybridOperatorHandle": ...
+
+class NativeQwcGroupingHandle:
+    def reconstruct(
+        self, group_index: int, bitstrings: object
+    ) -> tuple[int, int, object]: ...
 
 def mapping_plan(mapping: str, n_modes: int, max_bytes: int) -> NativeMappingPlan: ...
 
@@ -243,6 +268,33 @@ class NativeChargeSectorPlan:
         max_bytes: int,
         fast_fermion_particles: int | None = ...,
     ) -> NativeChargeMvpPlan: ...
+    def compile_mvp_pauli_handle(
+        self,
+        handle: NativePauliOperatorHandle,
+        dimension: int,
+        local_dimensions: Sequence[int],
+        fermion_positions: Sequence[int],
+        boson_positions: Sequence[int],
+        qubit_positions: Sequence[int],
+        qudit_positions: Sequence[int],
+        termwise_conserved: bool,
+        max_bytes: int,
+        fast_fermion_particles: int | None = ...,
+    ) -> NativeChargeMvpPlan: ...
+    def compile_mvp_hybrid_handle(
+        self,
+        handle: NativeHybridOperatorHandle,
+        dimension: int,
+        local_dimensions: Sequence[int],
+        fermion_positions: Sequence[int],
+        boson_positions: Sequence[int],
+        qubit_positions: Sequence[int],
+        qudit_positions: Sequence[int],
+        qudit_dimension: int,
+        termwise_conserved: bool,
+        max_bytes: int,
+        fast_fermion_particles: int | None = ...,
+    ) -> NativeChargeMvpPlan: ...
 
 class NativeChargeMvpPlan:
     @property
@@ -269,12 +321,6 @@ class NativeChargeEagerMvpPlan:
     ) -> object: ...
     def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
-def charge_sector_plan(
-    local_dimensions: Sequence[int],
-    contributions: object,
-    target: Sequence[int],
-    max_bytes: int,
-) -> NativeChargeSectorPlan: ...
 def charge_sector_plan_compact(
     local_dimensions: Sequence[int],
     axis_kinds: Sequence[int],
@@ -290,39 +336,18 @@ def pauli_analyze_charge_handle(
     qubit_levels: Sequence[tuple[float, float]],
     max_bytes: int,
 ) -> tuple[bool, int]: ...
-def structured_dense(
-    local_dimensions: Sequence[int],
-    operations: Sequence[Sequence[tuple[int, int, int, int]]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[int, object]: ...
 def structured_dense_handle(
     handle: NativeHybridOperatorHandle,
     local_dimensions: Sequence[int],
     axes: Sequence[tuple[int, int]],
     max_bytes: int,
 ) -> tuple[int, object]: ...
-def structured_sparse(
-    local_dimensions: Sequence[int],
-    operations: Sequence[Sequence[tuple[int, int, int, int]]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
 def structured_sparse_handle(
     handle: NativeHybridOperatorHandle,
     local_dimensions: Sequence[int],
     axes: Sequence[tuple[int, int]],
     max_bytes: int,
-) -> tuple[int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]]: ...
-def structured_sparse_plan(
-    local_dimensions: Sequence[int],
-    operations: Sequence[Sequence[tuple[int, int, int, int]]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> StructuredMvpPlan: ...
+) -> tuple[int, object, object, object]: ...
 def structured_sparse_plan_handle(
     handle: NativeHybridOperatorHandle,
     local_dimensions: Sequence[int],
@@ -336,20 +361,6 @@ def structured_fermion_canonicalize(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> NativeFermionOperatorHandle: ...
-def structured_fermion_multiply(
-    n_modes: int,
-    left: tuple[object, object, Sequence[float], Sequence[float]],
-    right: tuple[object, object, Sequence[float], Sequence[float]],
-    max_bytes: int,
-) -> NativeFermionOperatorHandle: ...
-def structured_fermion_jordan_wigner(
-    n_modes: int,
-    creation: Sequence[Sequence[int]],
-    annihilation: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 def structured_boson_canonicalize(
     n_modes: int,
     factors: Sequence[Sequence[tuple[int, int]]],
@@ -357,22 +368,6 @@ def structured_boson_canonicalize(
     coefficients_im: Sequence[float],
     max_bytes: int,
 ) -> NativeBosonOperatorHandle: ...
-def structured_boson_multiply(
-    n_modes: int,
-    left: tuple[object, Sequence[float], Sequence[float]],
-    right: tuple[object, Sequence[float], Sequence[float]],
-    max_bytes: int,
-) -> NativeBosonOperatorHandle: ...
-def structured_hybrid_multiply(
-    n_modes: int,
-    n_bosons: int,
-    nqubits: int,
-    n_qudit_sites: int,
-    qudit_dimension: int,
-    left: object,
-    right: object,
-    max_bytes: int,
-) -> NativeHybridOperatorHandle: ...
 def structured_hybrid_canonicalize(
     n_modes: int,
     n_bosons: int,
@@ -394,31 +389,6 @@ def structured_hybrid_jordan_wigner(
 def majorana_canonicalize(
     n_modes: int,
     indices: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> NativeMajoranaOperatorHandle: ...
-def majorana_multiply(
-    n_modes: int,
-    left_indices: Sequence[Sequence[int]],
-    left_coefficients_re: Sequence[float],
-    left_coefficients_im: Sequence[float],
-    right_indices: Sequence[Sequence[int]],
-    right_coefficients_re: Sequence[float],
-    right_coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> NativeMajoranaOperatorHandle: ...
-def majorana_to_fermion(
-    n_modes: int,
-    indices: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> NativeFermionOperatorHandle: ...
-def fermion_to_majorana(
-    n_modes: int,
-    creation: Sequence[Sequence[int]],
-    annihilation: Sequence[Sequence[int]],
     coefficients_re: Sequence[float],
     coefficients_im: Sequence[float],
     max_bytes: int,
@@ -451,13 +421,6 @@ class NativeZ2TaperingPlan:
     def removed_qubits(self) -> Sequence[int]: ...
     @property
     def clifford_operations(self) -> Sequence[tuple[int, int, int]]: ...
-    def transform_operator(
-        self,
-        nqubits: int,
-        structures: object,
-        coefficients_re: object,
-        coefficients_im: object,
-    ) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
     def transform_operator_handle(
         self, operator: NativePauliOperatorHandle
     ) -> NativePauliOperatorHandle: ...
@@ -595,6 +558,14 @@ class NativePropagationEngine:
         self, parameters: object
     ) -> tuple[float, int, int, int, int, Sequence[int], float]: ...
 
+class NativeGateTape:
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def nparameters(self) -> int: ...
+    @property
+    def gate_count(self) -> int: ...
+
 class NativePropagationBatch:
     @property
     def nqubits(self) -> int: ...
@@ -700,11 +671,6 @@ def pauli_canonicalize_batch(
     Sequence[int],
     Sequence[int],
 ]: ...
-def pauli_canonicalize_array(
-    nqubits: int,
-    structures: object,
-    coefficients: object,
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 def pauli_canonicalize_batch_array(
     nqubits: int,
     structures: object,
@@ -721,13 +687,6 @@ def pauli_canonicalize_batch_numpy(
     structures: object,
     coefficients: object,
 ) -> tuple[int, object, object, object, object]: ...
-def pauli_operator_binary(
-    nqubits: int,
-    left: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
-    right: tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]],
-    operation: int,
-    max_bytes: int,
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
 def pauli_operator_native(
     nqubits: int,
     structures: Sequence[Sequence[int]],
@@ -738,41 +697,6 @@ def pauli_operator_native(
 def pauli_operator_native_array(
     nqubits: int, structures: object, coefficients: object, max_bytes: int
 ) -> NativePauliOperatorHandle: ...
-def pauli_operator_canonical(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> NativePauliOperatorHandle: ...
-def pauli_operator_scale(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    scalar_re: float,
-    scalar_im: float,
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
-def pauli_operator_adjoint(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-) -> tuple[Sequence[Sequence[int]], Sequence[float], Sequence[float]]: ...
-def pauli_operator_is_hermitian(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    tolerance: float,
-) -> bool: ...
-def pauli_group(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    mode: int,
-    algorithm: int,
-    max_entries: int,
-) -> Sequence[Sequence[int]]: ...
 def pauli_group_handle(
     handle: NativePauliOperatorHandle,
     mode: int,
@@ -781,73 +705,34 @@ def pauli_group_handle(
 ) -> tuple[
     Sequence[Sequence[int]], Sequence[Sequence[int]], Sequence[Sequence[Sequence[int]]]
 ]: ...
-def pauli_compatibility_matrix(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    mode: int,
+def pauli_qwc_group_handle(
+    handle: NativePauliOperatorHandle,
+    algorithm: int,
     max_entries: int,
-) -> Sequence[bool]: ...
+) -> tuple[
+    Sequence[Sequence[int]],
+    Sequence[Sequence[int]],
+    Sequence[Sequence[Sequence[int]]],
+    NativeQwcGroupingHandle,
+]: ...
 def pauli_compatibility_matrix_handle(
     handle: NativePauliOperatorHandle, mode: int, max_entries: int
 ) -> Sequence[bool]: ...
-def pauli_incompatibility_edges(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    mode: int,
-    max_edges: int,
-) -> Sequence[tuple[int, int]]: ...
 def pauli_incompatibility_edges_handle(
     handle: NativePauliOperatorHandle, mode: int, max_edges: int
 ) -> Sequence[tuple[int, int]]: ...
 def pauli_dense_handle(
     handle: NativePauliOperatorHandle, max_bytes: int
 ) -> tuple[int, object]: ...
-def pauli_dense_array(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[int, object]: ...
 def pauli_coo_handle(
     handle: NativePauliOperatorHandle, max_bytes: int
-) -> tuple[int, object, object, object]: ...
-def pauli_coo_array(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
 ) -> tuple[int, object, object, object]: ...
 def pauli_csr_handle(
     handle: NativePauliOperatorHandle, max_bytes: int
 ) -> tuple[int, object, object, object]: ...
-def pauli_csr_array(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[int, object, object, object]: ...
-def pauli_mvp_array(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    state: object,
-    max_bytes: int,
-) -> object: ...
 def pauli_mvp_handle(
     handle: NativePauliOperatorHandle, state: object, max_bytes: int
 ) -> object: ...
-def pauli_mvp_plan(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-    storage: str = ...,
-) -> NativeMvpPlan: ...
 def pauli_mvp_plan_handle(
     handle: NativePauliOperatorHandle,
     max_bytes: int,
@@ -855,18 +740,7 @@ def pauli_mvp_plan_handle(
 ) -> NativeMvpPlan: ...
 def pauli_backend_plan_handle(
     handle: NativePauliOperatorHandle, max_bytes: int
-) -> tuple[
-    int, int, int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]
-]: ...
-def pauli_backend_plan(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[
-    int, int, int, Sequence[int], Sequence[int], Sequence[float], Sequence[float]
-]: ...
+) -> tuple[int, int, int, Sequence[int], Sequence[int], Sequence[complex]]: ...
 def pauli_commutes(
     nqubits: int,
     x_words_left: Sequence[int],
@@ -874,13 +748,6 @@ def pauli_commutes(
     x_words_right: Sequence[int],
     z_words_right: Sequence[int],
 ) -> bool: ...
-def pauli_find_z2_symmetries(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    max_bytes: int,
-) -> tuple[Sequence[Sequence[int]], int]: ...
 def pauli_find_z2_symmetries_handle(
     operator: NativePauliOperatorHandle, max_bytes: int
 ) -> tuple[Sequence[Sequence[int]], int]: ...
@@ -889,25 +756,9 @@ def pauli_z2_tapering_plan(
     generators: Sequence[Sequence[int]],
     sector: Sequence[int],
 ) -> NativeZ2TaperingPlan: ...
-def pauli_restrict_u1(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    particle_number: int,
-    max_bytes: int,
-) -> NativeU1RestrictedOperator: ...
 def pauli_restrict_u1_handle(
     handle: NativePauliOperatorHandle, particle_number: int, max_bytes: int
 ) -> NativeU1RestrictedOperator: ...
-def pauli_restrict_u1_lazy(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    particle_number: int,
-    max_bytes: int,
-) -> NativeU1LazyMvpPlan: ...
 def pauli_restrict_u1_lazy_handle(
     handle: NativePauliOperatorHandle, particle_number: int, max_bytes: int
 ) -> NativeU1LazyMvpPlan: ...
@@ -925,21 +776,13 @@ def u1_circuit_plan(
     gates: object,
     max_bytes: int,
 ) -> NativeU1CircuitPlan: ...
-def pauli_propagation_engine(
+def pauli_gate_tape(
     nqubits: int,
     operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    state_kind: int,
-    state_bits: Sequence[int],
-    state_values: Sequence[float],
-    max_weight: int | None = ...,
-    max_bytes: int | None = ...,
-) -> NativePropagationEngine: ...
-def pauli_propagation_engine_handle(
-    nqubits: int,
-    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+    max_bytes: int | None = None,
+) -> NativeGateTape: ...
+def pauli_propagation_engine_tape(
+    tape: NativeGateTape,
     observable: NativePauliOperatorHandle,
     state_kind: int,
     state_bits: Sequence[int],
@@ -947,22 +790,8 @@ def pauli_propagation_engine_handle(
     max_weight: int | None = None,
     max_bytes: int | None = None,
 ) -> NativePropagationEngine: ...
-def pauli_propagation_batch(
-    nqubits: int,
-    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
-    observable_offsets: Sequence[int],
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-    state_kind: int,
-    state_bits: Sequence[int],
-    state_values: Sequence[float],
-    max_weight: int | None = None,
-    max_bytes: int | None = None,
-) -> NativePropagationBatch: ...
-def pauli_propagation_batch_handles(
-    nqubits: int,
-    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
+def pauli_propagation_batch_handles_tape(
+    tape: NativeGateTape,
     observables: Sequence[NativePauliOperatorHandle],
     state_kind: int,
     state_bits: Sequence[int],
@@ -970,25 +799,12 @@ def pauli_propagation_batch_handles(
     max_weight: int | None = None,
     max_bytes: int | None = None,
 ) -> NativePropagationBatch: ...
-def pauli_spps_engine(
-    nqubits: int,
-    operations: Sequence[tuple[int, int, int, int, float, Sequence[float]]],
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
+def pauli_spps_engine_tape(
+    tape: NativeGateTape,
+    observable: NativePauliOperatorHandle,
     state_kind: int,
     state_bits: Sequence[int],
     state_values: Sequence[float],
     smoothing: float = 0.01,
     max_bytes: int | None = None,
-) -> NativeSPPSEngine: ...
-def pauli_spps_engine_handle(
-    nqubits: int,
-    operations: object,
-    observable: NativePauliOperatorHandle,
-    state_kind: int,
-    state_bits: object,
-    state_values: object,
-    smoothing: float = ...,
-    max_bytes: int | None = ...,
 ) -> NativeSPPSEngine: ...

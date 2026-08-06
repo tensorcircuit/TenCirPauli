@@ -1069,7 +1069,7 @@ fn compile_terms(operator: &PauliOperator) -> Result<CompiledU1Terms, PauliError
         let term_index = next[group_index];
         let z_start = term_index * word_count;
         z_words[z_start..z_start + word_count].copy_from_slice(term.word.z_words());
-        weighted_coefficients[term_index] = weighted_coefficient(term, term_index)?;
+        weighted_coefficients[term_index] = weighted_coefficient(term);
         next[group_index] += 1;
     }
     let mut x_support = Vec::new();
@@ -1110,7 +1110,7 @@ fn append_set_bit_positions(words: &[u64], output: &mut Vec<usize>) {
     }
 }
 
-fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, PauliError> {
+fn weighted_coefficient(term: &PauliTerm) -> Complex64 {
     let y_count = term
         .word
         .x_words()
@@ -1124,11 +1124,7 @@ fn weighted_coefficient(term: &PauliTerm, index: usize) -> Result<Complex64, Pau
         2 => Complex64::new(-1.0, 0.0),
         _ => Complex64::new(0.0, -1.0),
     };
-    let coefficient = term.coefficient * y_phase;
-    if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-        return Err(PauliError::NonFiniteCoefficient { index });
-    }
-    Ok(coefficient)
+    term.coefficient * y_phase
 }
 
 fn aggregate_source(
@@ -1175,11 +1171,6 @@ fn aggregate_source(
             } else {
                 value -= contribution;
             }
-        }
-        if !value.re.is_finite() || !value.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient {
-                index: group.term_start,
-            });
         }
         if is_exact_zero(value) {
             continue;

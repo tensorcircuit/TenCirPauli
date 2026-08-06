@@ -3,7 +3,7 @@ use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{find_z2_symmetries, CliffordOperation, U1Sector, Z2TaperingPlan};
 
-use crate::convert::{build_canonical_operator, map_error, operator_output, CanonicalizeOutput};
+use crate::convert::map_error;
 use crate::operator::NativePauliOperatorHandle;
 
 type U1CsrOutput<'py> = (
@@ -70,28 +70,6 @@ impl NativeZ2TaperingPlan {
             .collect()
     }
 
-    fn transform_operator(
-        &self,
-        py: Python<'_>,
-        nqubits: usize,
-        structures: Vec<Vec<u8>>,
-        coefficients_re: Vec<f64>,
-        coefficients_im: Vec<f64>,
-    ) -> PyResult<CanonicalizeOutput> {
-        if nqubits != self.plan.nqubits_before() {
-            return Err(PyValueError::new_err(format!(
-                "expected {} qubits, got {nqubits}",
-                self.plan.nqubits_before()
-            )));
-        }
-        let result = py.allow_threads(|| {
-            let operator =
-                build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-            self.plan.transform_operator(&operator).map_err(map_error)
-        })?;
-        Ok(operator_output(&result))
-    }
-
     fn transform_operator_handle(
         &self,
         py: Python<'_>,
@@ -102,30 +80,6 @@ impl NativeZ2TaperingPlan {
             .map_err(map_error)?;
         Ok(NativePauliOperatorHandle::from_operator(result))
     }
-}
-
-#[pyfunction]
-pub(crate) fn pauli_find_z2_symmetries(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    max_bytes: usize,
-) -> PyResult<(Vec<Vec<u8>>, usize)> {
-    py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        let analysis = find_z2_symmetries(&operator, max_bytes as u128).map_err(map_error)?;
-        Ok((
-            analysis
-                .generators
-                .iter()
-                .map(|word| word.codes())
-                .collect(),
-            analysis.constraint_rank,
-        ))
-    })
 }
 
 #[pyfunction]
@@ -399,26 +353,6 @@ impl NativeU1LazyMvpPlan {
 }
 
 #[pyfunction]
-pub(crate) fn pauli_restrict_u1(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    particle_number: usize,
-    max_bytes: usize,
-) -> PyResult<NativeU1RestrictedOperator> {
-    let operator = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
-        tencir_pauli_core::U1RestrictedOperator::new(&operator, sector, max_bytes as u128)
-            .map_err(map_error)
-    })?;
-    Ok(NativeU1RestrictedOperator { operator })
-}
-
-#[pyfunction]
 pub(crate) fn pauli_restrict_u1_handle(
     py: Python<'_>,
     operator: &NativePauliOperatorHandle,
@@ -434,26 +368,6 @@ pub(crate) fn pauli_restrict_u1_handle(
     Ok(NativeU1RestrictedOperator {
         operator: restricted,
     })
-}
-
-#[pyfunction]
-pub(crate) fn pauli_restrict_u1_lazy(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-    particle_number: usize,
-    max_bytes: usize,
-) -> PyResult<NativeU1LazyMvpPlan> {
-    let plan = py.allow_threads(|| {
-        let operator =
-            build_canonical_operator(nqubits, &structures, &coefficients_re, &coefficients_im)?;
-        let sector = U1Sector::new(nqubits, particle_number).map_err(map_error)?;
-        tencir_pauli_core::U1LazyMvpPlan::new(&operator, sector, max_bytes as u128)
-            .map_err(map_error)
-    })?;
-    Ok(NativeU1LazyMvpPlan { plan })
 }
 
 #[pyfunction]

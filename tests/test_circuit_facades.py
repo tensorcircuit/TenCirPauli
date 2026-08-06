@@ -7,6 +7,8 @@ import pytest
 import tensorcircuit as tc
 
 import tencirpauli as tcp
+import tencirpauli.propagation as propagation_module
+from tencirpauli import advanced
 
 
 def _z_observable(nqubits: int) -> tcp.PauliOperator:
@@ -116,6 +118,49 @@ def test_propagation_compile_caches_retain_key_objects() -> None:
     del spps_observable
     gc.collect()
     assert spps_reference() is not None
+
+
+def test_gate_tape_cache_lifecycle_and_native_compile_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = propagation_module._native.pauli_gate_tape
+
+    def counted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(propagation_module._native, "pauli_gate_tape", counted)
+    tape = advanced.GateTape(2)
+    tape.ry(0, parameter=0)
+    tape.cnot(0, 1)
+    observable_z = _z_observable(2)
+    observable_x = tcp.PauliOperator.from_terms(2, [("XI", 1.0)])
+
+    advanced.PropagationEngine(tape, observable_z)
+    advanced.PropagationEngine(tape, observable_x)
+    tcp.PropagationBatch(tape, [observable_z, observable_x])
+    advanced.SPPSEngine(tape, observable_z)
+    assert calls == 1
+
+    tape.x(1)
+    advanced.PropagationEngine(tape, observable_z)
+    assert calls == 2
+
+    circuit = tcp.PropagationCircuit(2)
+    circuit.ry(0, theta=tcp.Parameter(0))
+    circuit.cnot(0, 1)
+    circuit.compile(observable_z)
+    circuit.compile(observable_x)
+    assert calls == 3
+    circuit.x(1)
+    circuit.compile(observable_z)
+    assert calls == 4
+
+    independent = tcp.PropagationCircuit.from_qir(circuit.to_qir(), {"nqubits": 2})
+    independent.compile(observable_z)
+    assert calls == 5
 
 
 def test_u1_facade_expectation_and_canonical_diagonal_qir() -> None:

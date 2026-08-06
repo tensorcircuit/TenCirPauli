@@ -58,6 +58,7 @@ def run_formatters(fix: bool) -> None:
 
 def run_quality_checks() -> None:
     """Run Rust and Python linting and static type analysis."""
+    run([sys.executable, "scripts/check_stage_labels.py"])
     run(
         [
             "cargo",

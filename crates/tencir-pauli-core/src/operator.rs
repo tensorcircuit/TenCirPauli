@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 use rustc_hash::FxHashMap;
 
 use crate::error::PauliError;
-use crate::scalar::{is_exact_zero, Complex64};
+use crate::scalar::{hash_complex, is_exact_zero, Complex64};
 use crate::word::{PauliPhase, PauliWord};
 
 /// A coefficient-bearing canonical Pauli term.
@@ -62,7 +63,6 @@ fn canonicalize(
     let mut terms = Vec::with_capacity(ordered.len());
     let mut input_to_canonical = vec![0_usize; structures.len()];
     for (canonical_index, (word, mut contributions)) in ordered.into_iter().enumerate() {
-        let first_input_index = contributions[0].0;
         for (input_index, _) in &contributions {
             input_to_canonical[*input_index] = canonical_index;
         }
@@ -75,11 +75,6 @@ fn canonicalize(
             .into_iter()
             .map(|(_, value)| value)
             .fold(Complex64::default(), |sum, value| sum + value);
-        if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-            return Err(PauliError::NonFiniteCoefficient {
-                index: first_input_index,
-            });
-        }
         terms.push(PauliTerm { word, coefficient });
     }
     Ok(Canonicalization {
@@ -144,7 +139,7 @@ impl PauliOperator {
         let mut ordered = aggregate.into_iter().collect::<Vec<_>>();
         ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         let mut terms = Vec::with_capacity(ordered.len());
-        for (canonical_index, (word, mut values)) in ordered.into_iter().enumerate() {
+        for (word, mut values) in ordered {
             // Sort duplicate contributions by their IEEE bit patterns so
             // aggregation is independent of input order while retaining the
             // exact-zero policy.
@@ -152,11 +147,6 @@ impl PauliOperator {
             let coefficient = values
                 .into_iter()
                 .fold(Complex64::default(), |sum, value| sum + value);
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient {
-                    index: canonical_index,
-                });
-            }
             if !is_exact_zero(coefficient) {
                 terms.push(PauliTerm { word, coefficient });
             }
@@ -256,9 +246,6 @@ impl PauliOperator {
                 }
                 Ordering::Equal => {
                     let coefficient = self.terms[left].coefficient + other.terms[right].coefficient;
-                    if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                        return Err(PauliError::NonFiniteCoefficient { index: terms.len() });
-                    }
                     if !is_exact_zero(coefficient) {
                         terms.push(PauliTerm {
                             word: self.terms[left].word.clone(),
@@ -287,11 +274,8 @@ impl PauliOperator {
             return Ok(Self::empty(self.nqubits));
         }
         let mut terms = Vec::with_capacity(self.terms.len());
-        for (index, term) in self.terms.iter().enumerate() {
+        for term in &self.terms {
             let coefficient = term.coefficient * scalar;
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index });
-            }
             if !is_exact_zero(coefficient) {
                 terms.push(PauliTerm {
                     word: term.word.clone(),
@@ -327,33 +311,21 @@ impl PauliOperator {
             "estimating Pauli operator product",
         )?;
         let mut aggregate = FxHashMap::<PauliWord, Vec<Complex64>>::default();
-        let mut product_index = 0;
         for left in &self.terms {
             for right in &other.terms {
                 let (word, phase) = left.word.multiply(&right.word)?;
                 let coefficient = left.coefficient * right.coefficient * phase.as_complex();
-                if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                    return Err(PauliError::NonFiniteCoefficient {
-                        index: product_index,
-                    });
-                }
                 aggregate.entry(word).or_default().push(coefficient);
-                product_index += 1;
             }
         }
         let mut ordered = aggregate.into_iter().collect::<Vec<_>>();
         ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         let mut terms = Vec::with_capacity(ordered.len());
-        for (canonical_index, (word, mut values)) in ordered.into_iter().enumerate() {
+        for (word, mut values) in ordered {
             values.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
             let coefficient = values
                 .into_iter()
                 .fold(Complex64::default(), |sum, value| sum + value);
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient {
-                    index: canonical_index,
-                });
-            }
             if !is_exact_zero(coefficient) {
                 terms.push(PauliTerm { word, coefficient });
             }
@@ -418,6 +390,84 @@ impl PauliOperator {
             let difference = term.coefficient - term.coefficient.conj();
             difference.re.hypot(difference.im) <= tolerance
         })
+    }
+
+    /// Analyze a diagonal qubit charge using deterministic native selection rules.
+    pub fn analyze_charge(
+        &self,
+        qubit_levels: &[(f64, f64)],
+        max_bytes: u128,
+    ) -> Result<(bool, usize), PauliError> {
+        if qubit_levels.len() != self.nqubits {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.nqubits,
+                actual: qubit_levels.len(),
+            });
+        }
+        check_operator_bytes(
+            self.terms.len() as u128,
+            self.nqubits,
+            max_bytes,
+            "estimating additive-charge analysis",
+        )?;
+        let mut aggregate = FxHashMap::<PauliWord, Vec<Complex64>>::default();
+        for term in &self.terms {
+            let codes = term.word.codes();
+            for (index, code) in codes.into_iter().enumerate() {
+                if code != 1 && code != 2 {
+                    continue;
+                }
+                let difference = qubit_levels[index].0 - qubit_levels[index].1;
+                if difference == 0.0 {
+                    continue;
+                }
+                let mut changed = term.word.codes();
+                changed[index] = if code == 1 { 2 } else { 1 };
+                let word = PauliWord::from_codes(self.nqubits, &changed)?;
+                let scale = if code == 1 { -difference } else { difference };
+                aggregate
+                    .entry(word)
+                    .or_default()
+                    .push(term.coefficient * Complex64::new(0.0, scale));
+            }
+        }
+        let nonzero = aggregate
+            .into_values()
+            .filter_map(|mut values| {
+                values.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
+                let value = values
+                    .into_iter()
+                    .fold(Complex64::default(), |sum, value| sum + value);
+                (value.re != 0.0 || value.im != 0.0).then_some(())
+            })
+            .count();
+        Ok((nonzero == 0, nonzero))
+    }
+
+    /// Return whether every canonical term preserves a diagonal qubit charge.
+    pub fn termwise_conserves_charge(&self, qubit_levels: &[(f64, f64)]) -> bool {
+        if qubit_levels.len() != self.nqubits {
+            return false;
+        }
+        self.terms.iter().all(|term| {
+            term.word
+                .codes()
+                .into_iter()
+                .enumerate()
+                .all(|(index, code)| {
+                    code == 0 || code == 3 || qubit_levels[index].0 == qubit_levels[index].1
+                })
+        })
+    }
+
+    pub fn content_hash(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.nqubits.hash(&mut hasher);
+        for term in &self.terms {
+            term.word.hash(&mut hasher);
+            hash_complex(term.coefficient, &mut hasher);
+        }
+        hasher.finish()
     }
 
     fn ensure_compatible(&self, other: &Self) -> Result<(), PauliError> {

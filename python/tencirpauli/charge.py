@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
-    Iterable,
     List,
     Literal,
     Mapping,
@@ -45,8 +43,6 @@ from .structured import (
 )
 
 
-_I128_MIN = -(1 << 127)
-_I128_MAX = (1 << 127) - 1
 ChargeStorage = Literal["eager", "lazy"]
 
 
@@ -505,18 +501,6 @@ def _local_dimensions(
     )
 
 
-def _charge_contribution(
-    charge: AdditiveCharge, axis_domain: str, axis_index: int, value: int
-) -> int:
-    if axis_domain == "fermion":
-        return charge.fermion_weights[axis_index] * value
-    if axis_domain == "boson":
-        return charge.boson_weights[axis_index] * value
-    if axis_domain == "qubit":
-        return charge.qubit_levels[axis_index][value]
-    return 0
-
-
 class ChargeSector:
     """Immutable rank/unrank plan for simultaneous additive charge constraints.
 
@@ -527,10 +511,8 @@ class ChargeSector:
     """
 
     __slots__ = (
-        "_contributions",
         "_locked",
         "_native_plan",
-        "_suffix_counts",
         "basis_ordering",
         "boson_cutoffs",
         "constraints",
@@ -546,9 +528,7 @@ class ChargeSector:
     basis_ordering: str
     dimension: int
     estimated_bytes: int
-    _suffix_counts: Tuple[Dict[Tuple[int, ...], int], ...]
-    _contributions: Tuple[Tuple[Tuple[int, ...], ...], ...]
-    _native_plan: Optional[Any]
+    _native_plan: Any
     _locked: bool
 
     def __init__(
@@ -566,7 +546,6 @@ class ChargeSector:
         cutoffs = _resolve_boson_cutoffs(normalized, boson_cutoffs)
         dimensions = _local_dimensions(space, cutoffs)
         target = tuple(value - charge.offset for charge, value in normalized)
-        native_plan: Optional[Any] = None
         contribution_entries = sum(dimensions)
         contribution_upper_bound = (
             contribution_entries * len(normalized) * 16
@@ -584,74 +563,34 @@ class ChargeSector:
             "qubit": 2,
             "qudit": 3,
         }
-        compact_possible = all(
-            _I128_MIN <= value <= _I128_MAX
-            for charge, _ in normalized
-            for value in (
-                *charge.fermion_weights,
-                *charge.boson_weights,
-                *(level for levels in charge.qubit_levels for level in levels),
+        compact_values = (
+            tuple(
+                value
+                for charge, _ in normalized
+                for value in (
+                    *charge.fermion_weights,
+                    *charge.boson_weights,
+                    *(level for levels in charge.qubit_levels for level in levels),
+                )
             )
-        ) and all(_I128_MIN <= value <= _I128_MAX for value in target)
-        suffix: List[Dict[Tuple[int, ...], int]] = []
-        contribution_table: List[Tuple[Tuple[int, ...], ...]] = []
-        if compact_possible:
-            try:
-                native_plan = _native.charge_sector_plan_compact(
-                    list(dimensions),
-                    [axis_kinds[axis.domain] for axis in space._axes],
-                    [axis.index for axis in space._axes],
-                    [list(charge.fermion_weights) for charge, _ in normalized],
-                    [list(charge.boson_weights) for charge, _ in normalized],
-                    [list(charge.qubit_levels) for charge, _ in normalized],
-                    list(target),
-                    _effective_max_bytes(max_bytes),
-                )
-            except OverflowError:
-                native_plan = None
-        if native_plan is None:
-            for axis, dimension in zip(space._axes, dimensions):
-                contribution_table.append(
-                    tuple(
-                        tuple(
-                            _charge_contribution(charge, axis.domain, axis.index, value)
-                            for charge, _ in normalized
-                        )
-                        for value in range(dimension)
-                    )
-                )
-            zero = (0,) * len(normalized)
-            suffix = [{} for _ in range(len(dimensions) + 1)]
-            suffix[-1][zero] = 1
-            for position in range(len(dimensions) - 1, -1, -1):
-                table: Dict[Tuple[int, ...], int] = {}
-                for contribution in contribution_table[position]:
-                    for remainder, count in suffix[position + 1].items():
-                        key = tuple(
-                            contribution[index] + remainder[index]
-                            for index in range(len(normalized))
-                        )
-                        table[key] = table.get(key, 0) + count
-                suffix[position] = table
-                _check_allocation(
-                    len(table) * (64 + 24 * len(normalized)),
-                    max_bytes,
-                    "charge-sector dynamic-programming plan",
-                )
-            dimension = suffix[0].get(target, 0)
-            if dimension > int(np.iinfo(np.intp).max):
-                raise OverflowError(
-                    "charge-sector dimension cannot be represented by platform indices"
-                )
-            estimated_bytes = (
-                sum(len(table) * (64 + 24 * len(normalized)) for table in suffix)
-                + contribution_upper_bound
-                + len(dimensions) * 8
+            + target
+        )
+        if any(value < -(1 << 127) or value >= (1 << 127) for value in compact_values):
+            raise OverflowError(
+                "charge weights and targets must fit the bounded native i128 representation"
             )
-            _check_allocation(estimated_bytes, max_bytes, "charge-sector plan")
-        else:
-            dimension = int(native_plan.dimension)
-            estimated_bytes = int(native_plan.estimated_bytes)
+        native_plan = _native.charge_sector_plan_compact(
+            list(dimensions),
+            [axis_kinds[axis.domain] for axis in space._axes],
+            [axis.index for axis in space._axes],
+            [list(charge.fermion_weights) for charge, _ in normalized],
+            [list(charge.boson_weights) for charge, _ in normalized],
+            [list(charge.qubit_levels) for charge, _ in normalized],
+            list(target),
+            _effective_max_bytes(max_bytes),
+        )
+        dimension = int(native_plan.dimension)
+        estimated_bytes = int(native_plan.estimated_bytes)
         object.__setattr__(self, "constraints", normalized)
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "boson_cutoffs", tuple(sorted(cutoffs.items())))
@@ -659,12 +598,6 @@ class ChargeSector:
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "dimension", int(dimension))
         object.__setattr__(self, "estimated_bytes", int(estimated_bytes))
-        object.__setattr__(self, "_suffix_counts", tuple(suffix))
-        object.__setattr__(
-            self,
-            "_contributions",
-            tuple(contribution_table) if native_plan is None else (),
-        )
         object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(self, "_locked", True)
 
@@ -672,9 +605,6 @@ class ChargeSector:
         if getattr(self, "_locked", False):
             raise AttributeError("ChargeSector is immutable")
         object.__setattr__(self, name, value)
-
-    def _target(self) -> Tuple[int, ...]:
-        return tuple(value - charge.offset for charge, value in self.constraints)
 
     def _validate_occupations(self, occupations: Sequence[object]) -> Tuple[int, ...]:
         values = tuple(_exact_nonnegative(value, "occupation") for value in occupations)
@@ -702,25 +632,7 @@ class ChargeSector:
                 local dimension, or violate any charge constraint.
         """
         values = self._validate_occupations(occupations)
-        if self._native_plan is not None:
-            return int(self._native_plan.rank(values))
-        remaining = self._target()
-        rank = 0
-        for position, value in enumerate(values):
-            table = self._contributions[position]
-            for candidate in range(value):
-                candidate_remaining = tuple(
-                    remaining[index] - table[candidate][index]
-                    for index in range(len(remaining))
-                )
-                rank += self._suffix_counts[position + 1].get(candidate_remaining, 0)
-            remaining = tuple(
-                remaining[index] - table[value][index]
-                for index in range(len(remaining))
-            )
-        if remaining != (0,) * len(remaining):
-            raise ValueError("occupations do not satisfy every charge constraint")
-        return rank
+        return int(self._native_plan.rank(values))
 
     def unrank(self, index: int) -> Tuple[int, ...]:
         """Return the occupation tuple at a deterministic sector index.
@@ -738,26 +650,7 @@ class ChargeSector:
         index = _exact_nonnegative(index, "sector index")
         if index >= self.dimension:
             raise IndexError("sector index is out of range")
-        if self._native_plan is not None:
-            return tuple(int(value) for value in self._native_plan.unrank(index))
-        remaining = self._target()
-        values: List[int] = []
-        for position, dimension in enumerate(self.local_dimensions):
-            table = self._contributions[position]
-            for candidate in range(dimension):
-                candidate_remaining = tuple(
-                    remaining[index] - table[candidate][index]
-                    for index in range(len(remaining))
-                )
-                count = self._suffix_counts[position + 1].get(candidate_remaining, 0)
-                if index < count:
-                    values.append(candidate)
-                    remaining = candidate_remaining
-                    break
-                index -= count
-            else:
-                raise RuntimeError("charge-sector rank/unrank plan is inconsistent")
-        return tuple(values)
+        return tuple(int(value) for value in self._native_plan.unrank(index))
 
     def basis_states(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
@@ -775,42 +668,32 @@ class ChargeSector:
             max_bytes,
             "charge-sector basis states",
         )
-        if self._native_plan is not None:
-            native_values: np.ndarray[Any, Any] = np.asarray(
-                self._native_plan.basis_states(_effective_max_bytes(max_bytes)),
-                dtype=np.uint64,
-            ).reshape((self.dimension, axis_count))
-            native_values.setflags(write=False)
-            return native_values
-        values: np.ndarray[Any, Any] = np.asarray(
-            [self.unrank(index) for index in range(self.dimension)], dtype=np.uint64
+        native_values: np.ndarray[Any, Any] = np.asarray(
+            self._native_plan.basis_states(_effective_max_bytes(max_bytes)),
+            dtype=np.uint64,
         ).reshape((self.dimension, axis_count))
-        values.setflags(write=False)
-        return values
+        native_values.setflags(write=False)
+        return native_values
 
     def __repr__(self) -> str:
         return f"ChargeSector(dimension={self.dimension}, constraints={len(self.constraints)})"
 
 
-@dataclass(frozen=True)
-class _RestrictedTransitionInputs:
-    local_dimensions: Tuple[int, ...]
-    fermion_positions: List[int]
-    boson_positions: List[int]
-    qubit_positions: List[int]
-    qudit_positions: List[int]
-    fermion_creation: List[List[int]]
-    fermion_annihilation: List[List[int]]
-    boson_blocks: List[List[Tuple[int, int, int]]]
-    qubit_codes: List[List[int]]
-    mapped_present: List[bool]
-    mapped_codes: List[List[int]]
-    qudit_present: List[bool]
-    qudit_triples: List[List[Tuple[int, int, int]]]
-    coefficients: np.ndarray[Any, Any]
-    qudit_dimension: int
-    termwise_conserved: bool
-    fast_fermion_particles: Optional[int]
+def _restricted_layout_inputs(
+    sector: ChargeSector,
+) -> Tuple[Tuple[int, ...], List[int], List[int], List[int], List[int], int]:
+    axis_positions = {
+        (axis.domain, axis.index): position
+        for position, axis in enumerate(sector.space._axes)
+    }
+    return (
+        tuple(sector.local_dimensions),
+        [axis_positions[("fermion", index)] for index in range(sector.space.fermions)],
+        [axis_positions[("boson", index)] for index in range(sector.space.bosons)],
+        [axis_positions[("qubit", index)] for index in range(sector.space.qubits)],
+        [axis_positions[("qudit", index)] for index in range(len(sector.space.qudits))],
+        sector.space.qudits[0] if sector.space.qudits else 0,
+    )
 
 
 class ChargeMvpPlan:
@@ -1008,39 +891,85 @@ class ChargeLazyMvpPlan:
         self,
         sector: ChargeSector,
         term_count: int,
-        inputs: "_RestrictedTransitionInputs",
+        operator: Union[_StructuredOperator, PauliOperator],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
-        if sector._native_plan is None:
-            raise NotImplementedError(
-                "storage='lazy' requires a native compact ChargeSector plan"
+        (
+            local_dimensions,
+            fermion_positions,
+            boson_positions,
+            qubit_positions,
+            qudit_positions,
+            qudit_dimension,
+        ) = _restricted_layout_inputs(sector)
+        native_handle = operator._native_handle
+        if native_handle is None:
+            raise RuntimeError("charge restriction requires a native operator handle")
+        level_rows = [
+            tuple(
+                (float(level_zero), float(level_one))
+                for level_zero, level_one in charge.qubit_levels
+            )
+            for charge, _ in sector.constraints
+        ]
+        termwise_conserved = False
+        if isinstance(operator, PauliOperator):
+            if not isinstance(native_handle, _native.NativePauliOperatorHandle):
+                raise RuntimeError("Pauli restriction received an invalid handle")
+            termwise_conserved = all(
+                native_handle.termwise_conserves_charge(levels) for levels in level_rows
+            )
+            native_execution = sector._native_plan.compile_mvp_pauli_handle(
+                native_handle,
+                sector.dimension,
+                list(local_dimensions),
+                fermion_positions,
+                boson_positions,
+                qubit_positions,
+                qudit_positions,
+                termwise_conserved,
+                _effective_max_bytes(max_bytes),
+                None,
+            )
+        else:
+            if isinstance(
+                native_handle,
+                (
+                    _native.NativeFermionOperatorHandle,
+                    _native.NativeBosonOperatorHandle,
+                ),
+            ):
+                native_handle = native_handle.to_hybrid()
+            if not isinstance(native_handle, _native.NativeHybridOperatorHandle):
+                raise RuntimeError("charge restriction received an invalid handle")
+            termwise_conserved = all(
+                native_handle.termwise_conserves_charge(
+                    tuple(float(value) for value in charge.fermion_weights),
+                    tuple(float(value) for value in charge.boson_weights),
+                    levels,
+                )
+                for (charge, _), levels in zip(sector.constraints, level_rows)
+            )
+            fast_fermion_particles = (
+                _fast_fermion_particles(operator, sector)
+                if termwise_conserved
+                else None
+            )
+            native_execution = sector._native_plan.compile_mvp_hybrid_handle(
+                native_handle,
+                sector.dimension,
+                list(local_dimensions),
+                fermion_positions,
+                boson_positions,
+                qubit_positions,
+                qudit_positions,
+                qudit_dimension,
+                termwise_conserved,
+                _effective_max_bytes(max_bytes),
+                fast_fermion_particles,
             )
         object.__setattr__(self, "_native_plan", sector._native_plan)
-        object.__setattr__(
-            self,
-            "_native_execution",
-            sector._native_plan.compile_mvp(
-                sector.dimension,
-                list(inputs.local_dimensions),
-                inputs.fermion_positions,
-                inputs.boson_positions,
-                inputs.qubit_positions,
-                inputs.qudit_positions,
-                inputs.fermion_creation,
-                inputs.fermion_annihilation,
-                inputs.boson_blocks,
-                inputs.qubit_codes,
-                inputs.mapped_present,
-                inputs.mapped_codes,
-                inputs.qudit_present,
-                inputs.qudit_triples,
-                inputs.coefficients,
-                inputs.qudit_dimension,
-                inputs.termwise_conserved,
-                _effective_max_bytes(max_bytes),
-                inputs.fast_fermion_particles,
-            ),
-        )
+        object.__setattr__(self, "_native_execution", native_execution)
         object.__setattr__(self, "dimension", sector.dimension)
         object.__setattr__(self, "term_count", int(term_count))
         object.__setattr__(
@@ -1156,18 +1085,11 @@ class ChargeRestrictedOperator:
                 raise ValueError(
                     "selected charge sector requires an exactly conserved operator"
                 )
-        term_count = (
-            len(operator.terms)
-            if isinstance(operator, PauliOperator)
-            else operator.term_count
-        )
-        inputs = _restricted_transition_inputs(operator, sector)
+        term_count = operator.term_count
         _check_allocation(
-            int(sector.estimated_bytes + inputs.coefficients.nbytes),
-            max_bytes,
-            "lazy charge MVP plan",
+            int(sector.estimated_bytes), max_bytes, "lazy charge MVP plan"
         )
-        lazy_plan = ChargeLazyMvpPlan(sector, term_count, inputs, max_bytes)
+        lazy_plan = ChargeLazyMvpPlan(sector, term_count, operator, max_bytes)
         object.__setattr__(self, "operator", operator)
         object.__setattr__(self, "sector", sector)
         object.__setattr__(self, "dimension", sector.dimension)
@@ -1393,28 +1315,6 @@ class ChargeRestrictedOperator:
         )
 
 
-def _termwise_charge_conserved(
-    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
-) -> bool:
-    """Return whether every serialized term preserves every charge directly."""
-    if isinstance(operator, PauliOperator):
-        structures, _, _ = operator._arrays()
-        return all(
-            all(code not in (1, 2) for code in structure) for structure in structures
-        )
-    for term in operator._materialized_terms():
-        if any(code in (1, 2) for code in term.qubit):
-            return False
-        if term.mapped_fermion is not None and any(
-            code in (1, 2) for code in term.mapped_fermion
-        ):
-            return False
-        for charge, _ in sector.constraints:
-            if _structured_charge_delta(term, charge) != 0:
-                return False
-    return True
-
-
 def _fast_fermion_particles(
     operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
 ) -> Optional[int]:
@@ -1451,242 +1351,7 @@ def _fast_fermion_particles(
     particles = total_target // 2
     if particles < 1 or particles > sites:
         return None
-    for term in operator._materialized_terms():
-        if (
-            term.boson is not None
-            or term.qubit
-            or term.qudit is not None
-            or term.mapped_fermion is not None
-        ):
-            return None
     return particles
-
-
-def _restricted_transition_inputs(
-    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
-) -> _RestrictedTransitionInputs:
-    axis_positions = {
-        (axis.domain, axis.index): position
-        for position, axis in enumerate(sector.space._axes)
-    }
-    fermion_positions = [
-        axis_positions[("fermion", index)] for index in range(sector.space.fermions)
-    ]
-    boson_positions = [
-        axis_positions[("boson", index)] for index in range(sector.space.bosons)
-    ]
-    qubit_positions = [
-        axis_positions[("qubit", index)] for index in range(sector.space.qubits)
-    ]
-    qudit_positions = [
-        axis_positions[("qudit", index)] for index in range(len(sector.space.qudits))
-    ]
-    fermion_creation: List[List[int]] = []
-    fermion_annihilation: List[List[int]] = []
-    boson_blocks: List[List[Tuple[int, int, int]]] = []
-    qubit_codes: List[List[int]] = []
-    mapped_present: List[bool] = []
-    mapped_codes: List[List[int]] = []
-    qudit_present: List[bool] = []
-    qudit_triples: List[List[Tuple[int, int, int]]] = []
-    coefficients: List[complex] = []
-    if isinstance(operator, PauliOperator):
-        structures, coefficients_re, coefficients_im = operator._arrays()
-        for structure, coefficient_real, coefficient_imaginary in zip(
-            structures, coefficients_re, coefficients_im
-        ):
-            fermion_creation.append([])
-            fermion_annihilation.append([])
-            boson_blocks.append([])
-            qubit_codes.append(list(structure))
-            mapped_present.append(False)
-            mapped_codes.append([0] * sector.space.fermions)
-            qudit_present.append(False)
-            qudit_triples.append([])
-            coefficients.append(complex(coefficient_real, coefficient_imaginary))
-    else:
-        for structured_term in operator._materialized_terms():
-            if (
-                structured_term.fermion is not None
-                and structured_term.mapped_fermion is not None
-            ):
-                raise ValueError(
-                    "cannot restrict a term containing both raw and mapped fermion factors"
-                )
-            fermion_creation.append(
-                list(structured_term.fermion.creation_modes)
-                if structured_term.fermion is not None
-                else []
-            )
-            fermion_annihilation.append(
-                list(structured_term.fermion.annihilation_modes)
-                if structured_term.fermion is not None
-                else []
-            )
-            boson_blocks.append(
-                list(structured_term.boson.blocks)
-                if structured_term.boson is not None
-                else []
-            )
-            qubit_codes.append(list(structured_term.qubit))
-            mapped_present.append(structured_term.mapped_fermion is not None)
-            mapped_codes.append(
-                list(structured_term.mapped_fermion)
-                if structured_term.mapped_fermion is not None
-                else [0] * sector.space.fermions
-            )
-            qudit_present.append(structured_term.qudit is not None)
-            qudit_triples.append(
-                list(structured_term.qudit.triples)
-                if structured_term.qudit is not None
-                else []
-            )
-            coefficients.append(structured_term.coefficient)
-    coefficient_array = np.ascontiguousarray(coefficients, dtype=np.complex128)
-    termwise_conserved = _termwise_charge_conserved(operator, sector)
-    return _RestrictedTransitionInputs(
-        tuple(sector.local_dimensions),
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        fermion_creation,
-        fermion_annihilation,
-        boson_blocks,
-        qubit_codes,
-        mapped_present,
-        mapped_codes,
-        qudit_present,
-        qudit_triples,
-        coefficient_array,
-        sector.space.qudits[0] if sector.space.qudits else 0,
-        termwise_conserved,
-        _fast_fermion_particles(operator, sector) if termwise_conserved else None,
-    )
-
-
-def _add_scaled(
-    aggregate: Dict[Tuple[object, ...], complex],
-    key: Tuple[object, ...],
-    coefficient: complex,
-    real_scale: int,
-    imaginary_scale: int,
-) -> None:
-    """Accumulate a complex128 coefficient times an integer selection scale."""
-    if real_scale == 0 and imaginary_scale == 0:
-        return
-    scaled = complex(coefficient) * complex(real_scale, imaginary_scale)
-    aggregate[key] = aggregate.get(key, 0j) + scaled
-
-
-def _structured_charge_delta(term: _Term, charge: AdditiveCharge) -> int:
-    delta = 0
-    if term.fermion is not None:
-        delta += sum(
-            charge.fermion_weights[mode] for mode in term.fermion.creation_modes
-        )
-        delta -= sum(
-            charge.fermion_weights[mode] for mode in term.fermion.annihilation_modes
-        )
-    if term.boson is not None:
-        delta += sum(
-            charge.boson_weights[mode] * (creation - annihilation)
-            for mode, creation, annihilation in term.boson.blocks
-        )
-    return delta
-
-
-def _structured_commutator_key(
-    term: _Term, qubit_codes: Sequence[int]
-) -> Tuple[object, ...]:
-    key = list(term.key())
-    key[3] = tuple(qubit_codes)
-    return tuple(key)
-
-
-def _exact_charge_commutator(
-    operator: Union[_StructuredOperator, PauliOperator],
-    charge: AdditiveCharge,
-    max_bytes: Optional[int],
-) -> Tuple[bool, int]:
-    """Return conservation and term count using integer selection rules.
-
-    Fermion and boson monomials have a constant charge delta.  A qubit X/Y
-    factor is split into its exact local commutator with the diagonal Z part
-    of the charge.  The resulting canonical keys are aggregated with exact
-    binary-float coefficient fractions, so neither large integer weights nor
-    cancellation decisions pass through a lossy charge generator.
-    """
-    if isinstance(operator, PauliOperator):
-        expected_space = OperatorSpace(qubits=operator.nqubits)
-        if charge.space != expected_space:
-            raise ValueError("operator and charge layouts are incompatible")
-        term_count = len(operator.terms)
-        qubit_count = operator.nqubits
-        structures, coefficients_re, coefficients_im = operator._arrays()
-        terms: Iterable[Tuple[Sequence[int], complex, Optional[_Term]]] = zip(
-            structures,
-            (
-                complex(real, imaginary)
-                for real, imaginary in zip(coefficients_re, coefficients_im)
-            ),
-            (None for _ in structures),
-        )
-    elif isinstance(operator, _StructuredOperator):
-        if operator.space != charge.space:
-            raise ValueError("operator and charge layouts are incompatible")
-        if any(
-            term.mapped_fermion is not None for term in operator._materialized_terms()
-        ):
-            raise ValueError(
-                "charge analysis is defined before fermion-to-qubit mapping; "
-                "analyze the raw structured operator"
-            )
-        term_count = operator.term_count
-        qubit_count = operator.space.qubits
-        terms = (
-            (term.qubit, term.coefficient, term)
-            for term in operator._materialized_terms()
-        )
-    else:
-        raise TypeError("operator must be a structured or Pauli operator")
-
-    estimated = term_count * max(1, qubit_count + 1) * 128
-    _check_allocation(estimated, max_bytes, "exact additive-charge analysis")
-    aggregate: Dict[Tuple[object, ...], complex] = {}
-    for codes, coefficient, structured_term in terms:
-        if structured_term is None:
-            base_key: Tuple[object, ...] = tuple(codes)
-            raw_delta = 0
-        else:
-            base_key = structured_term.key()
-            raw_delta = _structured_charge_delta(structured_term, charge)
-        if raw_delta:
-            _add_scaled(aggregate, base_key, coefficient, -raw_delta, 0)
-        for index, code in enumerate(codes):
-            if code not in (1, 2):
-                continue
-            difference = charge.qubit_levels[index][0] - charge.qubit_levels[index][1]
-            if not difference:
-                continue
-            changed = list(codes)
-            changed[index] = 2 if code == 1 else 1
-            key = (
-                tuple(changed)
-                if structured_term is None
-                else _structured_commutator_key(structured_term, changed)
-            )
-            _add_scaled(
-                aggregate,
-                key,
-                coefficient,
-                0,
-                -difference if code == 1 else difference,
-            )
-    nonzero = sum(
-        1 for value in aggregate.values() if value.real != 0.0 or value.imag != 0.0
-    )
-    return nonzero == 0, nonzero
 
 
 def analyze_charge(
@@ -1695,7 +1360,7 @@ def analyze_charge(
     *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> AdditiveSymmetryAnalysis:
-    """Analyze an exact additive charge through integer selection rules."""
+    """Analyze an additive charge through a deterministic native selection rule."""
     if not isinstance(charge, AdditiveCharge):
         raise TypeError("charge must be an AdditiveCharge")
     _validate_max_bytes(max_bytes)
@@ -1719,8 +1384,24 @@ def analyze_charge(
             int(term_count),
             method="native_float_selection_rules",
         )
-    is_conserved, commutator_term_count = _exact_charge_commutator(
-        operator, charge, max_bytes
+    native_handle = operator._native_handle
+    if native_handle is None:
+        raise RuntimeError("structured charge analysis requires a native handle")
+    if isinstance(
+        native_handle,
+        (_native.NativeFermionOperatorHandle, _native.NativeBosonOperatorHandle),
+    ):
+        native_handle = native_handle.to_hybrid()
+    if not isinstance(native_handle, _native.NativeHybridOperatorHandle):
+        raise RuntimeError("structured charge analysis received an invalid handle")
+    is_conserved, commutator_term_count = native_handle.analyze_charge(
+        tuple(float(value) for value in charge.fermion_weights),
+        tuple(float(value) for value in charge.boson_weights),
+        tuple(
+            (float(level_zero), float(level_one))
+            for level_zero, level_one in charge.qubit_levels
+        ),
+        _effective_max_bytes(max_bytes),
     )
     return AdditiveSymmetryAnalysis(
         charge,

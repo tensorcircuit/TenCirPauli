@@ -1,4 +1,4 @@
-"""Correctness tests for the Phase 6 Rust-native U(1) circuit."""
+"""Correctness tests for the U1 circuit Rust-native U(1) circuit."""
 
 from __future__ import annotations
 

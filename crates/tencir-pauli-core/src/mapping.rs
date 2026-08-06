@@ -131,6 +131,27 @@ impl MappingPlan {
         self.estimated_bytes
     }
 
+    /// Encode one binary occupation vector using the native packed matrix.
+    pub fn encode_occupation(&self, occupation: &[u8]) -> Result<Vec<u8>, PauliError> {
+        if occupation.len() != self.n_modes || occupation.iter().any(|&value| value > 1) {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.n_modes,
+                actual: occupation.len(),
+            });
+        }
+        let word_count = self.n_modes.div_ceil(64);
+        let mut input = vec![0_u64; word_count];
+        for (index, &value) in occupation.iter().enumerate() {
+            if value != 0 {
+                input[index / 64] |= 1_u64 << (index % 64);
+            }
+        }
+        let output = self.x_transform.transform(&input);
+        Ok((0..self.n_modes)
+            .map(|index| ((output[index / 64] >> (index % 64)) & 1) as u8)
+            .collect())
+    }
+
     /// Transform and aggregate a complete batch of Pauli words.
     pub fn map_pauli_terms(
         &self,
@@ -161,10 +182,7 @@ impl MappingPlan {
 
         let mut transformed = Vec::with_capacity(structures.len());
         let mut transformed_coefficients = Vec::with_capacity(coefficients.len());
-        for (index, (structure, &coefficient)) in structures.iter().zip(coefficients).enumerate() {
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index });
-            }
+        for (structure, &coefficient) in structures.iter().zip(coefficients) {
             let (word, phase) = self.transform_codes(structure)?;
             transformed.push(word);
             transformed_coefficients.push(coefficient * phase);
@@ -199,12 +217,9 @@ impl MappingPlan {
         }
         let mut structures = Vec::with_capacity(operator.terms().len());
         let mut coefficients = Vec::with_capacity(operator.terms().len());
-        for (index, term) in operator.terms().iter().enumerate() {
+        for term in operator.terms() {
             let (structure, phase) = self.transform_codes(&term.word.codes())?;
             let coefficient = term.coefficient * phase;
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index });
-            }
             structures.push(structure);
             coefficients.push(coefficient);
         }
@@ -239,15 +254,12 @@ impl MappingPlan {
         }
         let mut structures = Vec::with_capacity(operator.terms().len());
         let mut coefficients = Vec::with_capacity(operator.terms().len());
-        for (index, term) in operator.terms().iter().enumerate() {
+        for term in operator.terms() {
             let codes = term.word.codes();
             let (prefix, phase) = self.transform_codes(&codes[..prefix_length])?;
             let mut structure = prefix;
             structure.extend_from_slice(&codes[prefix_length..]);
             let coefficient = term.coefficient * phase;
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index });
-            }
             structures.push(structure);
             coefficients.push(coefficient);
         }
@@ -324,9 +336,6 @@ impl MappingPlan {
         let mut structures = Vec::with_capacity(indices.len());
         let mut mapped_coefficients = Vec::with_capacity(coefficients.len());
         for (term_index, (word, &coefficient)) in indices.iter().zip(coefficients).enumerate() {
-            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
-                return Err(PauliError::NonFiniteCoefficient { index: term_index });
-            }
             if word.windows(2).any(|window| window[0] >= window[1])
                 || word.iter().any(|&index| {
                     usize::try_from(index)
@@ -451,11 +460,6 @@ impl MappingPlan {
             {
                 return Err(PauliError::NonCanonicalTerms { index });
             }
-            if !batch.coefficients[index].re.is_finite()
-                || !batch.coefficients[index].im.is_finite()
-            {
-                return Err(PauliError::NonFiniteCoefficient { index });
-            }
             let (mapped_codes, phase) = if batch.mapped_present[index] {
                 self.transform_codes(&batch.mapped_codes[index])?
             } else {
@@ -526,7 +530,7 @@ impl MappingPlan {
     }
 }
 
-/// Construct one of the frozen Phase 7.5 occupation encodings.
+/// Construct one of the frozen Majorana and charge occupation encodings.
 pub fn build_mapping_plan(
     mapping: &str,
     n_modes: usize,

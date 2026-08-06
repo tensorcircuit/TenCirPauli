@@ -10,7 +10,7 @@ import pytest
 
 import tencirpauli as tcp
 from tencirpauli import _native, advanced
-from tencirpauli.structured import _jordan_wigner_word
+from tencirpauli.structured import _jordan_wigner_word, _StructuredOperator
 
 
 def _bit_count(value: int) -> int:
@@ -478,7 +478,7 @@ def test_native_weyl_plan_metadata_and_unbounded_guard() -> None:
     )
 
 
-def test_phase7_plan_metadata_matches_the_physical_basis() -> None:
+def test_structured_plan_metadata_matches_the_physical_basis() -> None:
     pauli = tcp.PauliOperator.from_terms(2, [("XZ", 1.0)]).compile("native_mvp")
     assert pauli.basis_ordering == "qubit0_msb_matrix"
     assert pauli.nqubits == 2
@@ -514,7 +514,7 @@ def test_phase7_plan_metadata_matches_the_physical_basis() -> None:
     assert backend.local_dimensions == (3, 3)
 
 
-def test_phase7_holstein_independent_dense_sparse_and_mvp_differential() -> None:
+def test_structured_holstein_independent_dense_sparse_and_mvp_differential() -> None:
     cutoff = 2
     space = tcp.OperatorSpace(fermions=1, bosons=1)
     hamiltonian = (
@@ -699,7 +699,7 @@ def test_tensor_product_grading_and_layout_compatibility() -> None:
         _ = left + tcp.OperatorSpace(fermions=2).fermion.annihilate(0)
 
 
-def test_phase7_memory_and_target_errors() -> None:
+def test_structured_memory_and_target_errors() -> None:
     assert tcp.DEFAULT_MAX_BYTES == 16 * 1024**3
     operator = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
     with pytest.raises(MemoryError):
@@ -731,6 +731,7 @@ def test_embedding_validates_permutations_dimensions_and_fermion_signs() -> None
     target = tcp.OperatorSpace(fermions=2)
     operator = source.fermion.create(0) * source.fermion.annihilate(1)
     embedded = target.embed(operator, fermions={0: 1, 1: 0})
+    assert isinstance(embedded, tcp.FermionOperator)
     expected = target.fermion.create(1) * target.fermion.annihilate(0)
     np.testing.assert_allclose(embedded.compile("dense"), expected.compile("dense"))
 
@@ -789,6 +790,41 @@ def test_embedding_full_domain_permutation_reference() -> None:
     )
 
 
+def test_embedding_preserves_boson_qudit_and_mixed_facades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_materialization(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("embedding must stay on native structured handles")
+
+    monkeypatch.setattr(
+        _StructuredOperator, "_materialized_terms", forbidden_materialization
+    )
+    boson_space = tcp.OperatorSpace(bosons=1)
+    boson = boson_space.boson.create(0) * boson_space.boson.annihilate(0)
+    embedded_boson = tcp.OperatorSpace(bosons=2).embed(boson, bosons={0: 1})
+    assert isinstance(embedded_boson, tcp.BosonOperator)
+
+    qudit_space = tcp.OperatorSpace(qudits=(3,))
+    qudit = qudit_space.qudit.weyl(0, 1, 2)
+    embedded_qudit = qudit_space.embed(qudit, qudits={0: 0})
+    assert isinstance(embedded_qudit, tcp.QuditWeylOperator)
+
+    mixed_space = tcp.OperatorSpace(fermions=1, qubits=1)
+    mixed = mixed_space.fermion.create(0) * mixed_space.qubit.z(0)
+    embedded_mixed = tcp.OperatorSpace(fermions=2, qubits=2).embed(
+        mixed, fermions={0: 1}, qubits={0: 0}
+    )
+    assert isinstance(embedded_mixed, tcp.HybridOperator)
+    repeated = [
+        tcp.OperatorSpace(fermions=2, qubits=2).embed(
+            mixed, fermions={0: 1}, qubits={0: 0}
+        )
+        for _ in range(3)
+    ]
+    assert all(value._native_handle is not None for value in repeated)
+
+
 def test_structured_mapping_replay_is_deterministic() -> None:
     space = tcp.OperatorSpace(fermions=3, bosons=1, qubits=1, qudits=(3,))
     operator = (
@@ -801,6 +837,37 @@ def test_structured_mapping_replay_is_deterministic() -> None:
     dense = [value.compile("dense", boson_cutoffs={0: 2}) for value in mapped]
     for value in dense[1:]:
         np.testing.assert_array_equal(value, dense[0])
+
+
+def test_embedding_mixed_domain_collisions_have_deterministic_order() -> None:
+    source = tcp.OperatorSpace(fermions=2, bosons=1, qubits=1, qudits=(3,))
+    target = tcp.OperatorSpace(fermions=3, bosons=2, qubits=2, qudits=(3, 3))
+    operator = (
+        source.fermion.create(0)
+        * source.fermion.annihilate(1)
+        * source.boson.create(0)
+        * source.qubit.y(0)
+        * source.qudit.weyl(0, 1, 2)
+    )
+    maps = {
+        "fermions": {0: 2, 1: 0},
+        "bosons": {0: 0},
+        "qubits": {0: 0},
+        "qudits": {0: 1},
+    }
+    embedded = target.embed(operator, **maps)
+    expected = (
+        target.fermion.create(2)
+        * target.fermion.annihilate(0)
+        * target.boson.create(0)
+        * target.qubit.y(0)
+        * target.qudit.weyl(1, 1, 2)
+    )
+    np.testing.assert_allclose(
+        embedded.compile("dense", boson_cutoffs={0: 1, 1: 0}),
+        expected.compile("dense", boson_cutoffs={0: 1, 1: 0}),
+    )
+    assert embedded.terms == target.embed(operator, **maps).terms
 
 
 def test_builder_multiplies_repeated_qubit_factors() -> None:
@@ -1022,19 +1089,14 @@ def test_tensor_product_jordan_wigner_adapter_matches_native(
     creation: tuple[int, ...], annihilation: tuple[int, ...]
 ) -> None:
     word = tcp.FermionWord(4, creation, annihilation)
-    structures, real, imaginary = _native.structured_fermion_jordan_wigner(
-        word.n_modes,
-        [list(creation)],
-        [list(annihilation)],
-        [1.0],
-        [0.0],
-        tcp.DEFAULT_MAX_BYTES,
-    )
-    native = tuple(
-        (tuple(structure), complex(re, im))
-        for structure, re, im in zip(structures, real, imaginary)
-    )
-    assert _jordan_wigner_word(word) == native
+    operator = tcp.FermionOperator.from_terms(
+        word.n_modes, [((word.factors), 1.0)]
+    ).map_fermions()
+    expected = {
+        "".join("IXYZ"[code] for code in structure): coefficient
+        for structure, coefficient in _jordan_wigner_word(word)
+    }
+    assert operator.to_dict() == expected
 
 
 @pytest.mark.parametrize("dimension", [3, 4, 5, 6])

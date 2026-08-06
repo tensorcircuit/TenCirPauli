@@ -69,6 +69,8 @@ class GateTape:
             raise ValueError("nqubits must be a non-negative integer")
         self.nqubits = nqubits
         self._operations: list[tuple[int, int, int, int, float, tuple[float, ...]]] = []
+        self._version = 0
+        self._native_cache: Optional[tuple[int, Optional[int], Any]] = None
 
     def __len__(self) -> int:
         return len(self._operations)
@@ -101,6 +103,8 @@ class GateTape:
         else:
             first, second = self._two_wires(wire0, wire1)
         self._operations.append((kind, first, second, -1, 0.0, ()))
+        self._version += 1
+        self._native_cache = None
 
     def x(self, wire: int) -> None:
         """Append an X gate on ``wire``."""
@@ -176,6 +180,8 @@ class GateTape:
                 raise ValueError("angle must be finite")
             slot = -1
         self._operations.append((kind, first, second, slot, static_angle, ()))
+        self._version += 1
+        self._native_cache = None
 
     def rx(
         self,
@@ -294,11 +300,23 @@ class GateTape:
                 tuple(float(value) for value in snapshot.ravel()),
             )
         )
+        self._version += 1
+        self._native_cache = None
 
     def _native_operations(
         self,
     ) -> tuple[tuple[int, int, int, int, float, tuple[float, ...]], ...]:
         return tuple(self._operations)
+
+    def _native_handle(self, max_bytes: Optional[int]) -> Any:
+        cached = self._native_cache
+        if cached is not None and cached[:2] == (self._version, max_bytes):
+            return cached[2]
+        handle = _native.pauli_gate_tape(
+            self.nqubits, self._native_operations(), max_bytes
+        )
+        self._native_cache = (self._version, max_bytes, handle)
+        return handle
 
 
 _WIRE_SENTINEL = 2 * sys.maxsize + 1
@@ -378,9 +396,8 @@ class PropagationEngine:
         kind, bits, values = _state_payload(initial_state, tape.nqubits)
         if observable._native_handle is None:
             raise RuntimeError("PauliOperator must retain a native handle")
-        self._native = _native.pauli_propagation_engine_handle(
-            tape.nqubits,
-            tape._native_operations(),
+        self._native = _native.pauli_propagation_engine_tape(
+            tape._native_handle(max_bytes),
             observable._native_handle,
             kind,
             bits,
@@ -516,9 +533,8 @@ class PropagationBatch:
             if observable._native_handle is None:
                 raise RuntimeError("PauliOperator must retain a native handle")
             handles.append(observable._native_handle)
-        self._native = _native.pauli_propagation_batch_handles(
-            tape.nqubits,
-            tape._native_operations(),
+        self._native = _native.pauli_propagation_batch_handles_tape(
+            tape._native_handle(max_bytes),
             handles,
             kind,
             bits,

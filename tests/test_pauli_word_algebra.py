@@ -1,4 +1,4 @@
-"""P1 public PauliWord differential and boundary tests."""
+"""PauliWord public PauliWord differential and boundary tests."""
 
 from __future__ import annotations
 

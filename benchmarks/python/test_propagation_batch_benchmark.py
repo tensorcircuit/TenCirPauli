@@ -1,4 +1,4 @@
-"""Phase 5.5 independent-observable propagation benchmarks."""
+"""batch propagation independent-observable propagation benchmarks."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Examples
 
-These scripts are executable smoke examples for the public Phase Alpha API. Each one constructs a circuit, creates a Pauli Hamiltonian, evaluates an energy, and (where applicable) applies a short gradient-based update. They are intentionally small so an Agent can run them as contract checks.
+These scripts are executable smoke examples for the public circuit facade API. Each one constructs a circuit, creates a Pauli Hamiltonian, evaluates an energy, and (where applicable) applies a short gradient-based update. They are intentionally small so an Agent can run them as contract checks.
 
 Run them from the repository root after installing TenCirPauli:
 
