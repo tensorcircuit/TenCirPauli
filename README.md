@@ -117,7 +117,7 @@ Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "
 
 ## Common circuit facade
 
-The circuit facade accepts actual gate angles through `theta=`. Direct gradients are returned in deterministic gate-occurrence order; JAX owns any outer parameter sharing or arithmetic.
+The circuit facade accepts actual gate angles through `theta=` and exposes `angle_count`. Direct gradients are returned in deterministic gate-occurrence order; JAX owns any outer parameter sharing or arithmetic. Circuit facades do not expose public compile plans.
 
 ```python
 import tencirpauli as tcp
@@ -207,7 +207,7 @@ native_u1 = tcp.U1Circuit.from_circuit(tc_u1_circuit)
 native_propagation = tcp.PropagationCircuit.from_circuit(tc_circuit)
 ```
 
-Low-level QIR restoration remains available through `from_qir()`. Numeric QIR produces concrete gates, and JAX-traced angles are accepted only through `expectation_jax()`. TensorCircuit gate objects are normalized at the boundary to a static logical payload, especially for `diagonal` gates.
+Low-level QIR restoration remains available through `from_qir()` for concrete numeric gate records. JAX-traced angles belong in a circuit built inside the `expectation_jax()` objective rather than in a serialized QIR payload. TensorCircuit gate objects are normalized at the boundary to a static logical payload, especially for `diagonal` gates.
 
 ## Development
 

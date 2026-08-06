@@ -51,7 +51,7 @@ observable = tcp.PauliOperator.from_terms(2, [("ZZ", 1.0)])
 print(circuit.expectation(observable))
 ```
 
-For a parameterized circuit, use `tcp.Parameter`, supply a parameter vector, and call `value_and_grad()`. For an execution that must stay inside JAX or another TensorCircuit backend, compile a backend MVP plan instead of calling a native circuit engine.
+For a parameterized circuit, pass concrete values with `theta=` and call `value_and_grad(observable)`. The returned gradient is ordered by gate occurrence. For an execution that must stay inside JAX or another TensorCircuit backend, use `expectation_jax()` for circuit differentiation or compile an operator backend MVP plan instead of calling a native circuit engine.
 
 ## Choose the next layer
 

@@ -33,6 +33,8 @@ These tools are deliberately explicit about their contracts. A qubit-wise commut
 
 The circuit facades cover three different numerical contracts: fixed-particle-number native circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. They share a Python-level shape while keeping their native executors separate.
 
+These facades store concrete gate angles and expose `expectation(observable)`, `value_and_grad(observable)`, and `expectation_jax(observable)`. The direct gradient has one entry per supported gate occurrence. There is no public circuit compilation or symbolic parameter object; compile targets remain an operator API.
+
 ## Two execution paths
 
 <div class="tp-path-grid">

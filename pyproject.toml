@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tencirpauli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Rust-native Pauli algebra and propagation with a first-class Python API"
 readme = "README.md"
 requires-python = ">=3.9"
