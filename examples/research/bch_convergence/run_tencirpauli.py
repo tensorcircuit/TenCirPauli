@@ -18,7 +18,7 @@ import tencirpauli as tcp
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--nqubits", type=int, default=8)
-    parser.add_argument("--terms", type=int, default=16)
+    parser.add_argument("--terms", type=int, default=44)
     parser.add_argument("--t", type=float, default=0.08)
     parser.add_argument("--seed", type=int, default=20260805)
     parser.add_argument("--max-bytes", type=int, default=512 * 1024**2)
@@ -158,21 +158,26 @@ def main() -> None:
     scaled_a = scaled_terms(base_a, -1.0j * args.t)
     scaled_b = scaled_terms(base_b, -1.0j * args.t)
 
+    python_end_to_end_start = time.perf_counter()
+    reference_build_start = time.perf_counter()
+    dict_a = from_terms(scaled_a)
+    dict_b = from_terms(scaled_b)
+    python_build_seconds = time.perf_counter() - reference_build_start
+    reference_start = time.perf_counter()
+    dict_reference = dict_bch_series(dict_a, dict_b)
+    python_algebra_seconds = time.perf_counter() - reference_start
+    python_end_to_end_seconds = time.perf_counter() - python_end_to_end_start
+
+    native_end_to_end_start = time.perf_counter()
     build_start = time.perf_counter()
     operator_a = tcp_operator(args.nqubits, scaled_a)
     operator_b = tcp_operator(args.nqubits, scaled_b)
-    build_seconds = time.perf_counter() - build_start
-
-    reference_start = time.perf_counter()
-    dict_a = from_terms(scaled_a)
-    dict_b = from_terms(scaled_b)
-    dict_reference = dict_bch_series(dict_a, dict_b)
-    reference_seconds = time.perf_counter() - reference_start
-
+    native_build_seconds = time.perf_counter() - build_start
     truncations, timings = native_bch(operator_a, operator_b, args.max_bytes)
     plain_start = time.perf_counter()
     plain = tuple(operator.to_dict() for operator in truncations)
     plain_seconds = time.perf_counter() - plain_start
+    native_end_to_end_seconds = time.perf_counter() - native_end_to_end_start
     term_start = time.perf_counter()
     tuple(tuple(operator.terms) for operator in truncations)
     term_materialization_seconds = time.perf_counter() - term_start
@@ -198,12 +203,28 @@ def main() -> None:
             for index, operator in enumerate(truncations, start=1)
         ],
         "timings_seconds": {
-            "operator_build": build_seconds,
-            "independent_dict_reference": reference_seconds,
+            "native_build": native_build_seconds,
+            "native_end_to_end": native_end_to_end_seconds,
+            "python_build": python_build_seconds,
+            "python_algebra": python_algebra_seconds,
+            "python_end_to_end": python_end_to_end_seconds,
+            "independent_dict_reference": python_algebra_seconds,
             "plain_export": plain_seconds,
             "python_term_materialization": term_materialization_seconds,
             "native_algebra": timings,
             "dense_reference": dense_seconds,
+        },
+        "speedups": {
+            "native_algebra": (
+                python_algebra_seconds / timings["algebra_seconds"]
+                if timings["algebra_seconds"]
+                else float("inf")
+            ),
+            "native_end_to_end": (
+                python_end_to_end_seconds / native_end_to_end_seconds
+                if native_end_to_end_seconds
+                else float("inf")
+            ),
         },
         "checks": {
             "dict_max_coefficient_error": dict_error,

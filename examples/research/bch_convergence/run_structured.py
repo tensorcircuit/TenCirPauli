@@ -21,7 +21,9 @@ SparseOperator = Dict[object, complex]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--family", choices=("fermion", "boson"), default="fermion")
+    parser.add_argument(
+        "--family", choices=("fermion", "boson", "both"), default="both"
+    )
     parser.add_argument("--modes", type=int, default=4)
     parser.add_argument("--terms", type=int, default=8)
     parser.add_argument("--t", type=float, default=0.08)
@@ -234,18 +236,18 @@ def bch_series_native(left: object, right: object) -> Tuple[object, ...]:
     return order_one, order_two, order_three, order_three.add(fourth.scale(-1.0 / 24.0))
 
 
-def main() -> None:
-    args = parse_args()
-    if args.modes < 1 or args.terms < 1:
-        raise SystemExit("modes and terms must be positive")
+def run_family(args: argparse.Namespace, family: str) -> Dict[str, object]:
+    """Run one structured-family BCH case with matched end-to-end timings."""
     raw_a = make_terms(args.modes, args.terms, args.seed)
     raw_b = make_terms(args.modes, args.terms, args.seed + 1)
     scaled_a = tuple((word, -1.0j * args.t * value) for word, value in raw_a)
     scaled_b = tuple((word, -1.0j * args.t * value) for word, value in raw_b)
-    builder = fermion_from_terms if args.family == "fermion" else boson_from_terms
-    reference_a, reference_b = builder(scaled_a), builder(scaled_b)
-    operator_a = native_operator(args.family, args.modes, scaled_a)
-    operator_b = native_operator(args.family, args.modes, scaled_b)
+    builder = fermion_from_terms if family == "fermion" else boson_from_terms
+
+    native_end_to_end_start = time.perf_counter()
+    operator_a = native_operator(family, args.modes, scaled_a)
+    operator_b = native_operator(family, args.modes, scaled_b)
+    native_build_seconds = time.perf_counter() - native_end_to_end_start
 
     start = time.perf_counter()
     native_truncations = bch_series_native(operator_a, operator_b)
@@ -253,12 +255,18 @@ def main() -> None:
     start = time.perf_counter()
     native_plain = tuple(operator.to_dict() for operator in native_truncations)
     plain_seconds = time.perf_counter() - start
+    native_end_to_end_seconds = time.perf_counter() - native_end_to_end_start
     start = time.perf_counter()
     tuple(tuple(operator.terms) for operator in native_truncations)
     terms_seconds = time.perf_counter() - start
+
+    python_end_to_end_start = time.perf_counter()
+    reference_a, reference_b = builder(scaled_a), builder(scaled_b)
+    python_build_seconds = time.perf_counter() - python_end_to_end_start
     start = time.perf_counter()
-    reference_truncations = bch_series(reference_a, reference_b, args.family)
-    reference_seconds = time.perf_counter() - start
+    reference_truncations = bch_series(reference_a, reference_b, family)
+    python_seconds = time.perf_counter() - start
+    python_end_to_end_seconds = time.perf_counter() - python_end_to_end_start
     errors = [
         max(
             (
@@ -271,32 +279,55 @@ def main() -> None:
     ]
     if max(errors, default=0.0) > 1.0e-10:
         raise AssertionError(f"native and Python BCH values differ by {max(errors)}")
-    print(
-        json.dumps(
-            {
-                "backend": "tencirpauli",
-                "family": args.family,
-                "modes": args.modes,
-                "input_terms_per_generator": args.terms,
-                "orders": [operator.term_count for operator in native_truncations],
-                "timings_seconds": {
-                    "native_algebra": native_seconds,
-                    "plain_export": plain_seconds,
-                    "python_term_materialization": terms_seconds,
-                    "python_dict_reference": reference_seconds,
-                },
-                "checks": {
-                    "max_coefficient_error": max(errors, default=0.0),
-                    "native_vs_python_speedup": (
-                        reference_seconds / native_seconds
-                        if native_seconds
-                        else float("inf")
-                    ),
-                },
-            },
-            sort_keys=True,
-        )
+    return {
+        "backend": "tencirpauli",
+        "family": family,
+        "modes": args.modes,
+        "input_terms_per_generator": args.terms,
+        "orders": [operator.term_count for operator in native_truncations],
+        "timings_seconds": {
+            "native_build": native_build_seconds,
+            "native_algebra": native_seconds,
+            "native_plain_export": plain_seconds,
+            "native_end_to_end": native_end_to_end_seconds,
+            "python_build": python_build_seconds,
+            "python_algebra": python_seconds,
+            "python_end_to_end": python_end_to_end_seconds,
+            "native_term_materialization": terms_seconds,
+        },
+        "checks": {
+            "max_coefficient_error": max(errors, default=0.0),
+            "native_algebra_speedup": (
+                python_seconds / native_seconds if native_seconds else float("inf")
+            ),
+            "native_end_to_end_speedup": (
+                python_end_to_end_seconds / native_end_to_end_seconds
+                if native_end_to_end_seconds
+                else float("inf")
+            ),
+        },
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    if args.modes < 1 or args.terms < 1:
+        raise SystemExit("modes and terms must be positive")
+    families = ("fermion", "boson") if args.family == "both" else (args.family,)
+    results = []
+    for family in families:
+        args_for_family = argparse.Namespace(**{**vars(args), "family": family})
+        results.append(run_family(args_for_family, family))
+    output: object = (
+        results[0]
+        if len(results) == 1
+        else {
+            "backend": "tencirpauli",
+            "family": "both",
+            "results": results,
+        }
     )
+    print(json.dumps(output, sort_keys=True))
 
 
 if __name__ == "__main__":

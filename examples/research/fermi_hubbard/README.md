@@ -9,22 +9,22 @@ The default run is a 4x3 lattice because the current eager restricted plan is a 
 Run a small correctness and MVP smoke comparison with separate environments:
 
 ```bash
-conda run -p .conda python examples/research/fermi_hubbard_4x4/run_tencirpauli.py --rows 2 --cols 3 --eigsh
-conda run -n quspin python examples/research/fermi_hubbard_4x4/run_quspin.py --rows 2 --cols 3 --eigsh
+conda run -p .conda python examples/research/fermi_hubbard/run_tencirpauli.py --rows 2 --cols 3 --eigsh
+conda run -n quspin python examples/research/fermi_hubbard/run_quspin.py --rows 2 --cols 3 --eigsh
 ```
 
 Run the practical 4x3 MVP comparison:
 
 ```bash
-conda run -p .conda python examples/research/fermi_hubbard_4x4/run_tencirpauli.py --rows 4 --cols 3
-conda run -n quspin python examples/research/fermi_hubbard_4x4/run_quspin.py --rows 4 --cols 3
+conda run -p .conda python examples/research/fermi_hubbard/run_tencirpauli.py --rows 4 --cols 3
+conda run -n quspin python examples/research/fermi_hubbard/run_quspin.py --rows 4 --cols 3
 ```
 
 Inspect the 4x4 resource boundary without allocating the sector state or transition graph:
 
 ```bash
-conda run -p .conda python examples/research/fermi_hubbard_4x4/run_tencirpauli.py --rows 4 --cols 4 --preflight
-conda run -n quspin python examples/research/fermi_hubbard_4x4/run_quspin.py --rows 4 --cols 4 --preflight
+conda run -p .conda python examples/research/fermi_hubbard/run_tencirpauli.py --rows 4 --cols 4 --preflight
+conda run -n quspin python examples/research/fermi_hubbard/run_quspin.py --rows 4 --cols 4 --preflight
 ```
 
 The JSON result reports sector dimension, plan construction time, MVP time, and an optional lowest-eigenvalue residual. Results are printed only; benchmark records and output files remain local.
