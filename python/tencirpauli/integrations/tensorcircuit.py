@@ -142,6 +142,8 @@ def u1_circuit_from_tensorcircuit(
             if not isinstance(parameters, dict) or set(parameters) != {"theta"}:
                 raise ValueError(f"{name} requires one theta parameter")
             theta = parameters["theta"]
+            if isinstance(theta, (bool, np.bool_)):
+                raise TypeError("U1Circuit angles must be finite real values")
             try:
                 numeric = float(theta)
             except (TypeError, ValueError) as error:

@@ -505,6 +505,14 @@ class PropagationCircuit(_CircuitBuilder):
             max_bytes=self._options(max_bytes),
             gradient=True,
         )
+        if not objective.engine.is_hermitian:
+            raise ValueError("observable must be exactly Hermitian")
+        if checkpoint_interval is not None and (
+            not isinstance(checkpoint_interval, int)
+            or isinstance(checkpoint_interval, bool)
+            or checkpoint_interval <= 0
+        ):
+            raise ValueError("checkpoint_interval must be a positive integer or None")
         from .jax_support import native_expectation_jax
 
         return native_expectation_jax(

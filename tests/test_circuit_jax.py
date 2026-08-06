@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
+from tencirpauli import advanced
 
 
 def _jax() -> object:
@@ -14,10 +15,10 @@ def _jax() -> object:
     return jax
 
 
-def test_propagation_jax_eager_jit_and_pytree_chain_rule() -> None:
+def test_propagation_jax_pytree_chain_rule_matches_independent_differences() -> None:
     jax = _jax()
     jnp = jax.numpy
-    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+    observable = tcp.PauliOperator.from_terms(1, [("X", 1.0)])
 
     def objective(tree: dict[str, object]) -> object:
         circuit = tcp.PropagationCircuit(1)
@@ -37,6 +38,78 @@ def test_propagation_jax_eager_jit_and_pytree_chain_rule() -> None:
     np.testing.assert_allclose(eager[1]["shared"], compiled[1]["shared"])
     np.testing.assert_allclose(eager[1]["scale"], compiled[1]["scale"])
     np.testing.assert_allclose(eager[1]["smooth"], compiled[1]["smooth"])
+
+    def concrete(shared: float, scale: float, smooth: float) -> float:
+        circuit = tcp.PropagationCircuit(1)
+        circuit.ry(0, theta=shared)
+        circuit.ry(0, theta=shared)
+        circuit.rz(0, theta=2.0 * scale + np.sin(smooth))
+        return circuit.expectation(observable)
+
+    coordinates = np.asarray([0.13, 0.2, -0.1], dtype=np.float64)
+    expected = []
+    for index in range(3):
+        plus = coordinates.copy()
+        minus = coordinates.copy()
+        plus[index] += 1.0e-6
+        minus[index] -= 1.0e-6
+        expected.append((concrete(*plus) - concrete(*minus)) / (2.0e-6))
+    np.testing.assert_allclose(
+        np.asarray([eager[1]["shared"], eager[1]["scale"], eager[1]["smooth"]]),
+        expected,
+        atol=3.0e-6,
+        rtol=2.0e-6,
+    )
+    assert np.all(np.abs(expected) > 0.05)
+
+
+def test_jax_callback_executes_once_and_vjp_does_not_reenter_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    observable = tcp.PauliOperator.from_terms(1, [("X", 1.0)])
+    calls = 0
+    original = advanced.PropagationEngine.value_and_grad
+
+    def counted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(advanced.PropagationEngine, "value_and_grad", counted)
+
+    def objective(angle: object) -> object:
+        circuit = tcp.PropagationCircuit(1)
+        circuit.ry(0, theta=angle)
+        return circuit.expectation_jax(observable)
+
+    runner = jax.jit(jax.value_and_grad(objective))
+    result = runner(jnp.asarray(0.23, dtype=jnp.float64))
+    for leaf in jax.tree_util.tree_leaves(result):
+        leaf.block_until_ready()
+    assert calls == 1
+
+    calls = 0
+    second = runner(jnp.asarray(0.31, dtype=jnp.float64))
+    for leaf in jax.tree_util.tree_leaves(second):
+        leaf.block_until_ready()
+    assert calls == 1
+
+
+def test_jitted_persistent_circuit_keeps_an_immutable_objective_snapshot() -> None:
+    jax = _jax()
+    observable = tcp.PauliOperator.from_terms(1, [("X", 1.0)])
+    circuit = tcp.PropagationCircuit(1)
+    circuit.ry(0, theta=0.2)
+    runner = jax.jit(lambda: circuit.expectation_jax(observable))
+    snapshot = runner().block_until_ready()
+
+    circuit.rz(0, theta=0.4)
+    changed = circuit.expectation(observable)
+    replayed = runner().block_until_ready()
+    assert changed != pytest.approx(float(snapshot))
+    assert replayed == pytest.approx(float(snapshot))
 
 
 def test_u1_and_spps_jax_gradients_use_occurrence_space() -> None:
@@ -92,3 +165,22 @@ def test_jax_terminal_requires_float64() -> None:
             circuit.expectation_jax(observable)
     finally:
         jax.config.update("jax_enable_x64", previous)
+
+
+def test_jax_static_controls_fail_before_callback_staging() -> None:
+    _jax()
+    nonhermitian = tcp.PauliOperator.from_terms(1, [("X", 1.0j)])
+    propagation = tcp.PropagationCircuit(1)
+    propagation.ry(0, theta=0.2)
+    with pytest.raises(ValueError, match="Hermitian"):
+        propagation.expectation_jax(nonhermitian)
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+    with pytest.raises(ValueError, match="checkpoint_interval"):
+        propagation.expectation_jax(observable, checkpoint_interval=0)
+
+    spps = tcp.SPPSCircuit(1)
+    spps.ry(0, theta=0.2)
+    with pytest.raises(ValueError, match="samples_per_term"):
+        spps.expectation_jax(observable, samples_per_term=1, seed=0)
+    with pytest.raises(ValueError, match="seed"):
+        spps.expectation_jax(observable, samples_per_term=2, seed=-1)

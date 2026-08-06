@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-# TensorCircuit is an optional test-environment dependency; import it only
-# after the package import so the whole module can be skipped cleanly.
-# ruff: noqa: I001
-
 import numpy as np
 import pytest
+import tensorcircuit as tc
 
 import tencirpauli as tcp
-
-tc = pytest.importorskip("tensorcircuit")
 
 
 def _circuits() -> tuple[tcp.U1Circuit, object]:
@@ -58,6 +53,13 @@ def test_u1_observable_matches_tensorcircuit() -> None:
     native_value = native.expectation(observable)
     reference_value = reference.expectation_ps(ps=[1, 2, 0])
     assert native_value == pytest.approx(np.asarray(reference_value))
+
+
+def test_u1_conversion_rejects_boolean_angles() -> None:
+    circuit = tc.U1Circuit(1, k=0, filled=[])
+    circuit.rz(0, theta=True)
+    with pytest.raises(TypeError, match="finite real"):
+        tcp.U1Circuit.from_circuit(circuit)
 
 
 @pytest.mark.parametrize(

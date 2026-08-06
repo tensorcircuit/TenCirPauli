@@ -1,0 +1,31 @@
+# Phase 9.5 Focused Remediation Evidence, 2026-08-06
+
+Status: focused closure evidence for the open Phase 9.5 implementation review. The remediation preserves the actual-angle circuit boundary, occurrence-space native gradients, private plans, and one coarse JAX callback; it adds independent numerical tests, synchronized representative benchmarks, the repeated-MVP decision driver, narrow static-input validation, the TensorCircuit boolean-angle fix, and live-contract migration.
+
+## R1 numerical and JAX evidence
+
+`tests/test_circuit_gradient_references.py` now checks a nonzero six-rotation Propagation circuit against central differences, a nonzero RZ/RZZ/CPhase/iSWAP U1 circuit against central differences plus an independent 8-dimensional dense state/expectation reference, and a fixed-budget six-rotation SPPS circuit against the independent legal-path reference. The known Propagation value is `0.95288198844541`, the U1 value is `-0.2548817279661216`, and the SPPS reference value is `0.18086563654300442`; all occurrence gradients are numerically nonzero in the fixtures.
+
+`tests/test_circuit_jax.py` now differentiates a nontrivial PyTree outer chain by independent central differences, including a repeated leaf, arithmetic scaling, and `sin`; the expected outer gradients are nonzero. It also instruments `PropagationEngine.value_and_grad` and verifies one native execution per scalar JIT value-and-gradient call, no native VJP execution, and one callback again on a second invocation. A persistent-circuit mutation test verifies that a compiled JAX objective keeps its immutable native snapshot.
+
+The focused command `PYTHONPATH="$PWD/python:$PWD/tests:/Users/shixin/Nutstore Files/newwork/quantum-information/codebases/tensorcircuit" .conda/bin/pytest -q tests/test_circuit_gradient_references.py tests/test_circuit_jax.py tests/test_circuit_facades.py tests/test_u1_circuit.py tests/test_tensorcircuit_integration.py tests/test_u1_tensorcircuit.py` passes 31 tests. The release rebuild and full gate pass 362 Python tests, 41 Rust tests, and 8 doctests.
+
+## R2 circuit performance evidence
+
+Run `PYTHONPATH="$PWD/python:/Users/shixin/Nutstore Files/newwork/quantum-information/codebases/tensorcircuit" .conda/bin/python benchmarks/manual/circuit_differentiation_ab.py --output /private/tmp/ten_cir_pauli_circuit_9_5.json` after a release build. The driver separates Python construction, private plan build, public first and warm forward/value-and-gradient calls, and a private native endpoint. JAX first and warm values synchronize every leaf of `(value, gradient)`; callback output bytes and process peak RSS are recorded. The representative native warm public value-and-gradient times were approximately 0.060 ms for Propagation, 0.194 ms for U1, and 0.106 ms for fixed-budget SPPS; synchronized warm JAX times were approximately 0.097 ms, 0.203 ms, and 0.194 ms respectively. The matched TensorCircuit/JAX propagation baseline was approximately 0.220 ms warm after a 4.08 s first compile. These are local informational measurements, not CI gates.
+
+The representative SPPS case records 8 observable terms, 16 angle occurrences, 128 samples per term, 1,024 bytes of term-gradient workspace, 136 callback output bytes, and process peak RSS. The driver deliberately reports both the public endpoint and the private endpoint so callback/facade overhead is visible without pretending that an isolated Rust kernel is an end-to-end result.
+
+## R3 repeated-MVP decision
+
+Run `PYTHONPATH="$PWD/python" .conda/bin/python benchmarks/manual/mvp_scratch_ab.py --output /private/tmp/ten_cir_pauli_mvp_9_5.json` after a release build. The matrix covers conserved and aggregate-cancelled generic charge plans, 12-qubit/one-particle, 16-qubit/four-particle, and 20-qubit/ten-particle U1-lazy plans, plus finite boson, fermion, and hybrid structured plans. Every case records construction, first and steady caller-owned `apply_into`, allocating `apply`, first-versus-steady ratio, four concurrent independent calls, term/dimension/plan/output bytes, peak-relevant process state, and numerical error.
+
+The final run produced zero maximum numerical error in all cases. For the largest U1-lazy workload, allocating `apply` was about 7.03 ms and steady `apply_into` about 6.75 ms, an approximately 4.1% difference; the smaller cases were at or below the noise/measurement regime. No retained scratch is present, so retained scratch bytes remain zero and no pool, mutex, or interior mutability was added. The explicit decision is `defer_scratch_reuse`: the current caller-owned output path does not clear the roughly 10% owner threshold on this representative matrix, and future scratch work remains gated on a measured hotspot.
+
+## Narrow remediation and migration
+
+`expectation_jax()` now rejects non-Hermitian Propagation observables and invalid checkpoint intervals before callback staging; fixed-budget SPPS validates sample budget and seed before staging. TensorCircuit U1 conversion rejects boolean angles consistently with the Propagation converter. Required TensorCircuit integration modules import the required runtime directly; only JAX-specific tests remain skippable when JAX is unavailable.
+
+Live README, architecture, implementation-status, and U1 docstrings now describe concrete angles, `expectation_jax()`, and private compilation rather than the removed public symbolic or circuit-plan contract. Historical Phase specifications and archived reviews remain excluded from migration searches by design.
+
+The reproducible live-surface search was `rg -n -i "ParameterExpr|bind_parameters|remap_parameters|parameter=slot|public circuit.*compile|circuit-plan|runtime circuit parameter|expression-aware.*parameter_map|symbolic angle|direct symbolic references|JAX tracers.*outside" README.md python tests benchmarks examples scripts docs/vibe/README.md docs/vibe/architecture.md docs/vibe/implementation-status.md`. Its only matches are the intentional absence assertions for removed exports and the current status sentence stating that public circuit compilation and circuit-plan types are removed; low-level advanced `parameter=` and `nparameters` occurrences are retained numerical slot APIs covered by the Phase 9.5 residual-slot contract.

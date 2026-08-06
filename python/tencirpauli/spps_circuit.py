@@ -140,6 +140,8 @@ class SPPSCircuit(_CircuitBuilder):
             max_bytes=self._budget(max_bytes),
             gradient=True,
         )
+        engine._budget(samples_per_term, "samples_per_term")
+        engine._seed(seed)
         from .jax_support import native_expectation_jax
 
         class _Objective:

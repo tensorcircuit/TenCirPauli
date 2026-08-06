@@ -207,7 +207,7 @@ native_u1 = tcp.U1Circuit.from_circuit(tc_u1_circuit)
 native_propagation = tcp.PropagationCircuit.from_circuit(tc_circuit)
 ```
 
-Low-level QIR restoration remains available through `from_qir()`. Numeric QIR produces static gates; direct symbolic references produce parameter slots. TensorCircuit gate objects are normalized at the boundary to a static logical payload, especially for `diagonal` gates.
+Low-level QIR restoration remains available through `from_qir()`. Numeric QIR produces concrete gates, and JAX-traced angles are accepted only through `expectation_jax()`. TensorCircuit gate objects are normalized at the boundary to a static logical payload, especially for `diagonal` gates.
 
 ## Development
 

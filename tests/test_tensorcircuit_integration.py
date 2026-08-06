@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-# TensorCircuit is an optional test-environment dependency; import it only
-# after the package imports so the whole module can be skipped cleanly.
-# ruff: noqa: I001
-
 import numpy as np
 import pytest
+import tensorcircuit as tc
 
 from tencirpauli import PauliOperator
 from tencirpauli.integrations.tensorcircuit import (
@@ -16,8 +13,6 @@ from tencirpauli.integrations.tensorcircuit import (
     require_tensorcircuit,
     u1_circuit_from_tensorcircuit,
 )
-
-tc = pytest.importorskip("tensorcircuit")
 
 
 def test_tensorcircuit_runtime_dependency_is_available() -> None:

@@ -462,11 +462,11 @@ class U1Circuit:
         self._generation += 1
 
     def rz(self, i: int, theta: Angle = 0.0) -> None:
-        """Append an RZ gate; ``theta`` is measured in radians or symbolic form."""
+        """Append an RZ gate with a concrete or JAX-traced radian angle."""
         self._append(_gate("rz", (i,), theta))
 
     def rzz(self, i: int, j: int, theta: Angle = 0.0) -> None:
-        """Append an RZZ gate; ``theta`` is measured in radians or symbolic form."""
+        """Append an RZZ gate with a concrete or JAX-traced radian angle."""
         self._append(_gate("rzz", (i, j), theta))
 
     def cz(self, i: int, j: int) -> None:
@@ -474,7 +474,7 @@ class U1Circuit:
         self._append(_gate("cz", (i, j)))
 
     def cphase(self, i: int, j: int, theta: Angle = 0.0) -> None:
-        """Append a controlled-phase gate with a radian or symbolic angle."""
+        """Append a controlled-phase gate with a concrete or JAX-traced angle."""
         self._append(_gate("cphase", (i, j), theta))
 
     def swap(self, i: int, j: int) -> None:
