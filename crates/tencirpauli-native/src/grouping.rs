@@ -27,7 +27,7 @@ fn reconstruct_values(
     nqubits: usize,
     masks: &[Vec<Vec<u64>>],
     group_index: usize,
-    values: &[i64],
+    values: &[i8],
     shots: usize,
 ) -> Result<Vec<i8>, &'static str> {
     let group_masks = masks
@@ -67,7 +67,7 @@ impl NativeQwcGroupingHandle {
         &self,
         py: Python<'py>,
         group_index: usize,
-        bitstrings: PyReadonlyArray2<'py, i64>,
+        bitstrings: PyReadonlyArray2<'py, i8>,
     ) -> PyResult<(usize, usize, Bound<'py, PyArray1<i8>>)> {
         if group_index >= self.masks.len() {
             return Err(PyValueError::new_err("group index is out of range"));

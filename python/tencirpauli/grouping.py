@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Optional, Tuple, Union, cast
 
 import numpy as np
 
@@ -82,14 +82,15 @@ class QWCGroupingResult:
         object.__setattr__(self, "_native_handle", native_handle)
 
     def reconstruct(
-        self, group_index: int, bitstrings: Sequence[Sequence[int]]
+        self, group_index: int, bitstrings: np.ndarray[Any, Any]
     ) -> np.ndarray[Any, Any]:
         """Reconstruct eigenvalues for one QWC group from rotated samples.
 
         Args:
             group_index: Index of the group whose terms should be reconstructed.
-            bitstrings: Binary samples with shape ``(shots, nqubits)`` after
-                applying the group's basis rotations.
+            bitstrings: A C-contiguous ``numpy.int8`` array with shape
+                ``(shots, nqubits)`` after applying the group's basis
+                rotations. Values must be binary; validation runs in Rust.
 
         Returns:
             An ``int8`` array of shape ``(shots, group_size)`` containing
@@ -97,24 +98,26 @@ class QWCGroupingResult:
 
         Raises:
             IndexError: If ``group_index`` is not a valid group.
+            TypeError: If ``bitstrings`` is not a C-contiguous ``numpy.int8``
+                array.
             ValueError: If the sample shape or binary-value contract is invalid.
         """
         if not 0 <= group_index < len(self.groups):
             raise IndexError(f"group index {group_index} is out of range")
-        raw_values = np.asarray(bitstrings)
-        if raw_values.ndim != 2 or raw_values.shape[1] != self.nqubits:
+        if not isinstance(bitstrings, np.ndarray):
+            raise TypeError("bitstrings must be a C-contiguous NumPy int8 array")
+        if bitstrings.ndim != 2 or bitstrings.shape[1] != self.nqubits:
             raise ValueError(
-                f"bitstrings must have shape (shots, {self.nqubits}), got {raw_values.shape}"
+                f"bitstrings must have shape (shots, {self.nqubits}), got {bitstrings.shape}"
             )
-        if raw_values.dtype.kind not in "biu":
-            raise ValueError("bitstrings must contain only 0 and 1")
-        values = np.ascontiguousarray(raw_values, dtype=np.int64)
+        if bitstrings.dtype != np.dtype(np.int8):
+            raise TypeError("bitstrings must be a C-contiguous NumPy int8 array")
+        if not bitstrings.flags.c_contiguous:
+            raise ValueError("bitstrings must be C-contiguous")
         native_handle = self._native_handle
         if native_handle is None:
             raise RuntimeError("QWC grouping results must retain a native handle")
-        shots, group_size, flat = native_handle.reconstruct(
-            group_index, np.ascontiguousarray(values)
-        )
+        shots, group_size, flat = native_handle.reconstruct(group_index, bitstrings)
         return cast(
             np.ndarray[Any, Any],
             np.asarray(flat, dtype=np.int8).reshape((shots, group_size)),

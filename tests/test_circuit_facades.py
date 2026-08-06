@@ -151,16 +151,26 @@ def test_gate_tape_cache_lifecycle_and_native_compile_counts(
     circuit = tcp.PropagationCircuit(2)
     circuit.ry(0, theta=tcp.Parameter(0))
     circuit.cnot(0, 1)
-    circuit.compile(observable_z)
+    parameterized_plan = circuit.compile(observable_z)
     circuit.compile(observable_x)
+    assert calls == 3
+    first_value = parameterized_plan.expectation([0.11])
+    second_value = parameterized_plan.expectation([0.37])
+    assert first_value != pytest.approx(second_value)
     assert calls == 3
     circuit.x(1)
     circuit.compile(observable_z)
     assert calls == 4
 
-    independent = tcp.PropagationCircuit.from_qir(circuit.to_qir(), {"nqubits": 2})
+    independent = tcp.PropagationCircuit(2)
+    independent.ry(0, theta=tcp.Parameter(0))
+    independent.cnot(0, 1)
     independent.compile(observable_z)
     assert calls == 5
+
+    restored = tcp.PropagationCircuit.from_qir(circuit.to_qir(), {"nqubits": 2})
+    restored.compile(observable_z)
+    assert calls == 6
 
 
 def test_u1_facade_expectation_and_canonical_diagonal_qir() -> None:

@@ -47,6 +47,15 @@ def _workload(family: str) -> tuple[Any, Any]:
             tcp.BosonOperator.from_terms(32, terms),
             tcp.BosonOperator.from_terms(32, terms),
         )
+    if family == "qudit":
+        terms = [
+            (((index, (index + 1) % 5, (2 * index + 1) % 5),), 0.5 + 0.25j)
+            for index in range(64)
+        ]
+        return (
+            tcp.QuditWeylOperator.from_terms(5, terms, n_sites=64),
+            tcp.QuditWeylOperator.from_terms(5, terms, n_sites=64),
+        )
     space = tcp.OperatorSpace(qubits=64)
     terms = [space.qubit.z(index) * (0.5 + 0.25j) for index in range(64)]
     left = terms[0]
@@ -57,7 +66,9 @@ def _workload(family: str) -> tuple[Any, Any]:
     return left, right
 
 
-@pytest.mark.parametrize("family", ("pauli", "majorana", "fermion", "boson", "hybrid"))
+@pytest.mark.parametrize(
+    "family", ("pauli", "majorana", "fermion", "boson", "qudit", "hybrid")
+)
 def test_large_native_equality_and_hash(
     benchmark: BenchmarkFixture, family: str
 ) -> None:

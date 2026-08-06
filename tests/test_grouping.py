@@ -52,11 +52,15 @@ def test_qwc_reconstruction_matches_term_eigenvalues() -> None:
         np.array([[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1]], dtype=np.int8),
     )
     with pytest.raises(ValueError, match="only 0 and 1"):
-        result.reconstruct(0, [[2, 0]])
-    with pytest.raises(ValueError, match="only 0 and 1"):
-        result.reconstruct(0, [[0.5, 0.0]])
+        result.reconstruct(0, np.asarray([[2, 0]], dtype=np.int8))
+    with pytest.raises(TypeError, match="NumPy int8"):
+        result.reconstruct(0, np.asarray([[0.5, 0.0]], dtype=np.float64))
+    with pytest.raises(TypeError, match="NumPy int8"):
+        result.reconstruct(0, [[0, 0]])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="shape"):
-        result.reconstruct(0, [[0]])
+        result.reconstruct(0, np.zeros((1, 1), dtype=np.int8))
+    with pytest.raises(ValueError, match="C-contiguous"):
+        result.reconstruct(0, np.zeros((2, 4), dtype=np.int8)[:, ::2])
 
 
 @pytest.mark.parametrize(
