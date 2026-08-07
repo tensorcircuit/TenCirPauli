@@ -27,7 +27,8 @@ def test_native_plan_linear_operator_matches_apply_and_matmat() -> None:
     operator = tcp.PauliOperator.from_terms(2, (("XX", 0.5), ("ZI", -1.25j)))
     plan = operator.native_mvp_plan()
     linear = plan.to_scipy_linear_operator()
-    vector = np.arange(4, dtype=np.float64) + 1j * np.arange(4, dtype=np.float64)
+    rng = np.random.default_rng(20260807)
+    vector = rng.normal(size=4) + 1j * rng.normal(size=4)
     np.testing.assert_allclose(linear.matvec(vector), plan.apply(vector))
     np.testing.assert_allclose(
         linear.matvec(vector[:, None]), plan.apply(vector)[:, None]
@@ -41,16 +42,35 @@ def test_native_plan_linear_operator_matches_apply_and_matmat() -> None:
     assert linear.dtype == np.dtype(np.complex128)
     with pytest.raises(ValueError, match=r"dimension mismatch|shape"):
         linear.matvec(np.ones(3))
+    with pytest.raises(ValueError, match=r"dimension mismatch|shape"):
+        linear.matvec(np.ones((3, 1)))
+    with pytest.raises(ValueError, match=r"dimension mismatch|shape"):
+        linear.matvec(np.ones((1, 4)))
+    with pytest.raises(ValueError, match=r"dimension mismatch|shape"):
+        linear.matvec(np.ones((4, 1, 1)))
 
 
-def test_pauli_convenience_linear_operator_compiles_and_reuses_native_plan() -> None:
+def test_pauli_convenience_linear_operator_compiles_and_reuses_native_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     operator = tcp.PauliOperator.from_terms(2, (("XX", 1.0), ("IZ", 0.25)))
-    linear = operator.to_scipy_linear_operator()
     vector = np.random.default_rng(20260806).normal(
         size=4
     ) + 1j * np.random.default_rng(7).normal(size=4)
     expected = operator.native_mvp_plan().apply(vector)
+    calls = 0
+    original = tcp.PauliOperator.native_mvp_plan
+
+    def counted(self: tcp.PauliOperator, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(tcp.PauliOperator, "native_mvp_plan", counted)
+    linear = operator.to_scipy_linear_operator()
     np.testing.assert_allclose(linear @ vector, expected)
+    np.testing.assert_allclose(linear @ (2.0 * vector), 2.0 * expected)
+    assert calls == 1
     with pytest.raises(TypeError):
         operator.to_scipy_linear_operator(mapping="jordan_wigner")  # type: ignore[call-arg]
     with pytest.raises(MemoryError):

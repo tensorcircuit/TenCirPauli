@@ -978,6 +978,12 @@ fn combine_fixed(
             *output += sum / count;
         }
     }
+    if !value.is_finite()
+        || !variance.is_finite()
+        || gradient.iter().any(|entry| !entry.is_finite())
+    {
+        return Err(PauliError::NonFiniteCoefficient { index: 0 });
+    }
     Ok((value, gradient, variance.max(0.0).sqrt()))
 }
 
@@ -1055,7 +1061,7 @@ fn counter_random(
 mod tests {
     use super::{combine_adaptive, combine_fixed, TermStats};
     use crate::{
-        Clifford1, Complex64, GateOperation, ParameterRef, PauliOperator, ProductState,
+        Clifford1, Complex64, GateOperation, ParameterRef, PauliError, PauliOperator, ProductState,
         RotationAxis, SPPSEngine,
     };
     use rayon::ThreadPoolBuilder;
@@ -1084,6 +1090,17 @@ mod tests {
 
         let (_, _, standard_error) = combine_fixed(&[stat], 0).unwrap();
         assert!((standard_error - 0.5).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn fixed_combination_rejects_nonfinite_accumulators() {
+        let mut stat = TermStats::new(0);
+        stat.sum = f64::INFINITY;
+        stat.count = 2;
+        assert_eq!(
+            combine_fixed(&[stat], 0),
+            Err(PauliError::NonFiniteCoefficient { index: 0 })
+        );
     }
 
     #[test]

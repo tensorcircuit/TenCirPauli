@@ -153,6 +153,69 @@ def test_u1_and_spps_jax_gradients_use_occurrence_space() -> None:
     np.testing.assert_allclose(spps_gradient, native_spps.gradient[0])
 
 
+def test_u1_jax_pytree_repeated_leaf_scatter_matches_native() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    observable = tcp.PauliOperator.from_terms(2, [("ZI", 1.0)])
+
+    def objective(tree: dict[str, object]) -> object:
+        circuit = tcp.U1Circuit(2, particle_number=1, occupied=[0])
+        circuit.iswap(0, 1, theta=tree["shared"])
+        circuit.iswap(0, 1, theta=tree["shared"])
+        circuit.iswap(
+            0,
+            1,
+            theta=2.0 * tree["scale"] + jnp.sin(tree["smooth"]),
+        )
+        return circuit.expectation_jax(observable)
+
+    point = {
+        "shared": jnp.asarray(0.13),
+        "scale": jnp.asarray(0.2),
+        "smooth": jnp.asarray(-0.1),
+    }
+    value, gradient = jax.jit(jax.value_and_grad(objective))(point)
+    concrete = tcp.U1Circuit(2, particle_number=1, occupied=[0])
+    concrete.iswap(0, 1, theta=0.13)
+    concrete.iswap(0, 1, theta=0.13)
+    concrete.iswap(0, 1, theta=2.0 * 0.2 + np.sin(-0.1))
+    native = concrete.value_and_grad(observable)
+    expected_gradient = {
+        "shared": native.gradient[0] + native.gradient[1],
+        "scale": 2.0 * native.gradient[2],
+        "smooth": np.cos(-0.1) * native.gradient[2],
+    }
+    np.testing.assert_allclose(value, native.value, atol=2e-12, rtol=2e-12)
+    for key, expected in expected_gradient.items():
+        np.testing.assert_allclose(gradient[key], expected, atol=2e-12, rtol=2e-12)
+
+
+def test_spps_jax_pytree_repeated_leaf_scatter_matches_native() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+
+    def objective(tree: dict[str, object]) -> object:
+        circuit = tcp.SPPSCircuit(1)
+        circuit.ry(0, theta=tree["shared"])
+        circuit.ry(0, theta=tree["shared"])
+        return circuit.expectation_jax(observable, samples_per_term=128, seed=37)
+
+    point = {"shared": jnp.asarray(0.17)}
+    value, gradient = jax.jit(jax.value_and_grad(objective))(point)
+    concrete = tcp.SPPSCircuit(1)
+    concrete.ry(0, theta=0.17)
+    concrete.ry(0, theta=0.17)
+    native = concrete.value_and_grad(observable, samples_per_term=128, seed=37)
+    np.testing.assert_allclose(value, native.value, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(
+        gradient["shared"],
+        native.gradient[0] + native.gradient[1],
+        atol=1e-12,
+        rtol=1e-12,
+    )
+
+
 def test_jax_terminal_requires_float64() -> None:
     jax = pytest.importorskip("jax")
     previous = bool(jax.config.read("jax_enable_x64"))

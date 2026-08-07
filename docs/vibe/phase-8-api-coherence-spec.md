@@ -87,9 +87,9 @@ Hermitian validation 的时机固定如下：
 
 `QWCGroupingResult` 和 `GeneralCommutingGroupingResult` 都提供 `groups`、`group_count`、`term_count`、`term_to_group`、`mode`、`algorithm` 和 `measurement_ready`。`group_count` 等于 `len(groups)`；每个 canonical term index 必须在 `groups` 中恰好出现一次，`term_count` 是覆盖的 term 总数。
 
-`QWCGroupingResult` 继续提供 `bases`、`reconstruction_masks` 和 `reconstruct()`。两种 result 当前重复保存 `groups` 的 `coefficient_mapping` 都删除，改为真正的 immutable `term_to_group: tuple[int, ...]`；其长度固定为 `term_count`，位置是 canonical term index，值是对应 group index。`term_to_group` 在 result construction 时一次生成，不在每次属性访问时重复扫描 groups。
+`QWCGroupingResult` 提供 `bases` 和 `reconstruct()`。两种 result 当前重复保存 `groups` 的 `coefficient_mapping` 都删除，改为真正的 immutable `term_to_group: tuple[int, ...]`；其长度固定为 `term_count`，位置是 canonical term index，值是对应 group index。`term_to_group` 在 result construction 时一次生成，不在每次属性访问时重复扫描 groups。
 
-`mode` 和 `measurement_ready` 是 result type 的不变量而不是可由调用者任意覆盖的普通 dataclass constructor 参数：QWC 固定为 `mode="qubit_wise"`、`measurement_ready=True`，general 固定为 `mode="general"`、`measurement_ready=False`。所有 result arrays/tuples 与 reconstruction metadata 构造后不可变。
+`mode` 和 `measurement_ready` 是 result type 的不变量而不是可由调用者任意覆盖的普通 dataclass constructor 参数：QWC 固定为 `mode="qubit_wise"`、`measurement_ready=True`，general 固定为 `mode="general"`、`measurement_ready=False`。所有 result arrays/tuples 构造后不可变；重建所需的 packed masks 只保留在 native handle 内部。
 
 `group_commuting()`、`group_operator()`、`compatibility_matrix()` 和 `incompatibility_edges()` 的 `mode` 默认统一为 `"qubit_wise"`。这是 measurement-safe、相对保守的默认值：它可能少报告只能 general commute 的 pair，但不会把缺少 tensor-product measurement basis 的 group 标成 measurement-ready。需要 algebraic general commuting 时必须显式传入 `mode="general"`，避免相邻 helper 使用不同默认语义。
 

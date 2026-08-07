@@ -42,6 +42,20 @@ Reason for deferral: Phase 7 already supports explicit projected finite targets,
 
 Promotion criteria: a concrete boson-to-qubit, finite-boson circuit, or restricted finite-boson workflow that benefits from reusable finite algebra rather than direct compilation.
 
+### Non-orthogonal subspace projection
+
+Status: `seed`.
+
+Motivation: support variational quantum-subspace, quantum chemistry, and reduced-model workflows in which the supplied basis states are not mutually orthogonal. Given operator (H) and ordered basis states ({\lvert \phi_i\rangle}), return the projected operator (H_{ij}=\langle\phi_i\rvert H\lvert\phi_j\rangle) together with the overlap matrix (S_{ij}=\langle\phi_i\vert\phi_j\rangle), so the caller can solve the generalized eigenproblem (Hc=ESc).
+
+Current design: expose projection as an operator/state algebra result, not as an implicit eigensolver. The input basis may contain sparse computational-basis states or native-backed linear combinations; the output is a deterministic dense (H) matrix and (S) matrix with explicit ordering, dtype, endian, and memory metadata. Orthogonal projection is the special case (S=I), but the incubated feature specifically targets the non-orthogonal contract. The implementation must validate compatible operator spaces, basis dimensions, finite coefficients, and the requested output budget; it must not silently orthogonalize the basis or discard a singular/ill-conditioned overlap matrix.
+
+Dependencies: native operator-on-state and inner-product kernels, a batched matrix-element path, checked dense-output estimates, and a numerical policy for zero or nearly dependent basis vectors. SciPy or another generalized eigensolver may be used by the caller or an optional integration layer; the Rust core should return (H) and (S) without depending on an eigensolver.
+
+Open questions: whether the first API accepts only one operator family or any structured operator with a finite target; whether complex non-Hermitian (H) is supported or only Hermitian projected problems; whether overlap conditioning is reported only or also checked against a caller-provided tolerance; and whether a reusable native projection plan is needed for repeated operators or repeated basis states.
+
+Promotion criteria: one concrete chemistry or quantum-subspace workload; dense reference tests for orthogonal, non-orthogonal, singular, and nearly dependent bases; complex-valued matrix-element differentials; explicit ordering and conditioning semantics; representative setup/steady-runtime and memory measurements; and a decision that the result contract is useful without adding a built-in generalized eigensolver.
+
 ### Boson-to-qubit encodings
 
 Status: `deferred`.

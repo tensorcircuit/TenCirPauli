@@ -94,21 +94,6 @@ def test_qwc_reconstruction_matches_independent_numpy_oracle(
         np.testing.assert_array_equal(result.reconstruct(group_index, bits), expected)
 
 
-def test_qwc_reconstruction_uses_native_residency_not_public_masks() -> None:
-    operator = PauliOperator.from_terms(
-        3, (("ZZI", 1.0), ("IZZ", 2.0), ("ZIZ", 3.0), ("III", 4.0))
-    )
-    result = operator.group_commuting()
-    bits = np.asarray([[0, 1, 0], [1, 0, 1]], dtype=np.int8)
-    expected = result.reconstruct(0, bits)
-    object.__setattr__(
-        result,
-        "reconstruction_masks",
-        tuple(tuple(0 for _ in group) for group in result.groups),
-    )
-    np.testing.assert_array_equal(result.reconstruct(0, bits), expected)
-
-
 def test_qwc_reconstruction_releases_gil_for_large_workload() -> None:
     rng = np.random.default_rng(20260806)
     nqubits, term_count, shots = 128, 48, 8_000

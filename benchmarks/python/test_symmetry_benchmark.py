@@ -189,7 +189,6 @@ def test_wide_sector_128q_k2_sparse_materialization(
         (128, 126),
         (256, 1),
         (256, 2),
-        (512, 2),
     ],
 )
 def test_wide_sector_wide_u1_setup_and_mvp(
@@ -286,7 +285,6 @@ def test_wide_sector_long_range_duplicate_x_setup(benchmark: BenchmarkFixture) -
         (128, 126),
         (256, 1),
         (256, 2),
-        (512, 2),
     ],
 )
 def test_wide_sector_wide_u1_steady_mvp(

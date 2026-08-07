@@ -28,6 +28,23 @@ def test_required_gates_match_state_and_expectation_contract() -> None:
     assert circuit.expectation(_observable(3, "ZII")).imag == pytest.approx(0.0)
 
 
+def test_full_state_and_probability_materialization_match_restricted_values() -> None:
+    circuit = tcp.U1Circuit(3, particle_number=1, occupied=[0])
+    circuit.iswap(0, 1, theta=0.37)
+    restricted_state = circuit.state()
+    full_state = circuit.state_full()
+    expected_full = np.zeros(8, dtype=np.complex128)
+    for value, occupation in zip(restricted_state, circuit.sector.basis_states()):
+        basis_index = 0
+        for bit in occupation:
+            basis_index = (basis_index << 1) | int(bit)
+        expected_full[basis_index] = value
+    np.testing.assert_allclose(full_state, expected_full, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(
+        circuit.probability_full(), np.abs(expected_full) ** 2, atol=1e-12, rtol=1e-12
+    )
+
+
 def test_every_angle_occurrence_has_an_independent_gradient() -> None:
     circuit = tcp.U1Circuit(2, particle_number=1, occupied=[0])
     circuit.rz(0, 0.13)

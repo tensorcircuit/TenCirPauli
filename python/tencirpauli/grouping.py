@@ -25,7 +25,6 @@ class QWCGroupingResult:
     nqubits: int
     groups: Tuple[Tuple[int, ...], ...]
     bases: Tuple[Tuple[int, ...], ...]
-    reconstruction_masks: Tuple[Tuple[int, ...], ...]
     term_to_group: Tuple[int, ...]
     algorithm: str
     group_count: int
@@ -39,7 +38,6 @@ class QWCGroupingResult:
         nqubits: int,
         groups: Tuple[Tuple[int, ...], ...],
         bases: Tuple[Tuple[int, ...], ...],
-        reconstruction_masks: Tuple[Tuple[int, ...], ...],
         algorithm: str,
         native_handle: Optional[_native.NativeQwcGroupingHandle] = None,
     ) -> None:
@@ -48,19 +46,12 @@ class QWCGroupingResult:
         normalized_groups = tuple(
             tuple(int(index) for index in group) for group in groups
         )
-        if len(bases) != len(normalized_groups) or len(reconstruction_masks) != len(
-            normalized_groups
-        ):
+        if len(bases) != len(normalized_groups):
             raise ValueError("group metadata must have one entry per group")
         term_count = sum(len(group) for group in normalized_groups)
         flattened = tuple(index for group in normalized_groups for index in group)
         if sorted(flattened) != list(range(term_count)):
             raise ValueError("groups must cover each canonical term exactly once")
-        if any(
-            len(mask) != len(group)
-            for mask, group in zip(reconstruction_masks, normalized_groups)
-        ):
-            raise ValueError("reconstruction metadata must match group sizes")
         term_to_group = [-1] * term_count
         for group_index, group in enumerate(normalized_groups):
             for term_index in group:
@@ -68,11 +59,6 @@ class QWCGroupingResult:
         object.__setattr__(self, "nqubits", int(nqubits))
         object.__setattr__(self, "groups", normalized_groups)
         object.__setattr__(self, "bases", tuple(tuple(basis) for basis in bases))
-        object.__setattr__(
-            self,
-            "reconstruction_masks",
-            tuple(tuple(int(mask) for mask in masks) for masks in reconstruction_masks),
-        )
         object.__setattr__(self, "term_to_group", tuple(term_to_group))
         object.__setattr__(self, "algorithm", algorithm)
         object.__setattr__(self, "group_count", len(normalized_groups))
@@ -208,8 +194,8 @@ def group_operator(
     if handle is None:
         raise RuntimeError("Pauli operators must retain native handles")
     if mode == "qubit_wise":
-        native_groups, bases_raw, masks_raw, grouping_handle = (
-            _native.pauli_qwc_group_handle(handle, algorithm_code, max_matrix_entries)
+        native_groups, bases_raw, grouping_handle = _native.pauli_qwc_group_handle(
+            handle, algorithm_code, max_matrix_entries
         )
     else:
         native_groups, bases_raw, _ = _native.pauli_group_handle(
@@ -221,18 +207,10 @@ def group_operator(
     if mode == "general":
         return GeneralCommutingGroupingResult(operator.nqubits, groups, algorithm)
     native_bases = tuple(tuple(int(code) for code in basis) for basis in bases_raw)
-    native_masks = tuple(
-        tuple(
-            sum(int(word) << (64 * word_index) for word_index, word in enumerate(words))
-            for words in group
-        )
-        for group in masks_raw
-    )
     return QWCGroupingResult(
         operator.nqubits,
         groups,
         native_bases,
-        native_masks,
         algorithm,
         grouping_handle,
     )

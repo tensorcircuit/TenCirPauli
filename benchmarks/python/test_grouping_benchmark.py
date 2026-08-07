@@ -61,7 +61,6 @@ def test_public_qwc_grouping(benchmark: BenchmarkFixture, count: int) -> None:
     benchmark.extra_info["group_count"] = result.group_count
     assert result.groups == expected.groups
     assert result.bases == expected.bases
-    assert result.reconstruction_masks == expected.reconstruction_masks
 
 
 @pytest.mark.parametrize("count", (128, 1_024))

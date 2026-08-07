@@ -246,28 +246,6 @@ class NativeChargeSectorPlan:
     def rank(self, occupations: Sequence[int]) -> int: ...
     def unrank(self, index: int) -> Sequence[int]: ...
     def basis_states(self, max_bytes: int) -> object: ...
-    def compile_mvp(
-        self,
-        dimension: int,
-        local_dimensions: Sequence[int],
-        fermion_positions: Sequence[int],
-        boson_positions: Sequence[int],
-        qubit_positions: Sequence[int],
-        qudit_positions: Sequence[int],
-        fermion_creation: object,
-        fermion_annihilation: object,
-        boson_blocks: object,
-        qubit_codes: object,
-        mapped_present: Sequence[bool],
-        mapped_codes: object,
-        qudit_present: Sequence[bool],
-        qudit_triples: object,
-        coefficients: object,
-        qudit_dimension: int,
-        termwise_conserved: bool,
-        max_bytes: int,
-        fast_fermion_particles: int | None = ...,
-    ) -> NativeChargeMvpPlan: ...
     def compile_mvp_pauli_handle(
         self,
         handle: NativePauliOperatorHandle,
@@ -501,22 +479,6 @@ class NativeU1CircuitPlan:
     def probability(self, initial_state: object, parameters: object) -> object: ...
     def to_dense(self, initial_state: object, parameters: object) -> object: ...
     def probability_full(self, initial_state: object, parameters: object) -> object: ...
-    def expectation(
-        self,
-        initial_state: object,
-        structures: object,
-        coefficients_re: object,
-        coefficients_im: object,
-        parameters: object,
-    ) -> tuple[float, float]: ...
-    def value_and_grad(
-        self,
-        initial_state: object,
-        structures: object,
-        coefficients_re: object,
-        coefficients_im: object,
-        parameters: object,
-    ) -> tuple[float, object]: ...
     def expectation_handle(
         self,
         initial_state: object,
@@ -535,18 +497,6 @@ class NativeU1FinalState:
     def probability(self) -> object: ...
     def to_dense(self) -> object: ...
     def probability_full(self) -> object: ...
-    def expectation(
-        self,
-        structures: object,
-        coefficients_re: object,
-        coefficients_im: object,
-    ) -> tuple[float, float]: ...
-    def value_and_grad(
-        self,
-        structures: object,
-        coefficients_re: object,
-        coefficients_im: object,
-    ) -> tuple[float, object]: ...
     def expectation_handle(
         self, observable: NativePauliOperatorHandle
     ) -> tuple[float, float]: ...
@@ -679,29 +629,6 @@ def pauli_symplectic_inner_product(
     x_words_right: Sequence[int],
     z_words_right: Sequence[int],
 ) -> int: ...
-def pauli_canonicalize_batch(
-    nqubits: int,
-    structures: Sequence[Sequence[int]],
-    coefficients_re: Sequence[float],
-    coefficients_im: Sequence[float],
-) -> tuple[
-    Sequence[Sequence[int]],
-    Sequence[float],
-    Sequence[float],
-    Sequence[int],
-    Sequence[int],
-]: ...
-def pauli_canonicalize_batch_array(
-    nqubits: int,
-    structures: object,
-    coefficients: object,
-) -> tuple[
-    Sequence[Sequence[int]],
-    Sequence[float],
-    Sequence[float],
-    Sequence[int],
-    Sequence[int],
-]: ...
 def pauli_canonicalize_batch_numpy(
     nqubits: int,
     structures: object,
@@ -732,7 +659,6 @@ def pauli_qwc_group_handle(
 ) -> tuple[
     Sequence[Sequence[int]],
     Sequence[Sequence[int]],
-    Sequence[Sequence[Sequence[int]]],
     NativeQwcGroupingHandle,
 ]: ...
 def pauli_compatibility_matrix_handle(

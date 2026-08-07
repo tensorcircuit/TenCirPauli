@@ -112,6 +112,13 @@ fn canonical_operator_algebra_aggregates_exact_zeros() {
 }
 
 #[test]
+fn content_hash_canonicalizes_signed_zero_coefficients() {
+    let operator = PauliOperator::from_terms(1, &[vec![1]], &[Complex64::new(1.0, -0.0)]).unwrap();
+    assert_eq!(operator, operator.adjoint());
+    assert_eq!(operator.content_hash(), operator.adjoint().content_hash());
+}
+
+#[test]
 fn mvp_apply_into_overwrites_zeroed_and_prefilled_outputs_for_all_paths() {
     let serial_operator = mvp_test_operator(1, 1);
     let serial_state = [Complex64::new(3.0, -2.0), Complex64::new(5.0, 4.0)];

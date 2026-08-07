@@ -33,8 +33,8 @@ use hamiltonian::{
 use majorana::{majorana_canonicalize, NativeMajoranaOperatorHandle};
 use mapping::{mapping_plan, NativeMappingPlan};
 use operator::{
-    pauli_canonicalize_batch, pauli_canonicalize_batch_array, pauli_canonicalize_batch_numpy,
-    pauli_operator_native, pauli_operator_native_array, NativePauliOperatorHandle,
+    pauli_canonicalize_batch_numpy, pauli_operator_native, pauli_operator_native_array,
+    NativePauliOperatorHandle,
 };
 use propagation::{
     pauli_gate_tape, pauli_propagation_batch_handles_tape, pauli_propagation_engine_tape,
@@ -92,8 +92,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(pauli_multiply, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_symplectic_inner_product, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_commutes, module)?)?;
-    module.add_function(wrap_pyfunction!(pauli_canonicalize_batch, module)?)?;
-    module.add_function(wrap_pyfunction!(pauli_canonicalize_batch_array, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_canonicalize_batch_numpy, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_native, module)?)?;
     module.add_function(wrap_pyfunction!(pauli_operator_native_array, module)?)?;

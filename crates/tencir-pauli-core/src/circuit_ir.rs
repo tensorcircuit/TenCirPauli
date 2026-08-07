@@ -106,7 +106,7 @@ impl CircuitProgram {
         self.nparameters
     }
 
-    pub fn evaluate_parameters(&self, parameters: &[f64]) -> Result<Vec<f64>, PauliError> {
+    pub fn resolve_angle_values(&self, parameters: &[f64]) -> Result<Vec<f64>, PauliError> {
         if parameters.len() != self.nparameters {
             return Err(PauliError::InvalidParameterLength {
                 expected: self.nparameters,
@@ -272,7 +272,10 @@ mod tests {
             1,
         )
         .unwrap();
-        assert_eq!(program.evaluate_parameters(&[0.5]).unwrap(), vec![2.0, 0.5]);
+        assert_eq!(
+            program.resolve_angle_values(&[0.5]).unwrap(),
+            vec![2.0, 0.5]
+        );
         assert_eq!(
             program.gradient_from_angle_adjoint(&[3.0, 4.0]).unwrap(),
             vec![4.0]

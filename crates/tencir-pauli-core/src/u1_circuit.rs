@@ -511,7 +511,7 @@ impl U1CircuitPlan {
         parameters: &[f64],
     ) -> Result<Vec<Complex64>, PauliError> {
         self.validate_state(initial_state)?;
-        let values = self.program.evaluate_parameters(parameters)?;
+        let values = self.program.resolve_angle_values(parameters)?;
         let mut state = initial_state.to_vec();
         for gate in self.gates.iter() {
             self.apply_gate(&mut state, gate, &values, false)?;
@@ -621,7 +621,7 @@ impl U1CircuitPlan {
             return Err(PauliError::NonHermitianExpectation);
         }
         self.validate_state(initial_state)?;
-        let values = self.program.evaluate_parameters(parameters)?;
+        let values = self.program.resolve_angle_values(parameters)?;
         let mut state = initial_state.to_vec();
         for gate in self.gates.iter() {
             self.apply_gate(&mut state, gate, &values, false)?;
@@ -651,7 +651,7 @@ impl U1CircuitPlan {
             return Err(PauliError::NonHermitianExpectation);
         }
         self.validate_state(state)?;
-        let values = self.program.evaluate_parameters(parameters)?;
+        let values = self.program.resolve_angle_values(parameters)?;
         self.value_and_grad_from_final_state_with_values(state, observable, &values)
     }
 
@@ -810,7 +810,7 @@ fn accumulate_gate_derivative(
     lambda: &[Complex64],
     gate: &CompiledU1Gate,
     values: &[f64],
-    node_adjoint: &mut [f64],
+    angle_adjoint: &mut [f64],
     word_count: usize,
     basis_words: &[u64],
 ) -> Result<(), PauliError> {
@@ -833,7 +833,7 @@ fn accumulate_gate_derivative(
                     else {
                         continue;
                     };
-                    node_adjoint[angle] += 2.0 * (lambda[index].conj() * generator * after).re;
+                    angle_adjoint[angle] += 2.0 * (lambda[index].conj() * generator * after).re;
                 }
             }
         }
@@ -882,7 +882,7 @@ fn accumulate_gate_derivative(
                             + lambda[pair.one_zero].conj() * dright)
                             .re;
                 }
-                node_adjoint[*angle] += result;
+                angle_adjoint[*angle] += result;
             }
         }
     }

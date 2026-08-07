@@ -10,12 +10,7 @@ use crate::convert::map_error;
 use crate::operator::NativePauliOperatorHandle;
 
 type GroupingOutput = (Vec<Vec<usize>>, Vec<Vec<u8>>, Vec<Vec<Vec<usize>>>);
-type QwcGroupingOutput = (
-    Vec<Vec<usize>>,
-    Vec<Vec<u8>>,
-    Vec<Vec<Vec<u64>>>,
-    NativeQwcGroupingHandle,
-);
+type QwcGroupingOutput = (Vec<Vec<usize>>, Vec<Vec<u8>>, NativeQwcGroupingHandle);
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeQwcGroupingHandle {
@@ -141,11 +136,8 @@ pub(crate) fn pauli_qwc_group_handle(
             bases.push(basis);
             masks.push(group_masks);
         }
-        let handle = NativeQwcGroupingHandle {
-            nqubits,
-            masks: masks.clone(),
-        };
-        Ok((groups, bases, masks, handle))
+        let handle = NativeQwcGroupingHandle { nqubits, masks };
+        Ok((groups, bases, handle))
     })
     .map_err(map_error)
 }

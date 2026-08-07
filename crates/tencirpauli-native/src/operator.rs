@@ -8,10 +8,9 @@ use std::collections::BTreeSet;
 use tencir_pauli_core::{Complex64, PauliOperator};
 
 use crate::convert::{
-    build_operator, code_rows, complex_coefficients, map_error, operator_codes_flat_output,
-    operator_packed_flat_output, operator_strings_flat_output, phase_code, CanonicalizeBatchOutput,
-    NumpyCanonicalizeBatchOutput, NumpyPauliCodesOutput, NumpyPauliPackedOutput,
-    NumpyPauliStringsOutput,
+    build_operator, code_rows, map_error, operator_codes_flat_output, operator_packed_flat_output,
+    operator_strings_flat_output, phase_code, NumpyCanonicalizeBatchOutput, NumpyPauliCodesOutput,
+    NumpyPauliPackedOutput, NumpyPauliStringsOutput,
 };
 
 #[pyclass(module = "tencirpauli._native")]
@@ -254,93 +253,6 @@ fn check_native_operator_limit(
         )));
     }
     Ok(())
-}
-
-#[pyfunction]
-pub(crate) fn pauli_canonicalize_batch(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: Vec<Vec<u8>>,
-    coefficients_re: Vec<f64>,
-    coefficients_im: Vec<f64>,
-) -> PyResult<CanonicalizeBatchOutput> {
-    let result = py.allow_threads(|| {
-        let coefficients = complex_coefficients(coefficients_re, coefficients_im)?;
-        PauliOperator::canonicalize(nqubits, &structures, &coefficients).map_err(map_error)
-    })?;
-    let mut result_structures = Vec::with_capacity(result.terms.len());
-    let mut result_re = Vec::with_capacity(result.terms.len());
-    let mut result_im = Vec::with_capacity(result.terms.len());
-    for term in result.terms {
-        result_structures.push(term.word.codes());
-        result_re.push(term.coefficient.re);
-        result_im.push(term.coefficient.im);
-    }
-    Ok((
-        result_structures,
-        result_re,
-        result_im,
-        result.input_to_canonical,
-        result
-            .phase_multipliers
-            .into_iter()
-            .map(phase_code)
-            .collect(),
-    ))
-}
-
-#[pyfunction]
-pub(crate) fn pauli_canonicalize_batch_array(
-    py: Python<'_>,
-    nqubits: usize,
-    structures: PyReadonlyArray2<'_, u8>,
-    coefficients: PyReadonlyArray1<'_, NumpyComplex128>,
-) -> PyResult<CanonicalizeBatchOutput> {
-    let shape = structures.shape();
-    if shape[1] != nqubits {
-        return Err(PyValueError::new_err(format!(
-            "expected structure width {nqubits}, got {}",
-            shape[1]
-        )));
-    }
-    if shape[0] != coefficients.len() {
-        return Err(PyValueError::new_err(format!(
-            "expected {} coefficients, got {}",
-            shape[0],
-            coefficients.len()
-        )));
-    }
-    let code_slice = structures
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("structures must be C-contiguous"))?;
-    let coefficient_slice = coefficients
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("coefficients must be C-contiguous"))?;
-    let result = py
-        .allow_threads(|| {
-            let rows = code_rows(code_slice, shape[0], nqubits);
-            PauliOperator::canonicalize(nqubits, &rows, coefficient_slice)
-        })
-        .map_err(map_error)?;
-    let mut result_structures = Vec::with_capacity(result.terms.len());
-    let mut result_re = Vec::with_capacity(result.terms.len());
-    let mut result_im = Vec::with_capacity(result.terms.len());
-    for term in result.terms {
-        result_structures.push(term.word.codes());
-        result_re.push(term.coefficient.re);
-        result_im.push(term.coefficient.im);
-    }
-    Ok((
-        result_structures,
-        result_re,
-        result_im,
-        result.input_to_canonical,
-        result
-            .phase_multipliers
-            .into_iter()
-            .map(phase_code)
-            .collect(),
-    ))
 }
 
 #[pyfunction]

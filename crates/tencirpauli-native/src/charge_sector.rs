@@ -46,49 +46,6 @@ fn charge_remaining_budget(max_bytes: u128, base_bytes: u128) -> Result<u128, Pa
         })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn charge_terms_from_inputs(
-    coefficients: &[NumpyComplex128],
-    fermion_creation: &[Vec<u32>],
-    fermion_annihilation: &[Vec<u32>],
-    boson_blocks: &[Vec<(u32, u32, u32)>],
-    qubit_codes: &[Vec<u8>],
-    mapped_present: &[bool],
-    mapped_codes: &[Vec<u8>],
-    qudit_present: &[bool],
-    qudit_triples: &[Vec<(u32, u32, u32)>],
-) -> PyResult<Vec<ChargeTransitionTerm>> {
-    let term_count = coefficients.len();
-    if fermion_creation.len() != term_count
-        || fermion_annihilation.len() != term_count
-        || boson_blocks.len() != term_count
-        || qubit_codes.len() != term_count
-        || mapped_present.len() != term_count
-        || mapped_codes.len() != term_count
-        || qudit_present.len() != term_count
-        || qudit_triples.len() != term_count
-    {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "charge transition term arrays have inconsistent lengths",
-        ));
-    }
-    Ok(coefficients
-        .iter()
-        .enumerate()
-        .map(|(index, coefficient)| ChargeTransitionTerm {
-            fermion_creation: fermion_creation[index].clone(),
-            fermion_annihilation: fermion_annihilation[index].clone(),
-            boson_blocks: boson_blocks[index].clone(),
-            qubit_codes: qubit_codes[index].clone(),
-            mapped_present: mapped_present[index],
-            mapped_codes: mapped_codes[index].clone(),
-            qudit_present: qudit_present[index],
-            qudit_triples: qudit_triples[index].clone(),
-            coefficient: Complex64::new(coefficient.re, coefficient.im),
-        })
-        .collect())
-}
-
 fn charge_terms_from_pauli_handle(handle: &NativePauliOperatorHandle) -> Vec<ChargeTransitionTerm> {
     handle
         .core()
@@ -225,80 +182,6 @@ impl NativeChargeSectorPlan {
             .allow_threads(|| self.plan.basis_states(max_bytes))
             .map_err(crate::convert::map_error)?;
         Ok(PyArray1::from_vec(py, values))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (
-        dimension,
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        fermion_creation,
-        fermion_annihilation,
-        boson_blocks,
-        qubit_codes,
-        mapped_present,
-        mapped_codes,
-        qudit_present,
-        qudit_triples,
-        coefficients,
-        qudit_dimension,
-        termwise_conserved,
-        max_bytes,
-        fast_fermion_particles=None
-    ))]
-    fn compile_mvp<'py>(
-        &self,
-        dimension: usize,
-        local_dimensions: Vec<u64>,
-        fermion_positions: Vec<u64>,
-        boson_positions: Vec<u64>,
-        qubit_positions: Vec<u64>,
-        qudit_positions: Vec<u64>,
-        fermion_creation: Vec<Vec<u32>>,
-        fermion_annihilation: Vec<Vec<u32>>,
-        boson_blocks: Vec<Vec<(u32, u32, u32)>>,
-        qubit_codes: Vec<Vec<u8>>,
-        mapped_present: Vec<bool>,
-        mapped_codes: Vec<Vec<u8>>,
-        qudit_present: Vec<bool>,
-        qudit_triples: Vec<Vec<(u32, u32, u32)>>,
-        coefficients: numpy::PyReadonlyArray1<'py, NumpyComplex128>,
-        qudit_dimension: u64,
-        termwise_conserved: bool,
-        max_bytes: u128,
-        fast_fermion_particles: Option<usize>,
-    ) -> PyResult<NativeChargeMvpPlan> {
-        let coefficient_values = coefficients.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("charge coefficients must be C-contiguous")
-        })?;
-        let terms = charge_terms_from_inputs(
-            coefficient_values,
-            &fermion_creation,
-            &fermion_annihilation,
-            &boson_blocks,
-            &qubit_codes,
-            &mapped_present,
-            &mapped_codes,
-            &qudit_present,
-            &qudit_triples,
-        )?;
-        build_native_charge_mvp_plan(
-            Arc::clone(&self.plan),
-            dimension,
-            local_dimensions,
-            fermion_positions,
-            boson_positions,
-            qubit_positions,
-            qudit_positions,
-            qudit_dimension,
-            terms,
-            termwise_conserved,
-            max_bytes,
-            fast_fermion_particles,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -424,27 +424,15 @@ class PauliOperator:
             structures, coefficients_re, coefficients_im = _normalize_operator_inputs(
                 nqubits, normalized_terms
             )
-            result = _native.pauli_canonicalize_batch(
-                nqubits,
-                structures,
-                coefficients_re,
-                coefficients_im,
+            code_array = np.asarray(structures, dtype=np.uint8).reshape(
+                (len(structures), nqubits)
             )
+            coefficient_array = np.asarray(
+                coefficients_re, dtype=np.float64
+            ) + 1j * np.asarray(coefficients_im, dtype=np.float64)
         else:
-            result = _native.pauli_canonicalize_batch_array(nqubits, *array_input)
-        canonical_structures, real, imaginary, mapping, phases = result
-        return CanonicalizationResult(
-            tuple(
-                tuple(int(code) for code in structure)
-                for structure in canonical_structures
-            ),
-            tuple(
-                complex(real_value, imaginary_value)
-                for real_value, imaginary_value in zip(real, imaginary)
-            ),
-            tuple(int(index) for index in mapping),
-            tuple(PauliPhase(int(phase)) for phase in phases),
-        )
+            code_array, coefficient_array = array_input
+        return cls.canonicalize_code_arrays(code_array, coefficient_array)
 
     @classmethod
     def canonicalize_code_arrays(
@@ -455,19 +443,22 @@ class PauliOperator:
         """Canonicalize code arrays without per-term Python object conversion."""
         code_array, coefficient_array = _normalize_code_arrays(structures, coefficients)
         nqubits = int(code_array.shape[1])
-        canonical_structures, real, imaginary, mapping, phases = (
-            _native.pauli_canonicalize_batch_array(
+        canonical_count, codes, values, mapping, phases = (
+            _native.pauli_canonicalize_batch_numpy(
                 nqubits, code_array, coefficient_array
             )
         )
+        canonical_structures = np.asarray(codes, dtype=np.uint8).reshape(
+            (canonical_count, nqubits)
+        )
+        canonical_coefficients = np.asarray(values, dtype=np.complex128)
+        input_to_canonical = cast(Sequence[int], mapping)
+        phase_multipliers = cast(Sequence[int], phases)
         return CanonicalizationResult(
             tuple(tuple(int(code) for code in row) for row in canonical_structures),
-            tuple(
-                complex(real_value, imaginary_value)
-                for real_value, imaginary_value in zip(real, imaginary)
-            ),
-            tuple(int(index) for index in mapping),
-            tuple(PauliPhase(int(phase)) for phase in phases),
+            tuple(complex(value) for value in canonical_coefficients),
+            tuple(int(index) for index in input_to_canonical),
+            tuple(PauliPhase(int(phase)) for phase in phase_multipliers),
         )
 
     @classmethod

@@ -7,7 +7,7 @@ use tencir_pauli_core::{
     AngleRef, CircuitGate, CircuitProgram, Complex64, U1CircuitPlan, U1Sector,
 };
 
-use crate::convert::{build_canonical_operator, map_error};
+use crate::convert::map_error;
 use crate::operator::NativePauliOperatorHandle;
 
 type NativeGate = (u8, usize, usize, usize, Vec<usize>, Vec<f64>, Vec<f64>);
@@ -149,66 +149,6 @@ impl NativeU1CircuitPlan {
         Ok(PyArray1::from_vec(py, probability))
     }
 
-    #[pyo3(signature = (initial_state, structures, coefficients_re, coefficients_im, parameters))]
-    fn expectation(
-        &self,
-        py: Python<'_>,
-        initial_state: PyReadonlyArray1<'_, NumpyComplex128>,
-        structures: Vec<Vec<u8>>,
-        coefficients_re: Vec<f64>,
-        coefficients_im: Vec<f64>,
-        parameters: PyReadonlyArray1<'_, f64>,
-    ) -> PyResult<(f64, f64)> {
-        let initial = initial_state
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("initial_state must be C-contiguous"))?;
-        let parameters = parameters
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
-        let value = py.allow_threads(|| -> PyResult<_> {
-            let observable = build_canonical_operator(
-                self.plan.nqubits(),
-                &structures,
-                &coefficients_re,
-                &coefficients_im,
-            )?;
-            self.plan
-                .expectation(initial, &observable, parameters)
-                .map_err(map_error)
-        })?;
-        Ok((value.re, value.im))
-    }
-
-    #[pyo3(signature = (initial_state, structures, coefficients_re, coefficients_im, parameters))]
-    fn value_and_grad<'py>(
-        &self,
-        py: Python<'py>,
-        initial_state: PyReadonlyArray1<'py, NumpyComplex128>,
-        structures: Vec<Vec<u8>>,
-        coefficients_re: Vec<f64>,
-        coefficients_im: Vec<f64>,
-        parameters: PyReadonlyArray1<'py, f64>,
-    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
-        let initial = initial_state
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("initial_state must be C-contiguous"))?;
-        let parameters = parameters
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("parameters must be C-contiguous"))?;
-        let (value, gradient) = py.allow_threads(|| -> PyResult<_> {
-            let observable = build_canonical_operator(
-                self.plan.nqubits(),
-                &structures,
-                &coefficients_re,
-                &coefficients_im,
-            )?;
-            self.plan
-                .value_and_grad(initial, &observable, parameters)
-                .map_err(map_error)
-        })?;
-        Ok((value, PyArray1::from_vec(py, gradient)))
-    }
-
     fn expectation_handle(
         &self,
         py: Python<'_>,
@@ -280,50 +220,6 @@ impl NativeU1FinalState {
             .allow_threads(|| self.plan.probability_full_from_state(&self.state))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, probability))
-    }
-
-    #[pyo3(signature = (structures, coefficients_re, coefficients_im))]
-    fn expectation(
-        &self,
-        py: Python<'_>,
-        structures: Vec<Vec<u8>>,
-        coefficients_re: Vec<f64>,
-        coefficients_im: Vec<f64>,
-    ) -> PyResult<(f64, f64)> {
-        let value = py.allow_threads(|| -> PyResult<_> {
-            let observable = build_canonical_operator(
-                self.plan.nqubits(),
-                &structures,
-                &coefficients_re,
-                &coefficients_im,
-            )?;
-            self.plan
-                .expectation_from_state(&self.state, &observable)
-                .map_err(map_error)
-        })?;
-        Ok((value.re, value.im))
-    }
-
-    #[pyo3(signature = (structures, coefficients_re, coefficients_im))]
-    fn value_and_grad<'py>(
-        &self,
-        py: Python<'py>,
-        structures: Vec<Vec<u8>>,
-        coefficients_re: Vec<f64>,
-        coefficients_im: Vec<f64>,
-    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
-        let (value, gradient) = py.allow_threads(|| -> PyResult<_> {
-            let observable = build_canonical_operator(
-                self.plan.nqubits(),
-                &structures,
-                &coefficients_re,
-                &coefficients_im,
-            )?;
-            self.plan
-                .value_and_grad_from_state(&self.state, &observable, &self.parameters)
-                .map_err(map_error)
-        })?;
-        Ok((value, PyArray1::from_vec(py, gradient)))
     }
 
     fn expectation_handle(

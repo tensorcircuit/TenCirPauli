@@ -3,7 +3,6 @@ use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use tencir_pauli_core::{Complex64, PauliError, PauliOperator};
 
-pub(crate) type CanonicalizeBatchOutput = (Vec<Vec<u8>>, Vec<f64>, Vec<f64>, Vec<usize>, Vec<u8>);
 pub(crate) type NumpyCanonicalizeBatchOutput<'py> = (
     usize,
     Bound<'py, PyArray1<u8>>,
@@ -143,16 +142,6 @@ pub(crate) fn build_operator(
 ) -> PyResult<PauliOperator> {
     let coefficients = complex_coefficients(coefficients_re.to_vec(), coefficients_im.to_vec())?;
     PauliOperator::from_terms(nqubits, structures, &coefficients).map_err(map_error)
-}
-
-pub(crate) fn build_canonical_operator(
-    nqubits: usize,
-    structures: &[Vec<u8>],
-    coefficients_re: &[f64],
-    coefficients_im: &[f64],
-) -> PyResult<PauliOperator> {
-    let coefficients = complex_coefficients(coefficients_re.to_vec(), coefficients_im.to_vec())?;
-    PauliOperator::from_canonical_terms(nqubits, structures, &coefficients).map_err(map_error)
 }
 
 pub(crate) fn code_rows(codes: &[u8], row_count: usize, nqubits: usize) -> Vec<Vec<u8>> {
