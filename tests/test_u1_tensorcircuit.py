@@ -62,6 +62,28 @@ def test_u1_conversion_rejects_boolean_angles() -> None:
         tcp.U1Circuit.from_circuit(circuit)
 
 
+@pytest.mark.parametrize("filled", [None, [1]])
+def test_u1_conversion_preserves_custom_initial_state(filled: list[int] | None) -> None:
+    with tc.runtime_backend("numpy"), tc.runtime_dtype("complex128"):
+        initial = np.array([1.0, 1.0j], dtype=np.complex128) / np.sqrt(2.0)
+        reference = tc.U1Circuit(2, k=1, filled=filled, inputs=initial)
+        reference.iswap(0, 1, theta=0.37)
+        reference.rz(0, theta=-0.23)
+        converted = tcp.U1Circuit.from_circuit(reference)
+        np.testing.assert_allclose(converted.state(), reference.state(), atol=1e-12)
+        np.testing.assert_allclose(
+            converted.state_full(), reference.to_dense(), atol=1e-12
+        )
+        observable = tcp.PauliOperator.from_terms(2, [("ZI", 1.0)])
+        np.testing.assert_allclose(
+            converted.expectation(observable),
+            reference.expectation_ps(z=[0]),
+            atol=1e-12,
+        )
+        assert reference.circuit_param["inputs"] is initial
+        assert reference.circuit_param["filled"] == ([0] if filled is None else filled)
+
+
 @pytest.mark.parametrize(
     "nqubits, particles, layers",
     ((20, 2, 8), (24, 3, 6)),

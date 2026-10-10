@@ -210,6 +210,8 @@ def u1_circuit_from_tensorcircuit(
     params["particle_number"] = params.pop("k", None)
     params["occupied"] = params.pop("filled", None)
     params["initial_state"] = params.pop("inputs", None)
+    if params["initial_state"] is not None:
+        params["occupied"] = None
     converted = U1Circuit.from_qir(qir, params, max_bytes=max_bytes)
     return TensorCircuitU1Conversion(converted)
 

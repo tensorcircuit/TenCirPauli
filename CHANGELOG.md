@@ -4,6 +4,12 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+
+- Fixed TensorCircuit U1 conversion rejecting custom initial states when the source circuit also retains default or explicit occupied-site metadata.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
