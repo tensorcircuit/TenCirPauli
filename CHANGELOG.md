@@ -4,6 +4,12 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+
+- Fixed JAX tracer leaks when Pauli or Weyl backend MVP callables are first used under JIT and subsequently reused eagerly or in another transformation. Added a CI job that installs JAX and runs the integration suite.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
