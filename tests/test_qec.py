@@ -400,6 +400,19 @@ def test_logical_witness_search_validates_known_css_and_threshold_contracts() ->
     assert not exact_threshold.early_stopped
 
 
+@pytest.mark.parametrize("nqubits", [1, 2, 65])
+@pytest.mark.parametrize("sector", ["auto", "x", "z", "general"])
+def test_logical_witness_search_without_stabilizers(nqubits: int, sector: str) -> None:
+    code = StabilizerCode.from_generators(nqubits, [])
+    result = code.search_logical_witness(
+        sector=sector, max_trials=1, sketch_rows=2, seed=0
+    )
+    assert result.best_weight == 1
+    _assert_logical_witness(code, result)
+    if sector in ("x", "z"):
+        assert result.best.sector == sector
+
+
 def test_logical_witness_search_replays_and_has_prefix_monotonicity() -> None:
     code = StabilizerCode.from_generators(
         5,

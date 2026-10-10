@@ -4,6 +4,12 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+
+- Fixed logical-witness search panicking for valid codes without stabilizer generators in the automatic, X, and Z sectors, including codes spanning multiple packed words.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
