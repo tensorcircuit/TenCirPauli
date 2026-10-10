@@ -1694,7 +1694,13 @@ impl Snapshots {
         if !hamiltonian.is_hermitian(0.0) {
             return Err(PauliError::NonHermitianExpectation);
         }
-        let square = hamiltonian.multiply_with_limit(hamiltonian, max_bytes)?;
+        let mut square = hamiltonian.multiply_with_limit(hamiltonian, max_bytes)?;
+        // H is exactly Hermitian, so H^2 has real Pauli coefficients. Generic
+        // multiplication can leave imaginary roundoff from anticommuting pairs.
+        for term in &mut square.terms {
+            term.coefficient.im = 0.0;
+        }
+        square.terms.retain(|term| term.coefficient.re != 0.0);
         let first = self.setting_values(std::slice::from_ref(hamiltonian))?;
         let second = self.setting_values(std::slice::from_ref(&square))?;
         let second_blocks = block_means(&second, self.nsettings(), 1, blocks)?;
@@ -3014,6 +3020,33 @@ fn stabilizer_overlap_squared(
 mod tests {
     use super::*;
     use rayon::ThreadPoolBuilder;
+
+    #[test]
+    fn energy_variance_preserves_hermitian_square() {
+        let snapshots =
+            Snapshots::from_pauli_measurements(2, 2, 1, &[3, 3, 3, 3], &[0, 0, 0, 0], u128::MAX)
+                .expect("Z measurements");
+        for scale in [1.0, 1.0e-7] {
+            let hamiltonian = PauliOperator::from_terms(
+                2,
+                &[vec![3, 1], vec![0, 1], vec![3, 2], vec![0, 2]],
+                &[0.4, 0.3, 0.4, 0.5].map(|value| Complex64::new(value * scale, 0.0)),
+            )
+            .expect("Hermitian Hamiltonian");
+            let variance = snapshots
+                .energy_variance(&hamiltonian, 1, u128::MAX)
+                .expect("variance of a Hermitian Hamiltonian");
+            let expected = 2.58 * scale * scale;
+            assert!((variance - expected).abs() < expected * 1.0e-12);
+        }
+        let nonhermitian =
+            PauliOperator::from_terms(2, &[vec![3, 0]], &[Complex64::new(1.0, 1.0e-18)])
+                .expect("complex Hamiltonian");
+        assert!(matches!(
+            snapshots.energy_variance(&nonhermitian, 1, u128::MAX),
+            Err(PauliError::NonHermitianExpectation)
+        ));
+    }
 
     #[test]
     fn packed_nullspace_matches_byte_reference() {

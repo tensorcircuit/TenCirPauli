@@ -149,6 +149,27 @@ def test_renyi_methods_and_energy_variance_have_fixed_values() -> None:
     )
 
 
+@pytest.mark.parametrize("scale", [1.0, 1.0e-7])
+def test_energy_variance_removes_only_imaginary_square_roundoff(scale: float) -> None:
+    snapshots = tcp.Snapshots.from_pauli_measurements(
+        np.full((2, 2), 3, dtype=np.uint8), np.zeros((2, 1, 2), dtype=np.uint8)
+    )
+    hamiltonian = tcp.PauliOperator.from_terms(
+        2,
+        [
+            (word, value * scale)
+            for word, value in [("ZX", 0.4), ("IX", 0.3), ("ZY", 0.4), ("IY", 0.5)]
+        ],
+    )
+    # H^2 = scale^2 * (0.66 II + 0.64 ZI); both Z settings estimate <ZI> = 3.
+    np.testing.assert_allclose(
+        snapshots.energy_variance(hamiltonian), 2.58 * scale**2, atol=0.0, rtol=1e-12
+    )
+    nonhermitian = tcp.PauliOperator.from_terms(2, [("ZI", 1.0 + 1.0e-18j)])
+    with pytest.raises(ValueError, match="Hermitian"):
+        snapshots.energy_variance(nonhermitian)
+
+
 def test_shadow_renyi_workspace_guard_precedes_large_materialization() -> None:
     snapshots = tcp.Snapshots.from_pauli_measurements(
         np.full((2, 16), 3, dtype=np.uint8),

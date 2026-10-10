@@ -4,6 +4,12 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+
+- Fixed shadow energy variance rejecting Hermitian Hamiltonians because of imaginary roundoff in their squares. The square's mathematically real coefficients are preserved without an epsilon cutoff; non-Hermitian inputs remain rejected.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
