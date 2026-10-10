@@ -48,6 +48,18 @@ def require_tensorcircuit() -> Any:
         ) from error
 
 
+def _qir_gate_name(instruction: dict[str, Any]) -> str:
+    """Read gate semantics from the factory rather than its display label."""
+    if "gatef" not in instruction or instruction.get("is_channel"):
+        name = str(instruction.get("name", "")).lower()
+    else:
+        factory = instruction["gatef"]
+        name = str(getattr(factory, "n", getattr(factory, "__name__", ""))).lower()
+        if name.endswith("_gate"):
+            name = name[:-5]
+    return {"sd": "sdg"}.get(name, name)
+
+
 def gate_tape_from_circuit(
     circuit: Any,
 ) -> TensorCircuitTapeConversion:
@@ -71,7 +83,7 @@ def gate_tape_from_circuit(
     for instruction in qir:
         if not isinstance(instruction, dict):
             raise ValueError("TensorCircuit QIR entries must be dictionaries")
-        name = str(instruction.get("name", "")).lower()
+        name = _qir_gate_name(instruction)
         wires = tuple(instruction.get("index", ()))
         if name in fixed:
             if instruction.get("parameters"):
