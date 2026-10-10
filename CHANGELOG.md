@@ -9,6 +9,7 @@ The project follows Semantic Versioning.
 ### Fixed
 
 - Fixed JAX tracer leaks when Pauli or Weyl backend MVP callables are first used under JIT and subsequently reused eagerly or in another transformation. The existing Linux Python 3.13 CI job now installs JAX to run backend integration tests.
+- Fixed TensorCircuit U1 conversion rejecting custom initial states when the source circuit also retains default or explicit occupied-site metadata.
 
 ## 0.5.0 - 2026-08-21
 
