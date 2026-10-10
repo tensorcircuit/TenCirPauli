@@ -24,7 +24,9 @@ class SPPSCircuit(_CircuitBuilder):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._spps_objective_cache: Optional[tuple[tuple[Any, ...], SPPSEngine]] = None
+        self._spps_objective_cache: Optional[
+            tuple[tuple[Any, ...], SPPSEngine, PauliOperator, SPPSState]
+        ] = None
 
     def _append(self, *args: Any, **kwargs: Any) -> None:
         super()._append(*args, **kwargs)
@@ -59,7 +61,8 @@ class SPPSCircuit(_CircuitBuilder):
             smoothing=smoothing,
             max_bytes=max_bytes,
         )
-        self._spps_objective_cache = (key, engine)
+        # Keep identity-keyed inputs alive for the lifetime of this cache entry.
+        self._spps_objective_cache = (key, engine, observable, initial_state)
         return engine
 
     def _budget(self, max_bytes: object) -> Optional[int]:

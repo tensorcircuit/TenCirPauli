@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
+
 import numpy as np
 import pytest
 
@@ -101,3 +104,47 @@ def test_nonhermitian_scalar_terminals_fail() -> None:
     spps = tcp.SPPSCircuit(1)
     with pytest.raises(ValueError, match="Hermitian"):
         spps.expectation(observable, samples_per_term=4, seed=1)
+
+
+@pytest.mark.parametrize("circuit_type", [tcp.PropagationCircuit, tcp.SPPSCircuit])
+@pytest.mark.parametrize("gradient", [False, True])
+def test_objective_cache_retains_inputs_until_replaced(
+    circuit_type: type[tcp.PropagationCircuit] | type[tcp.SPPSCircuit], gradient: bool
+) -> None:
+    circuit = circuit_type(1)
+    kwargs = (
+        {"samples_per_term": 2, "seed": 0} if circuit_type is tcp.SPPSCircuit else {}
+    )
+    terminal = circuit.value_and_grad if gradient else circuit.expectation
+
+    def value(
+        observable: tcp.PauliOperator,
+        initial_state: tcp.ProductBlochState | tcp.ZeroState,
+    ) -> float:
+        result = terminal(observable, initial_state=initial_state, **kwargs)
+        return result if isinstance(result, float) else result.value
+
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 2.0)])
+    state = tcp.ProductBlochState([[0.0, 0.0, 0.5]])
+    observable_ref, state_ref = weakref.ref(observable), weakref.ref(state)
+    assert value(observable, state) == pytest.approx(1.0)
+    assert value(observable, state) == pytest.approx(1.0)
+    del observable, state
+    gc.collect()
+    assert observable_ref() is not None
+    assert state_ref() is not None
+
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 3.0)])
+    state = tcp.ProductBlochState([[0.0, 0.0, -0.5]])
+    assert value(observable, state) == pytest.approx(-1.5)
+    gc.collect()
+    assert observable_ref() is None
+    assert state_ref() is None
+
+    observable_ref, state_ref = weakref.ref(observable), weakref.ref(state)
+    del observable, state
+    circuit.x(0)
+    gc.collect()
+    assert observable_ref() is None
+    assert state_ref() is None
+    assert value(_z_observable(1), tcp.ZeroState()) == pytest.approx(-1.0)

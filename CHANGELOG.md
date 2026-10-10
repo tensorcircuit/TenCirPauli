@@ -4,6 +4,12 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+
+- Fixed deterministic and stochastic circuit objective caches retaining stale results when temporary observables or initial states reuse a previous Python object identity.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
