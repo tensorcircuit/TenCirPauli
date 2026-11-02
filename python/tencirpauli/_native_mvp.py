@@ -276,6 +276,28 @@ class _NativeMvpFacade:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> np.ndarray[Any, Any]:
         """Apply the plan through exactly one coarse native call."""
+        return self._apply(state, max_bytes=max_bytes, adjoint=False)
+
+    def apply_adjoint(
+        self,
+        state: Sequence[complex],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]:
+        """Apply the conjugate transpose in this plan's unchanged basis.
+
+        Reuse the retained native plan without materializing a matrix or
+        constructing a second plan. ``max_bytes`` follows :meth:`apply`.
+        """
+        return self._apply(state, max_bytes=max_bytes, adjoint=True)
+
+    def _apply(
+        self,
+        state: Sequence[complex],
+        *,
+        max_bytes: Optional[int],
+        adjoint: bool,
+    ) -> np.ndarray[Any, Any]:
         _validate_max_bytes(max_bytes)
         values = np.asarray(state, dtype=np.complex128)
         if values.ndim != 1 or values.shape[0] != self.dimension:
@@ -283,12 +305,11 @@ class _NativeMvpFacade:
                 f"state must have shape ({self.dimension},), got {values.shape}"
             )
         _check_allocation(self.dimension * 16, max_bytes, "requested native MVP output")
+        apply = self._execution.apply_adjoint if adjoint else self._execution.apply
         return cast(
             np.ndarray[Any, Any],
             np.asarray(
-                self._execution.apply(
-                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                ),
+                apply(np.ascontiguousarray(values), _effective_max_bytes(max_bytes)),
                 dtype=np.complex128,
                 order="C",
             ),

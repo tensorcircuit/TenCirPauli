@@ -158,6 +158,53 @@ fn mvp_apply_into_overwrites_zeroed_and_prefilled_outputs_for_all_paths() {
 }
 
 #[test]
+fn mvp_adjoint_matches_dense_and_preserves_both_execution_strategies() {
+    for nqubits in [2, 13] {
+        let count = if nqubits == 2 { 8 } else { 64 };
+        let structures = (0..count)
+            .map(|index| {
+                (0..nqubits)
+                    .map(|qubit| ((index / 4_usize.pow(qubit as u32)) % 4) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let coefficients = (0..count)
+            .map(|index| Complex64::new(1.0 + index as f64, -0.5))
+            .collect::<Vec<_>>();
+        let operator = PauliOperator::from_terms(nqubits, &structures, &coefficients).unwrap();
+        let state = (0..1 << nqubits)
+            .map(|index| Complex64::new(index as f64 * 0.25, -1.0))
+            .collect::<Vec<_>>();
+        let expected = if nqubits == 2 {
+            let (dimension, dense) = operator.dense_matrix(u128::MAX).unwrap();
+            (0..dimension)
+                .map(|row| {
+                    (0..dimension)
+                        .map(|column| dense[column * dimension + row].conj() * state[column])
+                        .sum::<Complex64>()
+                })
+                .collect::<Vec<_>>()
+        } else {
+            operator.adjoint().mvp(&state, u128::MAX).unwrap()
+        };
+        for plan in [
+            MvpPlan::from_operator(&operator).unwrap(),
+            MvpPlan::from_operator_reusable(&operator, u128::MAX).unwrap(),
+        ] {
+            let actual = plan.apply_adjoint(&state, u128::MAX).unwrap();
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert!((*actual - *expected).norm() < 1e-10);
+            }
+            assert!(matches!(
+                plan.apply_adjoint(&state, 0),
+                Err(PauliError::MemoryLimit { .. })
+            ));
+            assert!(plan.apply_adjoint(&state[1..], u128::MAX).is_err());
+        }
+    }
+}
+
+#[test]
 fn scale_preserves_finite_nonzero_canonical_terms() {
     let operator = PauliOperator::from_terms(
         1,

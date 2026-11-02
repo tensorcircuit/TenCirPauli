@@ -184,6 +184,23 @@ impl MvpPlan {
         state: &[Complex64],
         max_bytes: u128,
     ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<false>(state, max_bytes)
+    }
+
+    /// Apply the conjugate transpose using the retained masks or diagonals.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<true>(state, max_bytes)
+    }
+
+    fn apply_direction<const ADJOINT: bool>(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
         let dimension = matrix_dimension(self.nqubits)?;
         if state.len() != dimension {
             return Err(PauliError::InvalidStructureLength {
@@ -196,12 +213,21 @@ impl MvpPlan {
             max_bytes,
         )?;
         let mut result = vec![Complex64::default(); dimension];
-        self.apply_into(state, &mut result, max_bytes)?;
+        self.apply_into_direction::<ADJOINT>(state, &mut result, max_bytes)?;
         Ok(result)
     }
 
     /// Apply the plan into caller-owned storage without allocating a result.
     pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        result: &mut [Complex64],
+        max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        self.apply_into_direction::<false>(state, result, max_bytes)
+    }
+
+    pub(crate) fn apply_into_direction<const ADJOINT: bool>(
         &self,
         state: &[Complex64],
         result: &mut [Complex64],
@@ -231,13 +257,24 @@ impl MvpPlan {
                 let mut value = Complex64::default();
                 if let Some(groups) = &self.diagonal_groups {
                     for group in groups {
-                        value += group.diagonal[row ^ group.x_mask] * state[row ^ group.x_mask];
+                        let column = row ^ group.x_mask;
+                        let coefficient = if ADJOINT {
+                            group.diagonal[row].conj()
+                        } else {
+                            group.diagonal[column]
+                        };
+                        value += coefficient * state[column];
                     }
                 } else {
                     for term in self.terms.as_ref().expect("direct terms") {
                         let column = row ^ term.x_mask;
-                        let mut contribution = term.weighted_phase * state[column];
-                        if (term.z_mask & column).count_ones() & 1 != 0 {
+                        let (phase, source) = if ADJOINT {
+                            (term.weighted_phase.conj(), row)
+                        } else {
+                            (term.weighted_phase, column)
+                        };
+                        let mut contribution = phase * state[column];
+                        if (term.z_mask & source).count_ones() & 1 != 0 {
                             contribution = -contribution;
                         }
                         value += contribution;
@@ -251,13 +288,23 @@ impl MvpPlan {
                 if let Some(groups) = &self.diagonal_groups {
                     for group in groups {
                         let column = row ^ group.x_mask;
-                        value += group.diagonal[column] * state[column];
+                        let coefficient = if ADJOINT {
+                            group.diagonal[row].conj()
+                        } else {
+                            group.diagonal[column]
+                        };
+                        value += coefficient * state[column];
                     }
                 } else {
                     for term in self.terms.as_ref().expect("direct terms") {
                         let column = row ^ term.x_mask;
-                        let mut contribution = term.weighted_phase * state[column];
-                        if (term.z_mask & column).count_ones() & 1 != 0 {
+                        let (phase, source) = if ADJOINT {
+                            (term.weighted_phase.conj(), row)
+                        } else {
+                            (term.weighted_phase, column)
+                        };
+                        let mut contribution = phase * state[column];
+                        if (term.z_mask & source).count_ones() & 1 != 0 {
                             contribution = -contribution;
                         }
                         value += contribution;

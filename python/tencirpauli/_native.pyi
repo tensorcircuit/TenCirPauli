@@ -40,6 +40,9 @@ HybridJordanWignerInput = tuple[
 __version__: str
 
 class StructuredMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def dimension(self) -> int: ...
     @property
@@ -69,6 +72,9 @@ class StructuredMvpPlan:
     ) -> None: ...
 
 class StructuredEagerMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def dimension(self) -> int: ...
     @property
@@ -376,6 +382,9 @@ class NativeChargeSectorPlan:
     ) -> NativeChargeEagerMvpPlan: ...
 
 class NativeChargeMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def dimension(self) -> int: ...
     @property
@@ -397,6 +406,9 @@ class NativeChargeMvpPlan:
     ) -> NativeChargeEagerMvpPlan: ...
 
 class NativeChargeEagerMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def dimension(self) -> int: ...
     @property
@@ -534,6 +546,9 @@ def majorana_canonicalize(
 ) -> NativeMajoranaOperatorHandle: ...
 
 class NativeMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def nqubits(self) -> int: ...
     @property
@@ -591,6 +606,9 @@ class NativeU1RestrictedOperator:
     ) -> tuple[int, UInt64Array, UInt64Array, Complex128Array]: ...
 
 class NativeU1MvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def nqubits(self) -> int: ...
     @property
@@ -607,6 +625,9 @@ class NativeU1MvpPlan:
     ) -> None: ...
 
 class NativeU1LazyMvpPlan:
+    def apply_adjoint(
+        self, state: Complex128Array, max_bytes: int
+    ) -> Complex128Array: ...
     @property
     def nqubits(self) -> int: ...
     @property

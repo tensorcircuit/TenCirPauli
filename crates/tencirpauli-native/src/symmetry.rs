@@ -234,6 +234,21 @@ pub(crate) struct NativeU1MvpPlan {
 
 #[pymethods]
 impl NativeU1MvpPlan {
+    fn apply_adjoint<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<numpy::Complex64>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output = py
+            .allow_threads(|| self.plan.apply_adjoint(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, output))
+    }
+
     #[getter]
     fn nqubits(&self) -> usize {
         self.plan.sector().nqubits()
@@ -309,6 +324,21 @@ pub(crate) struct NativeU1LazyMvpPlan {
 
 #[pymethods]
 impl NativeU1LazyMvpPlan {
+    fn apply_adjoint<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, numpy::Complex64>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<numpy::Complex64>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output = py
+            .allow_threads(|| self.plan.apply_adjoint(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, output))
+    }
+
     #[getter]
     fn nqubits(&self) -> usize {
         self.plan.sector().nqubits()

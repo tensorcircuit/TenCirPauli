@@ -58,6 +58,62 @@ def _pauli_operator() -> tcp.PauliOperator:
     )
 
 
+@pytest.mark.parametrize("storage", ["lazy", "eager"])
+@pytest.mark.parametrize("family", ["weyl", "fermion", "u1", "charge"])
+def test_native_sector_and_structured_adjoint(
+    benchmark: BenchmarkFixture, family: str, storage: str
+) -> None:
+    if family == "fermion":
+        operator = tcp.FermionOperator.from_terms(
+            14,
+            [
+                (((i, "create"), (i + 1, "annihilate")), 0.3 + 0.07j * i)
+                for i in range(13)
+            ],
+        )
+        plan = operator.compile("native_mvp", storage=storage)
+        state = np.arange(plan.dimension, dtype=np.complex128) + 0.5j
+        expected = operator.map_fermions().adjoint().native_mvp_plan().apply(state)
+    elif family == "weyl":
+        operator = tcp.QuditWeylOperator.from_terms(
+            3, [(((0, 1, 2), (4, 2, 1)), 0.3 + 0.7j)], n_sites=5
+        )
+        plan = operator.compile("native_mvp", storage=storage)
+        dense = operator.compile("dense")
+    elif family == "u1":
+        operator = tcp.PauliOperator.from_terms(
+            10, [("XX" + "I" * 8, 0.3 + 0.7j), ("YY" + "I" * 8, 0.3 + 0.7j)]
+        )
+        restricted = operator.restrict_charge(tcp.U1Sector(10, 3))
+        plan = restricted.mvp_plan(storage=storage)
+        dense = restricted.dense()
+    else:
+        space = tcp.OperatorSpace(fermions=6, bosons=1)
+        charge = tcp.AdditiveCharge(space, fermions={i: 1 for i in range(6)})
+        sector = charge.sector(3, boson_cutoffs={0: 3})
+        operator = (
+            (0.3 + 0.7j)
+            * space.fermion.create(0)
+            * space.fermion.annihilate(5)
+            * space.boson.create(0)
+        )
+        restricted = operator.restrict_charge(sector)
+        plan = restricted.mvp_plan(storage=storage)
+        dense = restricted.dense()
+    if family != "fermion":
+        state = np.arange(plan.dimension, dtype=np.complex128) + 0.5j
+        expected = dense.conj().T @ state
+    result = benchmark(plan.apply_adjoint, state)
+    np.testing.assert_allclose(result, expected)
+    _record_plan_metadata(
+        benchmark,
+        plan,
+        state,
+        allocation_mode="one_owned_output",
+        max_abs_error=float(np.max(np.abs(result - expected))),
+    )
+
+
 def test_lazy_plan_construction_and_apply(benchmark: BenchmarkFixture) -> None:
     operator = _pauli_operator()
     plan = benchmark(operator.compile, "native_mvp", storage="lazy")

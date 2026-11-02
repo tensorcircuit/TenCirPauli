@@ -99,6 +99,13 @@ class MVPPlan(Protocol):
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None: ...
 
+    def apply_adjoint(
+        self,
+        state: Sequence[complex],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> np.ndarray[Any, Any]: ...
+
     def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]: ...
 
     def to_scipy_linear_operator(

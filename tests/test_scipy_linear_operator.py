@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
+from scipy.linalg import expm
+from scipy.sparse.linalg import eigsh, expm_multiply
 
 import tencirpauli as tcp
+from tencirpauli.integrations.scipy import to_scipy_linear_operator
 
 
 def _fermion_charge_plan(storage: str):
@@ -96,9 +101,7 @@ def test_charge_plan_linear_operator_supports_both_storage_strategies(
     linear = plan.to_scipy_linear_operator()
     vector = np.array([1.0 + 2.0j, -0.5 + 0.25j])
     np.testing.assert_allclose(linear.matvec(vector), plan.apply(vector))
-    assert linear.rmatvec is not None
-    with pytest.raises(NotImplementedError):
-        linear.rmatvec(vector)
+    np.testing.assert_allclose(linear.rmatvec(vector), plan.apply(vector))
 
 
 def test_u1_plan_linear_operator_and_eigsh_match_dense_reference() -> None:
@@ -118,7 +121,184 @@ def test_u1_plan_linear_operator_and_eigsh_match_dense_reference() -> None:
     np.testing.assert_allclose(linear.matvec(vector), plan.apply(vector))
     dense = restricted.dense()
     np.testing.assert_allclose(linear.matvec(vector), dense @ vector)
-    from scipy.sparse.linalg import eigsh
-
     values, _ = eigsh(linear, k=1, which="SA")
     np.testing.assert_allclose(values[0], np.linalg.eigvalsh(dense)[0], atol=1.0e-12)
+
+
+def _adjoint_case(kind: str, storage: str) -> tuple[Any, np.ndarray]:
+    kwargs: dict[str, Any] = {}
+    if kind == "pauli":
+        operator = tcp.PauliOperator.from_terms(2, [("XY", 0.3 + 0.7j), ("ZI", -0.2j)])
+    elif kind == "weyl":
+        operator = tcp.QuditWeylOperator.from_terms(
+            3, [(((0, 1, 2),), 0.3 + 0.7j), (((1, 2, 1),), -0.2j)], n_sites=2
+        )
+    elif kind == "structured_qubit":
+        space = tcp.OperatorSpace(qubits=2)
+        operator = (0.3 + 0.7j) * space.qubit.y(0) + space.qubit.x(1)
+    elif kind in {"fermion", "jordan_wigner", "parity", "bravyi_kitaev"}:
+        space = tcp.OperatorSpace(fermions=3)
+        operator = (0.3 + 0.7j) * space.fermion.create(0) * space.fermion.annihilate(2)
+        if kind != "fermion":
+            operator = operator.map_fermions(kind)
+    elif kind == "boson":
+        space = tcp.OperatorSpace(bosons=1)
+        operator = (0.3 + 0.7j) * space.boson.create(0)
+        kwargs["boson_cutoffs"] = {0: 3}
+    elif kind == "hybrid":
+        space = tcp.OperatorSpace(fermions=1, bosons=1, qubits=1, qudits=(3,))
+        operator = (
+            (0.3 + 0.7j)
+            * space.fermion.create(0)
+            * space.boson.annihilate(0)
+            * space.qubit.y(0)
+            * space.qudit.weyl(0, 1, 2)
+        )
+        kwargs["boson_cutoffs"] = {0: 1}
+    elif kind == "u1":
+        operator = tcp.PauliOperator.from_terms(
+            3, [("XXI", 0.3 + 0.7j), ("YYI", 0.3 + 0.7j), ("ZII", -0.2j)]
+        )
+        restricted = operator.restrict_charge(tcp.U1Sector(3, 1), storage=storage)
+        return restricted.mvp_plan(storage=storage), restricted.dense()
+    else:
+        if kind == "charge_pauli":
+            space = tcp.OperatorSpace(qubits=3)
+            operator = tcp.PauliOperator.from_terms(
+                3, [("XXI", 0.3 + 0.7j), ("YYI", 0.3 + 0.7j), ("ZII", -0.2j)]
+            )
+            charge = tcp.AdditiveCharge(space, qubits={i: (0, 1) for i in range(3)})
+            sector = charge.sector(1)
+        elif kind == "charge_fermion":
+            space = tcp.OperatorSpace(fermions=3)
+            operator = (
+                (0.3 + 0.7j) * space.fermion.create(0) * space.fermion.annihilate(2)
+            )
+            charge = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: 1})
+            sector = charge.sector(1)
+        elif kind == "charge_boson":
+            space = tcp.OperatorSpace(bosons=2)
+            operator = (0.3 + 0.7j) * space.boson.create(0) * space.boson.annihilate(1)
+            charge = tcp.AdditiveCharge(space, bosons={0: 1, 1: 1})
+            sector = tcp.ChargeSector(((charge, 2),), boson_cutoffs={0: 2, 1: 2})
+        elif kind == "charge_factor":
+            space = tcp.OperatorSpace(fermions=2, qubits=2)
+            operator = (
+                (0.3 + 0.7j)
+                * space.fermion.create(0)
+                * space.fermion.annihilate(1)
+                * space.qubit.y(0)
+            )
+            charge = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1})
+            sector = charge.sector(1)
+        elif kind == "charge_generic":
+            space = tcp.OperatorSpace(fermions=1, bosons=1)
+            operator = (
+                (0.3 + 0.7j) * space.fermion.create(0) * space.boson.annihilate(0)
+            )
+            charge = tcp.AdditiveCharge(space, fermions={0: 1}, bosons={0: 1})
+            sector = tcp.ChargeSector(((charge, 2),), boson_cutoffs={0: 2})
+        else:
+            raise AssertionError(kind)
+        restricted = operator.restrict_charge(sector, storage=storage)
+        return restricted.mvp_plan(storage=storage), restricted.dense()
+    return operator.compile("native_mvp", storage=storage, **kwargs), operator.compile(
+        "dense", **kwargs
+    )
+
+
+@pytest.mark.parametrize("storage", ["lazy", "eager"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "pauli",
+        "weyl",
+        "structured_qubit",
+        "fermion",
+        "jordan_wigner",
+        "parity",
+        "bravyi_kitaev",
+        "boson",
+        "hybrid",
+        "u1",
+        "charge_fermion",
+        "charge_boson",
+        "charge_factor",
+        "charge_generic",
+        "charge_pauli",
+    ],
+)
+def test_native_adjoint_and_exponential_match_dense(kind: str, storage: str) -> None:
+    plan, dense = _adjoint_case(kind, storage)
+    metadata = plan._metadata
+    rng = np.random.default_rng(19)
+    u, v = rng.normal(size=(2, plan.dimension)) + 1j * rng.normal(
+        size=(2, plan.dimension)
+    )
+    original = v.copy()
+    expected = dense.conj().T @ v
+    result = plan.apply_adjoint(v)
+    np.testing.assert_allclose(result, expected, atol=1e-12)
+    assert result.dtype == np.dtype(np.complex128)
+    assert result.flags.c_contiguous
+    assert not np.shares_memory(result, v)
+    np.testing.assert_allclose(plan.apply_adjoint(v.tolist()), expected, atol=1e-12)
+    np.testing.assert_allclose(
+        np.vdot(u, plan.apply(v)), np.vdot(plan.apply_adjoint(u), v), atol=1e-12
+    )
+    np.testing.assert_array_equal(v, original)
+    np.testing.assert_allclose(result, expected, atol=1e-12)
+    assert plan._metadata is metadata
+    assert plan.storage == storage
+    linear = plan.to_scipy_linear_operator()
+    np.testing.assert_allclose(
+        linear.rmatvec(v[:, None]), expected[:, None], atol=1e-12
+    )
+    columns = np.column_stack((u, v))
+    np.testing.assert_allclose(linear.H @ columns, dense.conj().T @ columns, atol=1e-12)
+    np.testing.assert_allclose(linear.H.H @ v, dense @ v, atol=1e-12)
+    np.testing.assert_allclose(
+        expm_multiply(-0.2j * linear, v, traceA=-0.2j * np.trace(dense)),
+        expm(-0.2j * dense) @ v,
+        atol=1e-12,
+    )
+    with pytest.raises(ValueError, match="shape"):
+        plan.apply_adjoint(v[:-1])
+    with pytest.raises(ValueError, match="max_bytes"):
+        plan.apply_adjoint(v, max_bytes=-1)
+    with pytest.raises(MemoryError):
+        plan._execution.apply_adjoint(v, 0)
+
+
+def test_scipy_exponential_of_hermitian_operator_at_multiple_times() -> None:
+    operator = tcp.PauliOperator.from_terms(2, [("XI", 1.0), ("ZI", 0.2)])
+    linear = operator.to_scipy_linear_operator()
+    state = np.array([1, 0, 0, 0], dtype=np.complex128)
+    generator = -0.2j * operator.dense()
+    actual = expm_multiply(-0.2j * linear, state, start=0, stop=1, num=3, traceA=0.0)
+    expected = np.stack([expm(t * generator) @ state for t in [0, 0.5, 1]])
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+
+
+def test_parallel_fermion_adjoint_matches_mapped_pauli_reference() -> None:
+    operator = tcp.FermionOperator.from_terms(
+        14,
+        [(((i, "create"), (i + 1, "annihilate")), 0.3 + 0.07j * i) for i in range(13)],
+    )
+    plan = operator.compile("native_mvp")
+    state = np.arange(plan.dimension, dtype=np.complex128) + 0.5j
+    reference = operator.map_fermions().adjoint().native_mvp_plan()
+    np.testing.assert_allclose(
+        plan.apply_adjoint(state), reference.apply(state), atol=1e-10
+    )
+
+
+def test_scipy_rejects_plans_without_adjoint_support() -> None:
+    class ForwardOnly:
+        dimension = 4
+
+        def apply(self, state, **kwargs):
+            return state
+
+    with pytest.raises(TypeError, match="apply_adjoint"):
+        to_scipy_linear_operator(ForwardOnly())

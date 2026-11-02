@@ -3,6 +3,15 @@
 const STRUCTURED_CSR_PARALLEL_THRESHOLD: usize = 1 << 20;
 
 impl StructuredEagerMvpPlan {
+    /// Apply the conjugate transpose of the retained CSR graph.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        self.graph.apply_adjoint(state, max_bytes)
+    }
+
     pub fn dimension(&self) -> usize {
         self.graph.dimension()
     }
@@ -608,6 +617,23 @@ impl StructuredMvpPlan {
         state: &[Complex64],
         max_bytes: u128,
     ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<false>(state, max_bytes)
+    }
+
+    /// Apply the conjugate transpose while retaining the compiled schedules.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<true>(state, max_bytes)
+    }
+
+    fn apply_direction<const ADJOINT: bool>(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
         if state.len() != self.dimension {
             return Err(PauliError::InvalidStructureLength {
                 expected: self.dimension,
@@ -626,12 +652,12 @@ impl StructuredMvpPlan {
             });
         }
         let mut output = vec![Complex64::default(); self.dimension];
-        self.apply_into(state, &mut output, max_bytes)?;
+        self.apply_into_direction::<ADJOINT>(state, &mut output, max_bytes)?;
         Ok(output)
     }
 
     #[inline]
-    fn contiguous_fermion_destination_value(
+    fn contiguous_fermion_destination_value<const ADJOINT: bool>(
         &self,
         destination: usize,
         state: &[Complex64],
@@ -653,11 +679,16 @@ impl StructuredMvpPlan {
                 let action = descriptor
                     .contiguous_public_action()
                     .expect("contiguous Fermion member has a public-index action");
-                let Some(amplitude) = action.amplitude(source, self.coefficients[term_index])
+                let forward_source = if ADJOINT { destination } else { source };
+                let Some(amplitude) =
+                    action.amplitude(forward_source, self.coefficients[term_index])
                 else {
                     continue;
                 };
                 aggregate += amplitude;
+            }
+            if ADJOINT {
+                aggregate = aggregate.conj();
             }
             if aggregate.re != 0.0 || aggregate.im != 0.0 {
                 value += aggregate * state[source];
@@ -666,7 +697,7 @@ impl StructuredMvpPlan {
         value
     }
 
-    fn apply_contiguous_fermion_gather_into(
+    fn apply_contiguous_fermion_gather_into<const ADJOINT: bool>(
         &self,
         state: &[Complex64],
         output: &mut [Complex64],
@@ -677,11 +708,13 @@ impl StructuredMvpPlan {
                 .par_iter_mut()
                 .enumerate()
                 .for_each(|(destination, output_value)| {
-                    *output_value = self.contiguous_fermion_destination_value(destination, state);
+                    *output_value =
+                        self.contiguous_fermion_destination_value::<ADJOINT>(destination, state);
                 });
         } else {
             for (destination, output_value) in output.iter_mut().enumerate() {
-                *output_value = self.contiguous_fermion_destination_value(destination, state);
+                *output_value =
+                    self.contiguous_fermion_destination_value::<ADJOINT>(destination, state);
             }
         }
         self.counters.publish(StructuredApplyStats {
@@ -694,6 +727,15 @@ impl StructuredMvpPlan {
 
     /// Apply the compact plan into caller-owned output storage.
     pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        _max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        self.apply_into_direction::<false>(state, output, _max_bytes)
+    }
+
+    fn apply_into_direction<const ADJOINT: bool>(
         &self,
         state: &[Complex64],
         output: &mut [Complex64],
@@ -712,11 +754,11 @@ impl StructuredMvpPlan {
             });
         }
         if let StructuredPlanInner::Pauli(plan) = &self.inner {
-            return plan.apply_into(state, output, _max_bytes);
+            return plan.apply_into_direction::<ADJOINT>(state, output, _max_bytes);
         }
         output.fill(Complex64::default());
         if self.contiguous_fermion_source_mode_count.is_some() {
-            return self.apply_contiguous_fermion_gather_into(state, output);
+            return self.apply_contiguous_fermion_gather_into::<ADJOINT>(state, output);
         }
         let fermion_word_count = self
             .fermion_masks
@@ -762,8 +804,13 @@ impl StructuredMvpPlan {
                             // schedule. Keep its members semantically separate
                             // rather than applying a wrong shared segment.
                             for offset in 0..suffix_stride {
-                                output[member_destination + offset] +=
-                                    member_amplitude * state[block_start + offset];
+                                if ADJOINT {
+                                    output[block_start + offset] += member_amplitude.conj()
+                                        * state[member_destination + offset];
+                                } else {
+                                    output[member_destination + offset] +=
+                                        member_amplitude * state[block_start + offset];
+                                }
                             }
                             continue;
                         }
@@ -779,7 +826,12 @@ impl StructuredMvpPlan {
                     continue;
                 }
                 for offset in 0..suffix_stride {
-                    output[destination + offset] += aggregate * state[block_start + offset];
+                    if ADJOINT {
+                        output[block_start + offset] +=
+                            aggregate.conj() * state[destination + offset];
+                    } else {
+                        output[destination + offset] += aggregate * state[block_start + offset];
+                    }
                 }
                 if suffix_stride > 1 {
                     member_context.stats.segment_applications += 1;
