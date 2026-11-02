@@ -240,6 +240,19 @@ fn benchmark_hamiltonian_scaling(criterion: &mut Criterion) {
                 });
             },
         );
+        group.bench_with_input(
+            BenchmarkId::new("reusable_plan_adjoint", format!("{nqubits}q_{count}terms")),
+            &(&plan, &state),
+            |bencher, (plan_input, state_input)| {
+                bencher.iter(|| {
+                    black_box(
+                        plan_input
+                            .apply_adjoint(black_box(state_input), u128::MAX)
+                            .unwrap(),
+                    )
+                });
+            },
+        );
         if nqubits <= 12 {
             group.bench_with_input(
                 BenchmarkId::new("coo", format!("{nqubits}q_{count}terms")),

@@ -22,7 +22,11 @@ struct ContiguousLocalAggregateExecutor {
 }
 
 impl ContiguousLocalAggregateExecutor {
-    fn apply_into(&self, state: &[Complex64], output: &mut [Complex64]) -> Result<(), PauliError> {
+    fn apply_into<const ADJOINT: bool>(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
         if state.len() != output.len()
             || self.component_dimension == 0
             || state.len() % self.component_stride != 0
@@ -54,7 +58,11 @@ impl ContiguousLocalAggregateExecutor {
                     .ok_or(PauliError::Overflow {
                         context: "indexing factorized component destination",
                     })?;
-                output[row] += transition.value * state_value;
+                if ADJOINT {
+                    output[source] += transition.value.conj() * state[row];
+                } else {
+                    output[row] += transition.value * state_value;
+                }
             }
         }
         Ok(())
@@ -99,7 +107,11 @@ struct ContiguousFactorScheduleExecutor {
 }
 
 impl ContiguousFactorScheduleExecutor {
-    fn apply_into(&self, state: &[Complex64], output: &mut [Complex64]) -> Result<(), PauliError> {
+    fn apply_into<const ADJOINT: bool>(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
         if state.len() != output.len()
             || self.component_dimensions.len() != self.component_strides.len()
             || self.component_dimensions.len() != self.component_fermion_words.len()
@@ -172,7 +184,11 @@ impl ContiguousFactorScheduleExecutor {
                     };
                     value = amplitude;
                 }
-                output[row] += value * state_value;
+                if ADJOINT {
+                    output[column] += value.conj() * state[row];
+                } else {
+                    output[row] += value * state_value;
+                }
             }
         }
         Ok(())
@@ -809,7 +825,7 @@ fn try_apply_contiguous_fixed_population_pair_into(
 /// aggregated before sector membership is checked, preserving the same exact
 /// cancellation semantics as eager compilation.
 #[allow(clippy::too_many_arguments)]
-fn apply_charge_mvp_from_prepared_plan(
+fn apply_charge_mvp_from_prepared_plan<const ADJOINT: bool>(
     plan: &ChargeSectorPlan,
     layout: &PreparedChargeTransitionPlanLayout,
     terms: &[ChargeTransitionTerm],
@@ -833,10 +849,10 @@ fn apply_charge_mvp_from_prepared_plan(
     }
     let mut output = vec![Complex64::new(0.0, 0.0); dimension];
     if let Some(executor) = local_aggregate {
-        executor.apply_into(state, &mut output)?;
+        executor.apply_into::<ADJOINT>(state, &mut output)?;
         return Ok(output);
     }
-    apply_charge_mvp_from_prepared_plan_into(
+    apply_charge_mvp_from_prepared_plan_into::<ADJOINT>(
         plan,
         layout,
         terms,
@@ -851,7 +867,7 @@ fn apply_charge_mvp_from_prepared_plan(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_charge_mvp_from_prepared_plan_into(
+fn apply_charge_mvp_from_prepared_plan_into<const ADJOINT: bool>(
     plan: &ChargeSectorPlan,
     layout: &PreparedChargeTransitionPlanLayout,
     terms: &[ChargeTransitionTerm],
@@ -882,23 +898,32 @@ fn apply_charge_mvp_from_prepared_plan_into(
         });
     }
     if let Some(executor) = local_aggregate {
-        return executor.apply_into(state, output);
+        return executor.apply_into::<ADJOINT>(state, output);
     }
-    if try_apply_contiguous_fixed_population_into(plan, layout, state, output, termwise_conserved)?
+    if !ADJOINT
+        && try_apply_contiguous_fixed_population_into(
+            plan,
+            layout,
+            state,
+            output,
+            termwise_conserved,
+        )?
     {
         return Ok(());
     }
-    if try_apply_contiguous_fixed_population_pair_into(
-        plan,
-        layout,
-        state,
-        output,
-        termwise_conserved,
-    )? {
+    if !ADJOINT
+        && try_apply_contiguous_fixed_population_pair_into(
+            plan,
+            layout,
+            state,
+            output,
+            termwise_conserved,
+        )?
+    {
         return Ok(());
     }
     if let Some(executor) = factor_schedule {
-        return executor.apply_into(state, output);
+        return executor.apply_into::<ADJOINT>(state, output);
     }
     let scratch_limit = max_bytes - output_bytes as u128;
     let axis_count = local_dimensions.len();
@@ -997,7 +1022,11 @@ fn apply_charge_mvp_from_prepared_plan_into(
                 let row = usize::try_from(row).map_err(|_| PauliError::Overflow {
                     context: "converting charge-sector MVP destination",
                 })?;
-                output[row] += value * *state_value;
+                if ADJOINT {
+                    output[column] += value.conj() * state[row];
+                } else {
+                    output[row] += value * *state_value;
+                }
             }
         } else {
             for schedule in schedules {
@@ -1038,7 +1067,11 @@ fn apply_charge_mvp_from_prepared_plan_into(
                 }
                 Err(error) => return Err(error),
             };
-            output[row] += value * *state_value;
+            if ADJOINT {
+                output[column] += value.conj() * state[row];
+            } else {
+                output[row] += value * *state_value;
+            }
             Ok(())
         })?;
     }
@@ -1120,6 +1153,24 @@ pub struct PreparedChargeMvpPlan {
 }
 
 impl PreparedChargeMvpPlan {
+    /// Apply the conjugate transpose in the retained public charge basis.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        apply_charge_mvp_from_prepared_plan::<true>(
+            &self.sector,
+            &self.layout,
+            &self.terms,
+            self.local_aggregate.as_ref(),
+            self.factor_schedule.as_ref(),
+            state,
+            self.termwise_conserved,
+            max_bytes,
+        )
+    }
+
     fn new(
         sector: Arc<ChargeSectorPlan>,
         layout: PreparedChargeTransitionPlanLayout,
@@ -1216,7 +1267,7 @@ impl PreparedChargeMvpPlan {
         state: &[Complex64],
         max_bytes: u128,
     ) -> Result<Vec<Complex64>, PauliError> {
-        apply_charge_mvp_from_prepared_plan(
+        apply_charge_mvp_from_prepared_plan::<false>(
             &self.sector,
             &self.layout,
             &self.terms,
@@ -1234,7 +1285,7 @@ impl PreparedChargeMvpPlan {
         output: &mut [Complex64],
         max_bytes: u128,
     ) -> Result<(), PauliError> {
-        apply_charge_mvp_from_prepared_plan_into(
+        apply_charge_mvp_from_prepared_plan_into::<false>(
             &self.sector,
             &self.layout,
             &self.terms,

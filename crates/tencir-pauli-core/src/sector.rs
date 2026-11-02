@@ -552,6 +552,23 @@ impl U1LazyMvpPlan {
         state: &[Complex64],
         max_bytes: u128,
     ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<false>(state, max_bytes)
+    }
+
+    /// Apply the conjugate transpose in the same fixed-particle-number basis.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        self.apply_direction::<true>(state, max_bytes)
+    }
+
+    fn apply_direction<const ADJOINT: bool>(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
         let dimension = self.dimension();
         if state.len() != dimension {
             return Err(PauliError::InvalidStructureLength {
@@ -572,11 +589,20 @@ impl U1LazyMvpPlan {
                 requested: bytes,
                 limit: max_bytes,
             })?;
-        self.apply_into(state, &mut output, scratch_budget)?;
+        self.apply_into_direction::<ADJOINT>(state, &mut output, scratch_budget)?;
         Ok(output)
     }
 
     pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        self.apply_into_direction::<false>(state, output, max_bytes)
+    }
+
+    fn apply_into_direction<const ADJOINT: bool>(
         &self,
         state: &[Complex64],
         output: &mut [Complex64],
@@ -634,7 +660,11 @@ impl U1LazyMvpPlan {
                 &mut aggregate,
             )?;
             for &(destination, value) in &aggregate {
-                output[destination] += value * *state_value;
+                if ADJOINT {
+                    output[source_index] += value.conj() * state[destination];
+                } else {
+                    output[destination] += value * *state_value;
+                }
             }
             source_iterator.advance();
         }
@@ -643,6 +673,15 @@ impl U1LazyMvpPlan {
 }
 
 impl U1MvpPlan {
+    /// Apply the conjugate transpose without copying the retained sector graph.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        self.graph.apply_adjoint(state, max_bytes)
+    }
+
     pub fn sector(&self) -> U1Sector {
         self.sector.clone()
     }

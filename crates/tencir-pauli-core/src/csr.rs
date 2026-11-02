@@ -239,6 +239,34 @@ impl<I: CsrIndex> CsrGraph<I> {
         Ok(())
     }
 
+    /// Apply the conjugate transpose without retaining a second transition graph.
+    pub fn apply_adjoint(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        let bytes = self.dimension as u128 * std::mem::size_of::<Complex64>() as u128;
+        if bytes > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: bytes,
+                limit: max_bytes,
+            });
+        }
+        let mut output = vec![Complex64::default(); self.dimension];
+        for (window, &value) in self.indptr.windows(2).zip(state) {
+            for index in window[0]..window[1] {
+                output[self.columns[index].trusted_usize()] += self.values[index].conj() * value;
+            }
+        }
+        Ok(output)
+    }
+
     pub fn to_u64_arrays(&self, max_bytes: u128) -> Result<CsrU64Arrays, PauliError> {
         let required = ((self.indptr.len() as u128)
             .checked_mul(std::mem::size_of::<u64>() as u128))
@@ -758,8 +786,34 @@ impl CsrSink {
 
 #[cfg(test)]
 mod tests {
-    use super::CsrSink;
+    use super::{CsrGraph, CsrSink};
     use crate::Complex64;
+
+    #[test]
+    fn csr_adjoint_conjugates_and_reverses_sparse_transitions() {
+        let graph = CsrGraph::try_new(
+            3,
+            vec![0, 1, 2, 2],
+            vec![2_usize, 0],
+            vec![Complex64::new(1.0, 2.0), Complex64::new(3.0, -4.0)],
+        )
+        .unwrap();
+        let state = [
+            Complex64::new(2.0, 1.0),
+            Complex64::new(-1.0, 2.0),
+            Complex64::new(5.0, 0.0),
+        ];
+        assert_eq!(
+            graph.apply_adjoint(&state, u128::MAX).unwrap(),
+            vec![
+                Complex64::new(-11.0, 2.0),
+                Complex64::default(),
+                Complex64::new(4.0, -3.0),
+            ]
+        );
+        assert!(graph.apply_adjoint(&state, 47).is_err());
+        assert!(graph.apply_adjoint(&state[..2], u128::MAX).is_err());
+    }
 
     #[test]
     fn row_ordered_sink_publishes_empty_rows_without_a_coo_buffer() {

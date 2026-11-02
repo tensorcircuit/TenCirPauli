@@ -10,6 +10,21 @@ pub(crate) struct StructuredEagerMvpPlan {
 
 #[pymethods]
 impl StructuredEagerMvpPlan {
+    fn apply_adjoint<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output = py
+            .allow_threads(|| self.plan.apply_adjoint(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, output))
+    }
+
     #[getter]
     fn dimension(&self) -> usize {
         self.plan.dimension()
@@ -112,6 +127,21 @@ impl StructuredEagerMvpPlan {
 
 #[pymethods]
 impl StructuredMvpPlan {
+    fn apply_adjoint<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output = py
+            .allow_threads(|| self.plan.apply_adjoint(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, output))
+    }
+
     #[getter]
     fn dimension(&self) -> usize {
         self.plan.dimension()

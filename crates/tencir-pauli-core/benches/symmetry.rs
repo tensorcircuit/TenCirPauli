@@ -142,6 +142,17 @@ fn benchmark_u1(criterion: &mut Criterion) {
                 bencher.iter(|| black_box(plan_input.apply(state_input, u128::MAX).unwrap()));
             },
         );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "mvp_apply_adjoint",
+                format!("{nqubits}q_k{particle_number}"),
+            ),
+            &(&plan, &state),
+            |bencher, (plan_input, state_input)| {
+                bencher
+                    .iter(|| black_box(plan_input.apply_adjoint(state_input, u128::MAX).unwrap()));
+            },
+        );
         if nqubits == 12 || (nqubits == 128 && particle_number == 2) {
             group.bench_with_input(
                 BenchmarkId::new(

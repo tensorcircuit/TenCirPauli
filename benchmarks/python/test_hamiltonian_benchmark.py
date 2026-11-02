@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from pytest_benchmark.fixture import BenchmarkFixture
 
 from tencirpauli import PauliOperator
@@ -74,6 +75,16 @@ def test_reusable_native_mvp_plan_construction(benchmark: BenchmarkFixture) -> N
     assert result.term_count == expected.term_count
     assert result.execution_family == expected.execution_family
     assert result.retained_format == expected.retained_format
+
+
+@pytest.mark.parametrize("storage", ["lazy", "eager"])
+def test_native_adjoint_apply(benchmark: BenchmarkFixture, storage: str) -> None:
+    operator = (1.0 + 0.2j) * make_unique_operator()
+    plan = operator.native_mvp_plan(storage=storage)
+    state = np.arange(1 << 10, dtype=np.complex128) + 0.5j
+    expected = operator.adjoint().mvp(state)
+    result = benchmark(plan.apply_adjoint, state)
+    np.testing.assert_allclose(result, expected)
 
 
 def test_unique_coo_target(benchmark: BenchmarkFixture) -> None:
