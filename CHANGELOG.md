@@ -8,7 +8,7 @@ The project follows Semantic Versioning.
 
 ### Fixed
 
-- Fixed JAX tracer leaks when Pauli or Weyl backend MVP callables are first used under JIT and subsequently reused eagerly or in another transformation. Added a CI job that installs JAX and runs the integration suite.
+- Fixed JAX tracer leaks when Pauli or Weyl backend MVP callables are first used under JIT and subsequently reused eagerly or in another transformation. The existing Linux Python 3.13 CI job now installs JAX to run backend integration tests.
 
 ## 0.5.0 - 2026-08-21
 
