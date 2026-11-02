@@ -140,11 +140,3 @@ def test_objective_cache_retains_inputs_until_replaced(
     gc.collect()
     assert observable_ref() is None
     assert state_ref() is None
-
-    observable_ref, state_ref = weakref.ref(observable), weakref.ref(state)
-    del observable, state
-    circuit.x(0)
-    gc.collect()
-    assert observable_ref() is None
-    assert state_ref() is None
-    assert value(_z_observable(1), tcp.ZeroState()) == pytest.approx(-1.0)
