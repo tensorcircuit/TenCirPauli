@@ -1,2 +1,4 @@
 mkdocs-material>=9.6,<10
 mkdocstrings[python]>=0.27,<1
+# mkdocstrings <1 does not support the Highlight API introduced in 12.2.
+pymdown-extensions<12.2
