@@ -245,8 +245,6 @@ def backend_mvp(
         coefficient_values = np.asarray(coefficients, dtype=np.complex128)
     if len(plan.coefficients) != int(np.shape(coefficient_values)[0]):
         raise ValueError("coefficient buffer length does not match backend MVP plan")
-    coefficient_cache: dict[str, Any] = {}
-    phase_cache: dict[str, tuple[Any, ...]] = {}
 
     term_masks: list[Any] = []
     flip_axes: list[tuple[int, ...]] = []
@@ -283,15 +281,10 @@ def backend_mvp(
         else:
             raise ValueError("state must be flat or rank-nqubits with binary axes")
         dtype = runtime_backend.dtype(tensor_state)
-        coefficient_tensor = _cached_backend_coefficients(
-            coefficient_values, runtime_backend, dtype, coefficient_cache
+        coefficient_tensor = _cast_backend_coefficients(
+            coefficient_values, runtime_backend, dtype
         )
-        phases = phase_cache.get(dtype)
-        if phases is None:
-            phases = tuple(
-                runtime_backend.cast(1j**y_count, dtype) for y_count in y_counts
-            )
-            phase_cache[dtype] = phases
+        phases = tuple(runtime_backend.cast(1j**y_count, dtype) for y_count in y_counts)
         total = runtime_backend.zeros_like(tensor_state)
         for term_index, mask in enumerate(term_masks):
             term_state = tensor_state * runtime_backend.cast(mask, dtype)
@@ -340,7 +333,6 @@ def _direct_weyl_backend_mvp(
         coefficient_values = np.asarray(coefficients, dtype=np.complex128)
     if np.shape(coefficient_values) != (len(plan.coefficients),):
         raise ValueError("coefficient buffer length does not match backend MVP plan")
-    coefficient_cache: dict[str, Any] = {}
     phase_masks: list[list[Optional[Any]]] = []
     omega = np.exp(2j * np.pi / d)
     for term_index in range(len(plan.coefficients)):
@@ -369,8 +361,8 @@ def _direct_weyl_backend_mvp(
                 f"state must be flat with length {dimension} or have shape {dimensions}"
             )
         dtype = runtime_backend.dtype(tensor_state)
-        coefficient_tensor = _cached_backend_coefficients(
-            coefficient_values, runtime_backend, dtype, coefficient_cache
+        coefficient_tensor = _cast_backend_coefficients(
+            coefficient_values, runtime_backend, dtype
         )
         total = runtime_backend.zeros_like(tensor_state)
         for term_index in range(len(plan.coefficients)):
@@ -406,22 +398,6 @@ def _cast_backend_coefficients(
         coefficients = np.asarray(coefficients, dtype=host_dtype)
         return runtime_backend.convert_to_tensor(coefficients, dtype=dtype)
     return runtime_backend.cast(coefficients, dtype)
-
-
-def _cached_backend_coefficients(
-    coefficients: Any,
-    runtime_backend: Any,
-    dtype: str,
-    cache: dict[str, Any],
-) -> Any:
-    """Reuse casts for static host coefficients without freezing backend tensors."""
-    if not isinstance(coefficients, np.ndarray):
-        return _cast_backend_coefficients(coefficients, runtime_backend, dtype)
-    cached = cache.get(dtype)
-    if cached is None:
-        cached = _cast_backend_coefficients(coefficients, runtime_backend, dtype)
-        cache[dtype] = cached
-    return cached
 
 
 def _plan_code(plan: BackendMVPPlan, term_index: int, qubit: int) -> int:
