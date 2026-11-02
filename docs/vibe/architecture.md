@@ -128,14 +128,7 @@ Pauli word 对 computational basis 的作用采用 XOR permutation 加 phase eva
 
 All CPU-native MVP plans default to compact lazy storage; eager dimension-scale diagonals or transition graphs require an explicit eager-plan request or an explicit restricted materialization such as CSR, COO, or dense output. A fixed plan never changes storage. A charge-restricted facade may build and retain a synchronized eager transition cache after materialization is requested, then reuse it for later facade execution without changing previously returned plans. This keeps the ordinary MVP path memory-safe while making materialization natural and amortizing its cost.
 
-Native plans provide `apply_adjoint` through one GIL-released native call.
-It evaluates the conjugate transpose of the already compiled operator in
-the same public basis. Pauli plans reuse their masks/diagonals; structured,
-U1 and charge plans reverse retained or generated transitions and conjugate
-their amplitudes after aggregation. No full-space materialization, second
-plan, or transposed CSR cache is required. The shared SciPy adapter requires
-both forward and adjoint application; backend execution plans remain outside
-that native adapter. Sparse adjoint accumulation is serial and deterministic.
+Native plans provide `apply_adjoint` through one GIL-released native call. It evaluates the conjugate transpose of the already compiled operator in the same public basis. Pauli plans reuse their masks/diagonals; structured, U1 and charge plans reverse retained or generated transitions and conjugate their amplitudes after aggregation. No full-space materialization, second plan, or transposed CSR cache is required. The shared SciPy adapter maps `matvec` to `apply` and `rmatvec` to `apply_adjoint`; backend execution plans remain outside that native adapter. Sparse adjoint accumulation is serial and deterministic.
 
 ### 8.3 Symmetry engine
 

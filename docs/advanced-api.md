@@ -6,11 +6,7 @@ The `tencirpauli._native` module is private and is not an alternative import pat
 
 The ordinary circuit facades no longer expose public `compile()` methods or circuit-plan classes. `GateTape`, `PropagationEngine`, and `SPPSEngine` remain advanced numerical APIs; their explicit parameter slots are low-level runtime buffers and are not the removed symbolic `Parameter`/`ParameterExpr` interface.
 
-Native MVP plans share `apply_adjoint(state, *, max_bytes=...)` in addition
-to `apply`. It returns one owned complex128 output for the conjugate
-transpose in the original plan basis, reusing its native storage. See
-[matrix-free time evolution](quickstart.md#matrix-free-time-evolution-with-scipy)
-for the SciPy adapter contract and supported plan families.
+Native MVP plans share `apply_adjoint(state, *, max_bytes=...)` in addition to `apply`. It returns one owned complex128 output for the conjugate transpose in the original plan basis, reusing its native storage. See [matrix-free time evolution](quickstart.md#matrix-free-time-evolution-with-scipy) for the SciPy adapter contract and supported plan families.
 
 ::: tencirpauli.advanced
     options:

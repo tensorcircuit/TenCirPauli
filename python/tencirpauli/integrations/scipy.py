@@ -15,18 +15,14 @@ def to_scipy_linear_operator(
     *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> LinearOperator:
-    """Wrap a plan with ``apply`` and ``apply_adjoint`` as a LinearOperator.
+    """Wrap one immutable MVP plan without materializing its matrix.
 
-    Both operations use the plan's basis and allocation limit. Adjoint
-    application is the conjugate transpose, including for complex,
-    non-Hermitian operators. SciPy supplies column-wise ``matmat`` and
+    ``matvec`` uses ``plan.apply`` and ``rmatvec`` uses ``plan.apply_adjoint``,
+    the conjugate transpose in the same basis, so complex non-Hermitian
+    operators are supported. SciPy derives column-wise ``matmat`` and
     ``rmatmat`` from these vector operations.
     """
     _validate_max_bytes(max_bytes)
-    if not callable(getattr(plan, "apply", None)) or not callable(
-        getattr(plan, "apply_adjoint", None)
-    ):
-        raise TypeError("SciPy interop requires a plan with apply and apply_adjoint")
     dimension = int(plan.dimension)
 
     def apply(vector: Any, *, adjoint: bool) -> np.ndarray[Any, Any]:

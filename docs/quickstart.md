@@ -31,12 +31,7 @@ SciPy is a required runtime dependency. Use `plan.to_scipy_linear_operator()` or
 
 ## Matrix-free time evolution with SciPy
 
-Native plans expose `apply_adjoint(state)`, which computes the conjugate
-transpose in the same basis as `apply(state)`. Their SciPy adapters support
-`rmatvec`, `.H`, and column-wise `matmat`/`rmatmat` for complex operators,
-including non-Hermitian ones. Pauli, structured/Weyl, U1, and general charge
-plans support this in both lazy and eager storage modes. Compile mapped
-fermion operators with the desired mapping before adapting the plan.
+Native plans expose `apply_adjoint(state)`, which computes the conjugate transpose in the same basis as `apply(state)`. Their SciPy adapters support `rmatvec`, `.H`, and column-wise `matmat`/`rmatmat` for complex operators, including non-Hermitian ones. Pauli, structured/Weyl, U1, and general charge plans support this in both lazy and eager storage modes. Compile mapped fermion operators with the desired mapping before adapting the plan.
 
 ```python
 import numpy as np
@@ -47,26 +42,11 @@ state = np.array([1, 0, 0, 0], dtype=np.complex128)
 evolved = expm_multiply(-0.2j * linear, state, traceA=0.0)
 ```
 
-Here `h` is the traceless Hamiltonian above. In general, supply the trace of
-the scaled generator (`-1j * time * trace(H)`), not an unconditional zero.
-For an evenly spaced time grid, pass `-1j * linear`, `start`, `stop`, and
-`num`, with `traceA=-1j * trace(H)`.
+Here `h` is the traceless Hamiltonian above. In general, supply the trace of the scaled generator (`-1j * time * trace(H)`), not an unconditional zero. For an evenly spaced time grid, pass `-1j * linear`, `start`, `stop`, and `num`, with `traceA=-1j * trace(H)`.
 
-[SciPy's `expm_multiply`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.expm_multiply.html)
-uses norm estimation that can call the adjoint in both single-time and
-time-grid execution. Passing `traceA` avoids trace estimation but does not
-remove that adjoint requirement. A small example that happens to use only
-forward multiplication does not establish support for larger inputs.
-By contrast, explicit ODE stepping of `dstate/dt = -1j * (linear @ state)`
-only needs forward multiplication. This adapter adds no new requirement to
-such methods or to existing Hermitian `eigsh` workflows.
+[SciPy's `expm_multiply`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.expm_multiply.html) uses norm estimation that can call the adjoint in both single-time and time-grid execution. Passing `traceA` avoids trace estimation but does not remove that adjoint requirement. Other SciPy routines that call `rmatvec` or `.H`, such as `onenormest`, `lsqr`, `lsmr`, and `svds`, use the same adjoint. By contrast, explicit ODE stepping of `dstate/dt = -1j * (linear @ state)` and Hermitian `eigsh` only need forward multiplication.
 
-Adjoint calls keep the plan's storage, mapping, basis ordering, and allocation
-limits unchanged. They allocate an output vector without building a dense
-matrix, a transposed sparse graph, or a second plan. CSR adjoints traverse
-the retained graph serially; native batched matrix application is not yet
-provided. The adapter requires both `apply` and `apply_adjoint`; TensorCircuit
-backend plans are not native SciPy plans.
+Adjoint calls keep the plan's storage, mapping, basis ordering, and allocation limits unchanged. They allocate an output vector without building a dense matrix, a transposed sparse graph, or a second plan. CSR adjoints traverse the retained graph serially; native batched matrix application is not yet provided. TensorCircuit backend plans are not native SciPy plans.
 
 ## Group measurements
 

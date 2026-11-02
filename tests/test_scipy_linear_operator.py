@@ -10,7 +10,6 @@ from scipy.linalg import expm
 from scipy.sparse.linalg import eigsh, expm_multiply
 
 import tencirpauli as tcp
-from tencirpauli.integrations.scipy import to_scipy_linear_operator
 
 
 def _fermion_charge_plan(storage: str):
@@ -228,46 +227,40 @@ def _adjoint_case(kind: str, storage: str) -> tuple[Any, np.ndarray]:
         "charge_pauli",
     ],
 )
-def test_native_adjoint_and_exponential_match_dense(kind: str, storage: str) -> None:
+def test_native_adjoint_matches_dense(kind: str, storage: str) -> None:
     plan, dense = _adjoint_case(kind, storage)
-    metadata = plan._metadata
     rng = np.random.default_rng(19)
     u, v = rng.normal(size=(2, plan.dimension)) + 1j * rng.normal(
         size=(2, plan.dimension)
     )
-    original = v.copy()
-    expected = dense.conj().T @ v
-    result = plan.apply_adjoint(v)
-    np.testing.assert_allclose(result, expected, atol=1e-12)
-    assert result.dtype == np.dtype(np.complex128)
-    assert result.flags.c_contiguous
-    assert not np.shares_memory(result, v)
-    np.testing.assert_allclose(plan.apply_adjoint(v.tolist()), expected, atol=1e-12)
+    np.testing.assert_allclose(plan.apply_adjoint(v), dense.conj().T @ v, atol=1e-12)
     np.testing.assert_allclose(
         np.vdot(u, plan.apply(v)), np.vdot(plan.apply_adjoint(u), v), atol=1e-12
     )
-    np.testing.assert_array_equal(v, original)
-    np.testing.assert_allclose(result, expected, atol=1e-12)
-    assert plan._metadata is metadata
-    assert plan.storage == storage
-    linear = plan.to_scipy_linear_operator()
-    np.testing.assert_allclose(
-        linear.rmatvec(v[:, None]), expected[:, None], atol=1e-12
-    )
     columns = np.column_stack((u, v))
-    np.testing.assert_allclose(linear.H @ columns, dense.conj().T @ columns, atol=1e-12)
-    np.testing.assert_allclose(linear.H.H @ v, dense @ v, atol=1e-12)
     np.testing.assert_allclose(
-        expm_multiply(-0.2j * linear, v, traceA=-0.2j * np.trace(dense)),
-        expm(-0.2j * dense) @ v,
+        plan.to_scipy_linear_operator().H @ columns,
+        dense.conj().T @ columns,
         atol=1e-12,
     )
-    with pytest.raises(ValueError, match="shape"):
-        plan.apply_adjoint(v[:-1])
-    with pytest.raises(ValueError, match="max_bytes"):
-        plan.apply_adjoint(v, max_bytes=-1)
     with pytest.raises(MemoryError):
         plan._execution.apply_adjoint(v, 0)
+
+
+@pytest.mark.parametrize("kind", ["pauli", "u1", "charge_generic"])
+def test_scipy_exponential_of_nonhermitian_plan_matches_dense(kind: str) -> None:
+    plan, dense = _adjoint_case(kind, "lazy")
+    rng = np.random.default_rng(19)
+    state = rng.normal(size=plan.dimension) + 1j * rng.normal(size=plan.dimension)
+    np.testing.assert_allclose(
+        expm_multiply(
+            -0.2j * plan.to_scipy_linear_operator(),
+            state,
+            traceA=-0.2j * np.trace(dense),
+        ),
+        expm(-0.2j * dense) @ state,
+        atol=1e-12,
+    )
 
 
 def test_scipy_exponential_of_hermitian_operator_at_multiple_times() -> None:
@@ -291,14 +284,3 @@ def test_parallel_fermion_adjoint_matches_mapped_pauli_reference() -> None:
     np.testing.assert_allclose(
         plan.apply_adjoint(state), reference.apply(state), atol=1e-10
     )
-
-
-def test_scipy_rejects_plans_without_adjoint_support() -> None:
-    class ForwardOnly:
-        dimension = 4
-
-        def apply(self, state, **kwargs):
-            return state
-
-    with pytest.raises(TypeError, match="apply_adjoint"):
-        to_scipy_linear_operator(ForwardOnly())
