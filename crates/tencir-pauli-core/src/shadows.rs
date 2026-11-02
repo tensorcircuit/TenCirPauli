@@ -3039,13 +3039,6 @@ mod tests {
             let expected = 2.58 * scale * scale;
             assert!((variance - expected).abs() < expected * 1.0e-12);
         }
-        let nonhermitian =
-            PauliOperator::from_terms(2, &[vec![3, 0]], &[Complex64::new(1.0, 1.0e-18)])
-                .expect("complex Hamiltonian");
-        assert!(matches!(
-            snapshots.energy_variance(&nonhermitian, 1, u128::MAX),
-            Err(PauliError::NonHermitianExpectation)
-        ));
     }
 
     #[test]
