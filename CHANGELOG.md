@@ -13,6 +13,8 @@ The project follows Semantic Versioning.
 
 - Fixed logical-witness search panicking for valid codes without stabilizer generators in the automatic, X, and Z sectors, including codes spanning multiple packed words.
 
+- Fixed shadow energy variance rejecting Hermitian Hamiltonians because of imaginary roundoff in their squares. The square's mathematically real coefficients are preserved without an epsilon cutoff; non-Hermitian inputs remain rejected.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
