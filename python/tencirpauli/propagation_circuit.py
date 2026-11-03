@@ -217,7 +217,9 @@ class _CircuitBuilder:
         self._forward_tape_cache: Optional[tuple[int, GateTape]] = None
         self._gradient_tape_cache: Optional[tuple[int, GateTape]] = None
         self._objective_cache: Optional[
-            tuple[tuple[Any, ...], _PropagationObjective]
+            tuple[
+                tuple[Any, ...], _PropagationObjective, PauliOperator, PropagationState
+            ]
         ] = None
 
     def __len__(self) -> int:
@@ -508,7 +510,8 @@ class _CircuitBuilder:
         objective = _PropagationObjective(
             engine, angles, self._channel_values(), gradient
         )
-        self._objective_cache = (key, objective)
+        # Keep identity-keyed inputs alive for the lifetime of this cache entry.
+        self._objective_cache = (key, objective, observable, initial_state)
         return objective
 
     def to_qir(self) -> list[dict[str, object]]:
