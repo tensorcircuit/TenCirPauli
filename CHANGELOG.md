@@ -17,6 +17,8 @@ The project follows Semantic Versioning.
 
 - Fixed deterministic and stochastic circuit objective caches retaining stale results when temporary observables or initial states reuse a previous Python object identity.
 
+- Fixed TensorCircuit QIR conversion using gate-factory semantics instead of display names, including inverse S gates and custom gate labels.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
