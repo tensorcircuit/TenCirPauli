@@ -11,6 +11,8 @@ The project follows Semantic Versioning.
 - Fixed JAX tracer leaks when Pauli or Weyl backend MVP callables are first used under JIT and subsequently reused eagerly or in another transformation. The existing Linux Python 3.13 CI job now installs JAX to run backend integration tests.
 - Fixed TensorCircuit U1 conversion rejecting custom initial states when the source circuit also retains default or explicit occupied-site metadata.
 
+- Fixed logical-witness search panicking for valid codes without stabilizer generators in the automatic, X, and Z sectors, including codes spanning multiple packed words.
+
 ## 0.5.0 - 2026-08-21
 
 This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.

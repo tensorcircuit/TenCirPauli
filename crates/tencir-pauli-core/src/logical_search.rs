@@ -1332,7 +1332,7 @@ fn quotient_logicals(
     let mut logicals = Vec::with_capacity(expected);
     for vector in normalizer.0 {
         if span.insert(&vector) {
-            let mut x_words = vec![0_u64; stabilizers.first().map_or(0, |row| row.x_words.len())];
+            let mut x_words = vec![0_u64; packed_count(nqubits)];
             let mut z_words = vec![0_u64; x_words.len()];
             if x_sector {
                 x_words.copy_from_slice(&vector);
@@ -2034,6 +2034,33 @@ mod tests {
     };
     use crate::{LogicalSearchSector, StabilizerCode};
     use rayon::ThreadPoolBuilder;
+
+    #[test]
+    fn empty_stabilizer_search_returns_weight_one_logicals() {
+        for nqubits in [1, 2, 65] {
+            let code = StabilizerCode::from_css_binary(nqubits, &[], &[], &[], &[], u128::MAX)
+                .expect("unconstrained code");
+            for sector in [
+                LogicalSearchSector::Auto,
+                LogicalSearchSector::X,
+                LogicalSearchSector::Z,
+                LogicalSearchSector::General,
+            ] {
+                let result = search_logical_witness(&code, sector, 1, 2, None, 0, u128::MAX)
+                    .expect("logical search for an unconstrained code");
+                assert_eq!(result.best_weight, 1);
+                assert_eq!(result.best.weight, 1);
+                assert_eq!(result.best.x_words.len(), code.word_count());
+                assert_eq!(result.best.z_words.len(), code.word_count());
+                assert!(code.is_in_normalizer_words(&result.best.x_words, &result.best.z_words));
+                if sector == LogicalSearchSector::X {
+                    assert!(result.best.z_words.iter().all(|&word| word == 0));
+                } else if sector == LogicalSearchSector::Z {
+                    assert!(result.best.x_words.iter().all(|&word| word == 0));
+                }
+            }
+        }
+    }
 
     #[test]
     fn repetition_css_setup_has_x_and_z_incumbents() {
